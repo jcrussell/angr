@@ -342,7 +342,7 @@ class TestRustInspectMarshalling:
         assert mgr._callbacks.get_inspect_enabled() == 0
 
         proxy_inspect = mgr._get_inspect_proxy()
-        bp = proxy_inspect.b("mem_read", when="before", action=lambda s: None)
+        bp = proxy_inspect.b("mem_read", when="after", action=lambda s: None)
         assert bp is not None
         assert mgr._callbacks.get_inspect_enabled() & 0b01 != 0
         # Adding a mem_write BP sets bit 1 too.
@@ -393,8 +393,8 @@ class TestRustInspectMarshalling:
                 }
             )
 
-        mgr._get_inspect_proxy().b("mem_read", when="before", action=on_read)
-        mgr._cb_inspect_mem_read(sid, "before", 0x401234, 4, None, "Iend_LE")
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
+        mgr._cb_inspect_mem_read(sid, "after", 0x401234, 4, None, "Iend_LE")
 
         assert len(events) == 1
         ev = events[0]
@@ -437,7 +437,7 @@ class TestRustInspectMarshalling:
         mgr, sid, _ = self._make_mgr_with_state_id(fauxware_project)
         # No BPs registered — dispatch must return None (no override) for both
         # read and write so the Rust caller keeps the original load/store.
-        assert mgr._cb_inspect_mem_read(sid, "before", 0x1000, 8, None, "Iend_LE") is None
+        assert mgr._cb_inspect_mem_read(sid, "after", 0x1000, 8, None, "Iend_LE") is None
         assert mgr._cb_inspect_mem_write(sid, "after", 0x1000, 8, None, "Iend_LE") is None
 
     def test_dispatch_reentrancy_guard(self, fauxware_project):
@@ -454,10 +454,10 @@ class TestRustInspectMarshalling:
         def reentrant_action(s):
             fire_count[0] += 1
             # Try to trigger another dispatch from inside the BP action.
-            mgr._cb_inspect_mem_read(sid, "before", 0xDEAD, 4, None, "Iend_LE")
+            mgr._cb_inspect_mem_read(sid, "after", 0xDEAD, 4, None, "Iend_LE")
 
-        mgr._get_inspect_proxy().b("mem_read", when="before", action=reentrant_action)
-        mgr._cb_inspect_mem_read(sid, "before", 0x401234, 4, None, "Iend_LE")
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=reentrant_action)
+        mgr._cb_inspect_mem_read(sid, "after", 0x401234, 4, None, "Iend_LE")
 
         # Outer fire should run exactly once — the reentrant call returns early.
         assert fire_count[0] == 1
@@ -470,11 +470,11 @@ class TestRustInspectMarshalling:
         def on_read(s):
             hits.append(s.inspect.attrs.mem_read_length)
 
-        mgr._get_inspect_proxy().b("mem_read", when="before", action=on_read)
+        mgr._get_inspect_proxy().b("mem_read", when="after", action=on_read)
 
         # Invoke through the Rust PyO3 entry point — exercises both the
         # Rust callback dispatch path and the Python dispatcher.
-        mgr._callbacks.call_inspect_mem_read(sid, "before", 0xCAFE, 8, None, "Iend_LE")
+        mgr._callbacks.call_inspect_mem_read(sid, "after", 0xCAFE, 8, None, "Iend_LE")
         assert hits == [8]
 
     def test_rust_call_inspect_skips_when_callback_unset(self):
@@ -1108,6 +1108,7 @@ class TestRustInspectExtendedEvents:
 
     def test_bitmask_per_event(self, fauxware_project):
         """Registering a BP for each extended event flips its assigned bit."""
+        from angr.exploration.rust_state_proxy import _INSPECT_EVENT_SPECS
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
@@ -1124,7 +1125,9 @@ class TestRustInspectExtendedEvents:
         }
         for evt, bit in expected.items():
             mask_before = mgr._callbacks.get_inspect_enabled()
-            proxy_inspect.b(evt, when="before", action=lambda s: None)
+            # The BP takes a phase the event fires; any other raises.
+            when = min(_INSPECT_EVENT_SPECS[evt]["when_fired"])
+            proxy_inspect.b(evt, when=when, action=lambda s: None)
             mask_after = mgr._callbacks.get_inspect_enabled()
             assert mask_after & bit != 0, f"{evt} did not set bit {bit:#b}"
             assert mask_after != mask_before

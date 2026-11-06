@@ -3520,7 +3520,11 @@ _COPY_NEEDS_MANAGER_MSG = (
 # Each entry maps an angr `event_types` member to a spec dict with:
 #   - bit: position in the Rust callbacks `inspect_enabled` u32 bitmask
 #   - attrs: SimInspector attribute names this event populates
-#   - when_fired: 'before' or 'after' — when in the Rust pipeline it fires
+#   - when_fired: the phases ('before' / 'after') the Rust pipeline fires the
+#     event in. ``RustInspectProxy.add_breakpoint`` refuses a BP whose
+#     ``when`` matches a phase missing here, since it could never fire
+#     (angr-vmi2l.203); ``_unsupported_inspect_events`` routes a seed
+#     carrying one to the Python engine.
 #   - dispatch_origin: 'rust' (default) when the Rust engine invokes the
 #     callback via PythonCallbacks; 'python' when dispatch is fired from
 #     within an existing Python-side callback handler in
@@ -3537,7 +3541,8 @@ _COPY_NEEDS_MANAGER_MSG = (
 # `rust_manager._cb_dirty_call`.
 #
 # Wiring a new Rust-origin event requires (angr-d46u):
-#   1. Add a row here with a unique bit, attrs, when_fired.
+#   1. Add a row here with a unique bit, attrs, and the when_fired phases
+#      every dispatch site of the event passes.
 #   2. Add a PythonCallbacks slot + setter + dispatch helper in
 #      native/angr/src/callbacks.rs and the interpreter dispatch
 #      helpers.
@@ -3565,7 +3570,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "mem_read_condition",
             "mem_read_endness",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     "mem_write": {
         "bit": 1,
@@ -3576,7 +3581,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "mem_write_condition",
             "mem_write_endness",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"before", "after"}),
     },
     "reg_read": {
         "bit": 2,
@@ -3587,7 +3592,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "reg_read_condition",
             "reg_read_endness",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     "reg_write": {
         "bit": 3,
@@ -3598,7 +3603,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "reg_write_condition",
             "reg_write_endness",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     # angr-ysml: fork dispatch fires from `exploration/stepping.rs` for
     # each forked state created by the deferred-fork processing in
@@ -3613,7 +3618,7 @@ _INSPECT_EVENT_SPECS: dict = {
     "fork": {
         "bit": 4,
         "attrs": (),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     "exit": {
         "bit": 5,
@@ -3622,17 +3627,17 @@ _INSPECT_EVENT_SPECS: dict = {
             "exit_guard",
             "exit_jumpkind",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before"}),
     },
     "instruction": {
         "bit": 6,
         "attrs": ("instruction",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before"}),
     },
     "irsb": {
         "bit": 7,
         "attrs": ("address",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before"}),
     },
     # angr-4ai9: call/return dispatched from the BlockEnd path of
     # interpreter/execution.rs (Ijk_Call / Ijk_Ret). Fires `before` and
@@ -3643,12 +3648,12 @@ _INSPECT_EVENT_SPECS: dict = {
     "call": {
         "bit": 8,
         "attrs": ("function_address",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
     },
     "return": {
         "bit": 9,
         "attrs": ("function_address",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
     },
     # angr-xmfj: simprocedure / syscall / dirty dispatch fires from the
     # existing Python callback sites in `rust_callback_dispatch.py`
@@ -3671,7 +3676,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "simprocedure",
             "simprocedure_result",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
         "dispatch_origin": "python",
     },
     "syscall": {
@@ -3680,7 +3685,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "syscall_name",
             "simprocedure",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
         "dispatch_origin": "python",
     },
     "dirty": {
@@ -3691,7 +3696,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "dirty_args",
             "dirty_result",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
         "dispatch_origin": "python",
     },
     # angr-64pi: tmp_read / tmp_write dispatch fires from the Rust
@@ -3711,7 +3716,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "tmp_read_num",
             "tmp_read_expr",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     "tmp_write": {
         "bit": 14,
@@ -3719,7 +3724,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "tmp_write_num",
             "tmp_write_expr",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     # angr-t8vf: statement dispatch fires from `execute_block_with_callbacks`
     # in `interpreter/execution.rs`, once per VEX IR statement, before the
@@ -3731,7 +3736,7 @@ _INSPECT_EVENT_SPECS: dict = {
     "statement": {
         "bit": 15,
         "attrs": ("statement",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before"}),
     },
     # angr-lge2: expr dispatch fires from `eval_expr_with_callbacks` in
     # `interpreter/expressions.rs`, once per IR expression evaluation
@@ -3751,7 +3756,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "expr",
             "expr_result",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     # angr-vfst: address_concretization dispatch fires from
     # `interpreter/expressions.rs::load_symbolic_addr` (read path) and
@@ -3773,7 +3778,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "address_concretization_result",
             "address_concretization_add_constraints",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
     },
     # angr-vfst: symbolic_variable dispatch fires from
     # `interpreter/mod.rs::load_from_callback` when the engine mints a
@@ -3791,7 +3796,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "symbolic_size",
             "symbolic_expr",
         ),
-        "when_fired": "after",
+        "when_fired": frozenset({"after"}),
     },
     # angr-4aach / angr-op0dn.14.4.1: constraints has TWO dispatch origins,
     # both landing on ``RustExplorationManager._cb_inspect_constraints``:
@@ -3814,7 +3819,7 @@ _INSPECT_EVENT_SPECS: dict = {
     "constraints": {
         "bit": 19,
         "attrs": ("added_constraints",),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
     },
     # angr-4aach / angr-op0dn.14.4.2: vex_lift has TWO dispatch origins, both
     # landing on ``RustExplorationManager._cb_inspect_vex_lift``:
@@ -3844,7 +3849,7 @@ _INSPECT_EVENT_SPECS: dict = {
             "vex_lift_size",
             "vex_lift_buff",
         ),
-        "when_fired": "before",
+        "when_fired": frozenset({"before", "after"}),
     },
 }
 
@@ -3866,6 +3871,32 @@ _RUST_INSPECT_PYTHON_DISPATCHED_EVENTS = frozenset(
 # (angr-mx00p.132.20). ``rust_engine_eligible`` routes a seed carrying one of
 # these to the Python engine.
 _RUST_INSPECT_BOUNCE_ONLY_EVENTS = frozenset({"simprocedure", "syscall"})
+
+
+def _rust_unfired_phases(event_type: str, when) -> frozenset:
+    """The phases a BP on *event_type* with *when* matches that Rust never fires.
+
+    Empty when the BP can fire in every phase it matches. ``BP_BOTH`` matches
+    both phases, so on a one-phase event it would fire half as often as on the
+    Python engine and counts as unfired too.
+    """
+    spec = _INSPECT_EVENT_SPECS.get(event_type)
+    if spec is None:
+        return frozenset()
+    matched = frozenset({"before", "after"}) if when == "both" else frozenset({str(when)})
+    return matched - spec["when_fired"]
+
+
+def _format_unfired_phase_msg(event_type: str, when, unfired) -> str:
+    """Build the NotImplementedError message for a BP on a phase Rust never fires."""
+    fired = ", ".join(sorted(_INSPECT_EVENT_SPECS[event_type]["when_fired"]))
+    missing = ", ".join(sorted(unfired))
+    return (
+        f"Rust engine fires inspect event {event_type!r} only when={fired}; "
+        f"a when={str(when)!r} breakpoint would miss the {missing} phase. "
+        "Pass when= one of the fired phases, or use the Python engine (a plain "
+        "SimulationManager)."
+    )
 
 
 def _format_unsupported_event_msg(event_type: str) -> str:
@@ -3974,6 +4005,9 @@ class RustInspectProxy:
 
     def add_breakpoint(self, event_type, bp):
         self._check_event(event_type)
+        unfired = _rust_unfired_phases(event_type, bp.when)
+        if unfired:
+            raise NotImplementedError(_format_unfired_phase_msg(event_type, bp.when, unfired))
         self._mgr._inspect_breakpoints[event_type].append(bp)
         self._mgr._update_inspect_bitmask()
 

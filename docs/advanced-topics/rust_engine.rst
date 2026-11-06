@@ -1958,7 +1958,8 @@ The Rust symbolic-execution engine dispatches every *engine*
 ``state.inspect`` event to Python breakpoints. The handful of events
 that fire from angr components outside the engine (see *Unsupported
 events*) raise ``NotImplementedError`` at registration time so that
-gaps remain loud.
+gaps remain loud. So does a breakpoint on a phase the *Fires when*
+column omits, below.
 
 Supported events
 ~~~~~~~~~~~~~~~~
@@ -2001,6 +2002,15 @@ Event          Fires when        BP attributes
 ``vex_lift``    ``before``/``after`` ``vex_lift_addr``, ``vex_lift_size``,
                                   ``vex_lift_buff``
 ============   ===============   ==================================================
+
+A breakpoint whose ``when`` matches a phase missing from *Fires when*
+raises ``NotImplementedError`` from ``state.inspect.b``, since it could
+never fire. That includes upstream's default ``when=BP_BEFORE`` on
+``mem_read``, ``reg_read``, ``reg_write``, ``tmp_read``, ``tmp_write``,
+``expr``, ``symbolic_variable`` and ``fork``, and ``BP_BOTH`` on any
+one-phase event. A seed state that already carries one is routed to the
+Python engine. The *Fires when* column is ``when_fired`` in
+``_INSPECT_EVENT_SPECS`` (``rust_state_proxy.py``).
 
 Each event has a corresponding bit in the inspect-enabled bitmask read
 by every Rust dispatch site; with no BPs registered the cost is one

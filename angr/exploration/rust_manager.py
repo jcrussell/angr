@@ -498,18 +498,28 @@ def _unsupported_inspect_events(state) -> list[str]:
     state that carries one is a Python workload — the raise would otherwise be
     the regression the moment the default engine flips. The events in
     ``_RUST_INSPECT_BOUNCE_ONLY_EVENTS`` register, but would silently miss
-    every natively served call, so they count too.
+    every natively served call, so they count too, as does an event with a BP
+    whose ``when`` matches a phase Rust never fires (``_rust_unfired_phases``).
     """
     inspector = getattr(state, "inspect", None)
     breakpoints = getattr(inspector, "_breakpoints", None)
     if not breakpoints:
         return []
-    from angr.exploration.rust_state_proxy import _RUST_INSPECT_BOUNCE_ONLY_EVENTS, _RUST_INSPECT_SUPPORTED_EVENTS
+    from angr.exploration.rust_state_proxy import (
+        _RUST_INSPECT_BOUNCE_ONLY_EVENTS,
+        _RUST_INSPECT_SUPPORTED_EVENTS,
+        _rust_unfired_phases,
+    )
 
     return sorted(
         event
         for event, bps in breakpoints.items()
-        if bps and (event not in _RUST_INSPECT_SUPPORTED_EVENTS or event in _RUST_INSPECT_BOUNCE_ONLY_EVENTS)
+        if bps
+        and (
+            event not in _RUST_INSPECT_SUPPORTED_EVENTS
+            or event in _RUST_INSPECT_BOUNCE_ONLY_EVENTS
+            or any(_rust_unfired_phases(event, bp.when) for bp in bps)
+        )
     )
 
 
@@ -2853,6 +2863,8 @@ class RustExplorationManager(
         breakpoints = getattr(inspector, "_breakpoints", None)
         if not breakpoints or breakpoints is self._inspect_breakpoints:
             return
+        from angr.exploration.rust_state_proxy import _format_unfired_phase_msg, _rust_unfired_phases
+
         added = False
         for event, bps in breakpoints.items():
             if not bps:
@@ -2861,6 +2873,9 @@ class RustExplorationManager(
             if registry is None:
                 raise NotImplementedError(f"state.inspect event {event!r} is not dispatched by the rust engine")
             for bp in bps:
+                unfired = _rust_unfired_phases(event, bp.when)
+                if unfired:
+                    raise NotImplementedError(_format_unfired_phase_msg(event, bp.when, unfired))
                 if not any(bp is known for known in registry):
                     registry.append(bp)
                     added = True

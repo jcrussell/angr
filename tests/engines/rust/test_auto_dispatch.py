@@ -180,16 +180,30 @@ class TestEligibilityPredicate:
 
     def test_supported_inspect_breakpoint_stays_eligible(self, fauxware_project):
         state = fauxware_project.factory.entry_state()
-        state.inspect.b("mem_read", action=None)
+        state.inspect.b("mem_read", when=angr.BP_AFTER, action=None)
         eligible, _ = rust_engine_eligible(fauxware_project, [state], {})
         assert eligible is True
+
+    @pytest.mark.parametrize(
+        ("event", "when"),
+        [("mem_read", angr.BP_BEFORE), ("instruction", angr.BP_AFTER), ("reg_write", angr.BP_BOTH)],
+    )
+    def test_breakpoint_on_an_unfired_phase_routes_to_python(self, fauxware_project, event, when):
+        """Rust fires mem_read only after and instruction only before, so a
+        seed BP on the other phase (the default ``BP_BEFORE`` on mem_read) would
+        never fire there (angr-vmi2l.203)."""
+        state = fauxware_project.factory.entry_state()
+        state.inspect.b(event, when=when, action=None)
+        eligible, reason = rust_engine_eligible(fauxware_project, [state], {})
+        assert eligible is False
+        assert event in reason
 
     @pytest.mark.parametrize("action", [lambda _s: None, angr.BP_IPDB])
     def test_inspect_action_stays_eligible(self, fauxware_project, action):
         """A BP action reads the mid-step view, so it no longer routes a seed
         to Python (angr-mx00p.132.53.3)."""
         state = fauxware_project.factory.entry_state()
-        state.inspect.b("mem_read", action=None)
+        state.inspect.b("mem_read", when=angr.BP_AFTER, action=None)
         state.inspect.b("instruction", action=action)
         eligible, _ = rust_engine_eligible(fauxware_project, [state], {})
         assert eligible is True
