@@ -340,6 +340,11 @@ crate::declare_proc! {
         if fd < 0 {
             return Ok(Some(arch_word(state, -1i64 as u64)));
         }
+        if state.file_system_ref().seeks_past_eof(fd as u32, offset, whence) {
+            return Err(ProcedureError::Other(
+                "fseek past EOF falls back to Python".to_string(),
+            ));
+        }
         match state.file_system().seek(fd as u32, offset, whence) {
             Some(_) => Ok(Some(arch_word(state, 0u64))),
             None => Ok(Some(arch_word(state, -1i64 as u64))),

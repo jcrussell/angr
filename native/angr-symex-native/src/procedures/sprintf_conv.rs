@@ -206,7 +206,17 @@ pub(super) fn render_conversion(
         b'c' => {
             let val = next_arg(args, arg_idx, "char arg")?;
             let ch = [val as u8];
-            pad_and_push(output, &ch, cspec.width, cspec.left_align, false, false);
+            // `FormatString.replace` pads `%c` with the spec's `pad_chr`, so
+            // `%03c` renders "00A" where glibc ignores the `0` flag
+            // (angr-vmi2l.115).
+            pad_and_push(
+                output,
+                &ch,
+                cspec.width,
+                cspec.left_align,
+                cspec.zero_pad,
+                false,
+            );
         }
         b's' => {
             let str_addr = next_arg(args, arg_idx, "string arg")?;
@@ -237,12 +247,22 @@ pub(super) fn render_conversion(
             if !null_found {
                 return Err(ProcedureError::MaxIterations(MAX_STRING_SCAN));
             }
-            let s = if let Some(prec) = cspec.precision {
-                if prec < s.len() { &s[..prec] } else { &s }
-            } else {
-                &s
+            // `FormatString._get_str_at` loads exactly `prec` bytes for
+            // `%.*s`, NUL included, where glibc stops at the NUL. The two
+            // agree only when the string is at least `prec` long; a zero
+            // precision is a zero-width load in Python (angr-vmi2l.115).
+            let s = match cspec.precision {
+                Some(prec) if prec == 0 || prec > s.len() => {
+                    return Err(ProcedureError::Other(
+                        "'%.*s' precision past the NUL defers to Python".to_string(),
+                    ));
+                }
+                Some(prec) => &s[..prec],
+                None => &s,
             };
-            pad_and_push(output, s, cspec.width, cspec.left_align, false, false);
+            // `FormatString.replace` never pads `%s`: its `s` arm appends the
+            // loaded bytes and ignores the width (angr-vmi2l.115).
+            output.extend_from_slice(s);
         }
         b'p' => {
             // %p always diverges from Python: native emitted a "0x" prefix

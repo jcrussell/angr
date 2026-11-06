@@ -156,6 +156,11 @@ crate::declare_proc! {
     args = [fd: concrete, offset: concrete, whence: concrete],
     call |state| {
         let offset = super::arch_signed_word(state, offset);
+        if state.file_system_ref().seeks_past_eof(fd as u32, offset, whence as u32) {
+            return Err(ProcedureError::Other(
+                "lseek past EOF falls back to Python".to_string(),
+            ));
+        }
         match state.file_system().seek(fd as u32, offset, whence as u32)
         {
             Some(new_pos) => Ok(Some(arch_word(state, new_pos))),

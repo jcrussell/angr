@@ -210,15 +210,16 @@ impl NativeSimProcedure for NativeSnprintf {
         let varargs = &args[3..];
         let output = format_string(state, &fmt, varargs)?;
 
-        // Write output to destination, respecting size limit
-        if size > 0 {
-            // overflow-ok: size >= 1 is guaranteed by the enclosing `if size > 0`.
-            let write_len = output.len().min(size - 1);
-            // Write truncated output + always null-terminate at write_len.
-            write_cstr(state, dest, &output[..write_len])?;
+        // Python's `snprintf` returns 0 without writing when `size == 0` and
+        // otherwise ignores `size`, writing the full output; glibc truncates
+        // and returns the untruncated length. The two agree only when the
+        // output and its NUL fit, so anything else defers (angr-vmi2l.115).
+        if output.len() >= size {
+            return Err(ProcedureError::Other(
+                "snprintf output that does not fit `size` defers to Python".to_string(),
+            ));
         }
-
-        // Return would-have-been length (not truncated)
+        write_cstr(state, dest, &output)?;
         Ok(Some(arch_word(state, output.len() as u64)))
     }
 }

@@ -606,18 +606,38 @@ impl FileSystem {
     /// `offset` through `offset_position`, not through `base as i64 +
     /// offset` (angr-03vl4.54).
     pub fn seek(&mut self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
-        let fd = self.desc_key(fd);
         // Compute new position without CoW first; only mutate if the fd exists
         // and the whence value is valid.
-        let desc = self.fds.get(&fd)?;
-        let new_pos = match whence {
-            0 => u64::try_from(offset).ok()?,             // SEEK_SET
-            1 => offset_position(desc.position, offset)?, // SEEK_CUR
-            2 => offset_position(desc.effective_len() as u64, offset)?, // SEEK_END
-            _ => return None,
-        };
+        let new_pos = self.seek_target(fd, offset, whence)?;
+        let fd = self.desc_key(fd);
         Arc::make_mut(&mut self.fds).get_mut(&fd)?.position = new_pos;
         Some(new_pos)
+    }
+
+    /// Whether [`seek`](Self::seek) would move `fd` past the end of its
+    /// content. glibc allows that, but Python's `SimFileDescriptor.seek`
+    /// fails, and on a file of unknown size its answer is symbolic, so the
+    /// guest-facing `lseek` / `fseek` defer to Python (angr-vmi2l.115).
+    /// Internal position advances call `seek` directly.
+    pub fn seeks_past_eof(&self, fd: u32, offset: i64, whence: u32) -> bool {
+        let Some(new_pos) = self.seek_target(fd, offset, whence) else {
+            return false;
+        };
+        self.fds
+            .get(&self.desc_key(fd))
+            .is_some_and(|desc| new_pos > desc.effective_len() as u64)
+    }
+
+    /// The position [`seek`](Self::seek) would move `fd` to, or `None` for
+    /// an absent fd, a bad `whence` or a negative target.
+    fn seek_target(&self, fd: u32, offset: i64, whence: u32) -> Option<u64> {
+        let desc = self.fds.get(&self.desc_key(fd))?;
+        match whence {
+            0 => u64::try_from(offset).ok(),             // SEEK_SET
+            1 => offset_position(desc.position, offset), // SEEK_CUR
+            2 => offset_position(desc.effective_len() as u64, offset), // SEEK_END
+            _ => None,
+        }
     }
 
     /// Positioned read: read up to `count` bytes starting at absolute

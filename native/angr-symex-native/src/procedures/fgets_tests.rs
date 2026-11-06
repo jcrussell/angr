@@ -40,8 +40,8 @@ fn test_fgets_basic() {
         )
         .unwrap();
 
-    // Should return buf address
-    assert_eq!(result.unwrap().as_u64(), Some(0x2000));
+    // Returns the byte count, as Python does (angr-vmi2l.115)
+    assert_eq!(result.unwrap().as_u64(), Some(9));
 
     // First 9 bytes should be symbolic
     for i in 0..9u64 {
@@ -126,7 +126,7 @@ fn test_fgets_size_1() {
         )
         .unwrap();
 
-    assert_eq!(result.unwrap().as_u64(), Some(0x2000));
+    assert_eq!(result.unwrap().as_u64(), Some(0));
 
     // Only NUL should be written
     let nul = state.memory_load(0x2000, 1).unwrap();
@@ -692,7 +692,7 @@ fn test_fgets_unmapped_file_struct_serves_stdin() {
             ],
         )
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(0x2000));
+    assert_eq!(result.unwrap().as_u64(), Some(3));
     // Served as stdin: the buffer holds fresh symbolic stdin bytes.
     assert!(state.memory_load(0x2000, 1).unwrap().as_u64().is_none());
 }
@@ -788,7 +788,7 @@ fn fgets_size_at_limit_is_native() {
             ],
         )
         .expect("a size exactly at the limit stays native");
-    assert_eq!(ret.unwrap().as_u64(), Some(0x2000));
+    assert_eq!(ret.unwrap().as_u64(), Some(MAX_FGETS_SIZE - 1));
     // size-1 symbolic bytes then the NUL terminator.
     let nul = state
         .memory_load(0x2000 + MAX_FGETS_SIZE - 1, 1)

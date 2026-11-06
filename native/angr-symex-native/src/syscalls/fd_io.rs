@@ -98,6 +98,14 @@ impl NativeSyscall for NativeLseekSyscall {
             )));
         }
 
+        if state
+            .file_system_ref()
+            .seeks_past_eof(fd as u32, offset, whence as u32)
+        {
+            return Err(SyscallError::Other(
+                "lseek past EOF falls back to Python".to_string(),
+            ));
+        }
         match state.file_system().seek(fd as u32, offset, whence as u32) {
             Some(new_pos) => Ok(SyscallOutcome::Continue { ret: new_pos }),
             // Bad whence or negative target — mirror NativeLseek returning -1.

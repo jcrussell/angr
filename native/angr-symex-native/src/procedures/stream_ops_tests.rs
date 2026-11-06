@@ -554,3 +554,25 @@ fn test_fseek_negative_offset_x86_sign_extends_and_rejects_negative_target() {
     assert_eq!(fseek(&mut state, -6, 2), Some(0xffff_ffff));
     assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 3);
 }
+
+/// angr-vmi2l.115: Python's `SimFileDescriptor.seek` fails past EOF where
+/// glibc succeeds, so fseek defers there.
+#[test]
+fn test_fseek_past_eof_falls_back() {
+    let mut state = setup_amd64_state();
+    state
+        .file_system()
+        .open_with_content("data".to_string(), FdFlags::ReadOnly, vec![0u8; 100]).expect("fd space is not exhausted in tests");
+    state.map_memory_data(0x20000, &vec![0u8; 0x1000], Permission::RWX);
+    state
+        .memory_store(0x20000 + 112, RustBV::concrete(3, 32))
+        .unwrap();
+    let fseek = |state: &mut RustSimState, offset: u128| {
+        NativeFseek.call(
+            state,
+            &[RustBV::concrete(0x20000, 64), RustBV::concrete(offset, 64), RustBV::concrete(0, 64)],
+        )
+    };
+    assert!(fseek(&mut state, 101).is_err());
+    assert_eq!(fseek(&mut state, 100).unwrap().unwrap().as_u64(), Some(0));
+}

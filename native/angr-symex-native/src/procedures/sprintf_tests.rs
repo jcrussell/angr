@@ -253,62 +253,46 @@ fn test_sprintf_negative_int() {
     assert_eq!(&out, b"-1");
 }
 
-#[test]
-fn test_snprintf_truncation() {
-    let mut state = setup_state();
-    state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
-
-    let result = NativeSnprintf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(6, 64), // size = 6
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
-
-    // Returns full would-have-been length
-    assert_eq!(result.unwrap().as_u64(), Some(11));
-    // But only wrote 5 chars + null
-    let mut out = Vec::new();
-    for i in 0..6u64 {
-        out.push(state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8);
-    }
-    assert_eq!(&out, b"hello\x00");
+/// `NativeSnprintf` over the format at 0x1000 with every vararg zero.
+fn snprintf_with_size(state: &mut RustSimState, size: u64) -> Result<Option<RustBV>, ProcedureError> {
+    let mut args = vec![
+        RustBV::concrete(0x2000, 64),
+        RustBV::concrete(u128::from(size), 64),
+        RustBV::concrete(0x1000, 64),
+    ];
+    args.resize(3 + MAX_VARARGS, RustBV::concrete(0, 64));
+    NativeSnprintf.call(state, &args)
 }
 
 #[test]
-fn test_snprintf_zero_size() {
+fn test_snprintf_truncation_falls_back() {
+    // Python's snprintf ignores `size` and writes the whole output, glibc
+    // truncates it: defer rather than pick one (angr-vmi2l.115). An output
+    // exactly `size` long has no room for its NUL, so it defers too.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+    assert!(snprintf_with_size(&mut state, 6).is_err());
+    assert!(snprintf_with_size(&mut state, 11).is_err());
+}
+
+#[test]
+fn test_snprintf_zero_size_falls_back() {
+    // Python returns 0 for `size == 0`, glibc the untruncated length.
     let mut state = setup_state();
     state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+    assert!(snprintf_with_size(&mut state, 0).is_err());
+}
 
-    let result = NativeSnprintf
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0, 64), // size = 0
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
-
-    // Returns full length, writes nothing
-    assert_eq!(result.unwrap().as_u64(), Some(5));
+#[test]
+fn test_snprintf_output_that_fits_stays_native() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
+    let ret = snprintf_with_size(&mut state, 6).unwrap().unwrap();
+    assert_eq!(ret.as_u64(), Some(5));
+    let out: Vec<u8> = (0..6u64)
+        .map(|i| state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8)
+        .collect();
+    assert_eq!(&out, b"hello\x00");
 }
 
 #[test]
@@ -1054,6 +1038,30 @@ fn test_sprintf_star_precision_string_consumes_arg() {
     // '%s' is the one conversion Python *does* read a precision vararg for,
     // truncating the string to it. Unchanged native behavior.
     assert_eq!(render(b"%.*s\x00", &[3, 0x3000]).unwrap(), b"abc");
+}
+
+#[test]
+fn test_sprintf_star_precision_past_nul_falls_back() {
+    // `_get_str_at` loads exactly `prec` bytes, NUL included, where glibc
+    // stops at the NUL; a zero precision is a zero-width load. Native keeps
+    // only the case the two agree on (angr-vmi2l.115).
+    assert_eq!(render(b"%.*s\x00", &[6, 0x3000]).unwrap(), b"abcdef");
+    assert!(render(b"%.*s\x00", &[7, 0x3000]).is_err());
+    assert!(render(b"%.*s\x00", &[0, 0x3000]).is_err());
+}
+
+#[test]
+fn test_sprintf_string_width_is_ignored() {
+    // `FormatString.replace` never pads `%s` (angr-vmi2l.115).
+    assert_eq!(render(b"[%8s]\x00", &[0x3000]).unwrap(), b"[abcdef]");
+}
+
+#[test]
+fn test_sprintf_char_zero_pad_uses_zeros() {
+    // `FormatString.replace` pads `%c` with `pad_chr`: "%03c" is "00A",
+    // where glibc gives "  A" (angr-vmi2l.115).
+    assert_eq!(render(b"%03c\x00", &[u64::from(b'A')]).unwrap(), b"00A");
+    assert_eq!(render(b"%3c\x00", &[u64::from(b'A')]).unwrap(), b"  A");
 }
 
 #[test]

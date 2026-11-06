@@ -228,3 +228,32 @@ DECREE needs no special key. The cost is that an upstream renumbering changes
 dispatch without a Rust edit. That is intended: angr is the source, and
 ``tests/engines/rust/test_native_syscall_parity.py`` checks every resolved
 row against angr's names.
+
+Native procedures
+-----------------
+
+**Native libc procs follow Python's procs, not glibc** (``angr-vmi2l.115``).
+Where angr's Python SimProcedure and glibc disagree, the native proc either
+mirrors Python or defers to it, even when glibc is the more faithful answer.
+Modelling glibc natively would make a result depend on which engine served the
+call. A fix to the Python proc upstream changes both engines at once, through
+the fallback. Each case and the side it takes:
+
+- ``%Ns``: mirrored. ``FormatString.replace`` never pads ``%s``.
+- ``%0Nc``: mirrored. It is padded with ``pad_chr``, so ``%03c`` gives
+  ``00A``.
+- ``%.*s``: native only when the string is at least ``prec`` bytes long.
+  Python loads exactly ``prec`` bytes, NUL included, so a shorter string or a
+  zero precision defers.
+- ``snprintf`` / ``__snprintf_chk``: native only when the output and its NUL
+  fit in ``size``. Python ignores ``size`` and returns 0 for ``size == 0``, so
+  truncation and ``size == 0`` defer. ``vsnprintf`` honours ``size`` in Python
+  too and is unchanged.
+- ``fgets``: mirrored. It returns the byte count, not ``s``.
+- ``lseek`` / ``fseek`` past EOF: deferred. ``SimFileDescriptor.seek``
+  fails there, and on a file of unknown size its answer is symbolic. The
+  ``FileSystem::seeks_past_eof`` doc has the rule.
+
+The tests named after each case in ``sprintf_tests.rs``,
+``fortify_printf_tests.rs``, ``fgets_tests.rs``, ``fileops_tests.rs`` and
+``stream_ops_tests.rs`` pin the side chosen.

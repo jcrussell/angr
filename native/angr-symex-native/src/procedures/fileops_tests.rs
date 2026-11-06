@@ -682,3 +682,22 @@ fn test_lseek_negative_set_amd64_fails_with_position_unchanged() {
     );
     assert_eq!(state.file_system_ref().fd_info(fd as u32).unwrap().1, 2);
 }
+
+/// angr-vmi2l.115: glibc lets lseek move past EOF, but Python's
+/// `SimFileDescriptor.seek` fails, so such a seek defers with the position
+/// unchanged. A seek to exactly EOF stays native.
+#[test]
+fn test_lseek_past_eof_falls_back() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let fd = state
+        .file_system()
+        .open_with_content("test.txt".to_string(), crate::state::FdFlags::ReadOnly, vec![0u8; 10])
+        .expect("fd space is not exhausted in tests");
+    let args = |offset: u128, whence: u128| {
+        [RustBV::concrete(u128::from(fd), 64), RustBV::concrete(offset, 64), RustBV::concrete(whence, 64)]
+    };
+    assert!(NativeLseek.call(&mut state, &args(11, 0)).is_err());
+    assert!(NativeLseek.call(&mut state, &args(1, 2)).is_err());
+    assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 0);
+    assert_eq!(lseek_ret(&mut state, u128::from(fd), 10, 0, 64), 10);
+}

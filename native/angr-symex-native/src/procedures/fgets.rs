@@ -201,7 +201,8 @@ crate::declare_proc! {
     /// ```
     ///
     /// Creates (size-1) symbolic bytes and a NUL terminator at the buffer.
-    /// Returns the buffer address on success.
+    /// Returns the number of bytes read, as Python's `fgets.py` does, where
+    /// glibc returns `s`.
     ///
     /// Resolves the backing fd via [`read_fileno_or_stdin`]: only stdin (fd 0) uses
     /// this native symbolic-stdin path. A non-stdin file stream falls back to
@@ -309,8 +310,8 @@ crate::declare_proc! {
         // Store NUL terminator
         state.memory_store(buf.wrapping_add(read_count), RustBV::concrete(0, 8))?;
 
-        // Return buffer address
-        Ok(Some(arch_word(state, buf)))
+        // Python's fgets returns the byte count, not `s` (angr-vmi2l.115).
+        Ok(Some(arch_word(state, read_count)))
     }
 }
 

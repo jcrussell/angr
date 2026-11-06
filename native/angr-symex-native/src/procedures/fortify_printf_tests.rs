@@ -56,37 +56,41 @@ fn test_sprintf_chk_drops_flag_slen_and_formats() {
     }
 }
 
-#[test]
-fn test_snprintf_chk_drops_flag_slen_respects_maxlen() {
-    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
+/// `__snprintf_chk` over "hello world" with the given `maxlen`; `flag` and
+/// `slen` are junk that must be dropped.
+fn snprintf_chk_hello(
+    state: &mut RustSimState,
+    maxlen: u128,
+) -> Result<Option<RustBV>, ProcedureError> {
     state.map_memory_data(0x1000, b"hello world\x00", Permission::RWX);
+    let mut args = vec![
+        RustBV::concrete(0x2000, 64),   // dest
+        RustBV::concrete(maxlen, 64),   // maxlen
+        RustBV::concrete(1, 64),        // flag (dropped)
+        RustBV::concrete(4, 64),        // slen (dropped)
+        RustBV::concrete(0x1000, 64),   // format
+    ];
+    args.resize(5 + MAX_VARARGS, RustBV::concrete(0, 64));
+    NativeSnprintfChk.call(state, &args)
+}
 
-    let result = NativeSnprintfChk
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64), // dest
-                RustBV::concrete(4, 64),      // maxlen: only 3 chars + NUL
-                RustBV::concrete(1, 64),      // flag (dropped)
-                RustBV::concrete(64, 64),     // slen (dropped)
-                RustBV::concrete(0x1000, 64), // format
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-            ],
-        )
-        .unwrap();
-
-    // snprintf returns the would-have-been length, not the truncated one.
+#[test]
+fn test_snprintf_chk_drops_flag_slen() {
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
+    let result = snprintf_chk_hello(&mut state, 64).unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(11));
-    // dest holds "hel\0" (maxlen-1 bytes + NUL).
-    for (i, &expected) in b"hel\x00".iter().enumerate() {
+    for (i, &expected) in b"hello world\x00".iter().enumerate() {
         let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
         assert_eq!(byte.as_u64().unwrap() as u8, expected);
     }
+}
+
+#[test]
+fn test_snprintf_chk_truncation_falls_back() {
+    // The forwarded snprintf defers when the output does not fit; Python's
+    // `__snprintf_chk` ignores `maxlen` too (angr-vmi2l.115).
+    let mut state = crate::procedures::test_util::amd64_state_with_regions(&[(0x2000, 0x1000)]);
+    assert!(snprintf_chk_hello(&mut state, 4).is_err());
 }
 
 /// Map a FILE struct at `file_ptr` whose AMD64 `_IO_FILE._fileno` field (byte
