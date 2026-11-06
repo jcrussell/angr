@@ -2161,9 +2161,10 @@ its live registers, memory and solver around each fire
 action's state is a ``RustInspectViewStateProxy``
 (``angr/exploration/rust_state_proxy.py``). Its ``addr``, ``regs``,
 ``memory.load``, the ``solver`` queries (``eval``, ``eval_upto``,
-``satisfiable``, ``min``, ``max``, ``is_true``, ``is_false``,
-``solution``, ``unique``, each against a fork of the state's solver, so
-symbolic expressions are solved under its path constraints) and
+``satisfiable``, ``min``, ``max``, ``solution``, ``unique``, each
+against a fork of the state's solver, so symbolic expressions are solved
+under its path constraints; ``is_true`` and ``is_false`` are structural,
+as under ``SimSolver``) and
 ``block()`` read the view; a write, ``solver.add`` included, raises. On a ``selfmodifying_code`` project ``block()`` lifts the bytes
 the view holds, as ``SimState.block`` reads code from state memory.
 

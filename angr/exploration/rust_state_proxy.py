@@ -627,9 +627,9 @@ class RustSolverProxyBase(_SolutionCountMixin):
         return self._cast_result(expr, result, cast_to)
 
     # ``extra_constraints`` is accepted for SimSolver signature compatibility
-    # on the three predicates below but deliberately not applied: each maps to
-    # a Rust ``is_true``/``is_false``/``solution`` call that takes no extras,
-    # and both proxies have always dropped it.
+    # on the three predicates below but not applied. ``is_true``/``is_false``
+    # are structural, so SimSolver ignores them there too; ``solution`` maps to
+    # a Rust call that takes no extras.
 
     def is_true(self, expr, extra_constraints=(), **kwargs):
         """Check if expression is definitely true."""
@@ -644,7 +644,11 @@ class RustSolverProxyBase(_SolutionCountMixin):
             # PrivilegedPagingMixin's ``is_true(page.perm_read)`` on the
             # fallback memory saw every page as unreadable (angr-mx00p.132.30).
             return expr.args[0] != 0
-        return self._query_ctx().is_true(expr)
+        # Structural, as SimSolver's is: an empty claripy solver simplifies
+        # and checks for a concrete true. The path constraints are not
+        # consulted, so is_true(x >= 5) under x >= 5 is False on both engines
+        # (angr-vmi2l.339).
+        return claripy.Solver().is_true(expr)
 
     def is_false(self, expr, extra_constraints=(), **kwargs):
         """Check if expression is definitely false."""
@@ -655,7 +659,8 @@ class RustSolverProxyBase(_SolutionCountMixin):
             return not bool(expr.args[0])
         if isinstance(expr, claripy.ast.BV) and expr.op == "BVV":
             return expr.args[0] == 0
-        return self._query_ctx().is_false(expr)
+        # Structural, as in is_true.
+        return claripy.Solver().is_false(expr)
 
     def solution(self, expr, value, extra_constraints=(), **kwargs):
         """Check if value is a valid solution for expr.

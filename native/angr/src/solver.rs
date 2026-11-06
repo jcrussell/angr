@@ -527,32 +527,6 @@ impl RustSolverContext {
         Ok(ctx.max(&bv, signed))
     }
 
-    /// Check if the given AST is definitely true.
-    pub fn is_true(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
-        if bv.width() != 1 {
-            return Ok(false);
-        }
-
-        // Definitely true if it can only be true
-        let can_be_false = ctx.can_be_false(&bv);
-        Ok(!can_be_false)
-    }
-
-    /// Check if the given AST is definitely false.
-    pub fn is_false(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<bool> {
-        let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
-        if bv.width() != 1 {
-            return Ok(false);
-        }
-
-        // Definitely false if it can only be false
-        let can_be_true = ctx.can_be_true(&bv);
-        Ok(!can_be_true)
-    }
-
     /// Check if a specific value is a valid solution for an AST.
     pub fn solution(&self, py: Python<'_>, ast: &Bound<'_, PyAny>, value: u128) -> PyResult<bool> {
         let ctx = self.i().ctx();

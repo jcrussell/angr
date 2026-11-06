@@ -160,6 +160,10 @@ def _solver_queries_seen(project, make_mgr):
                 # Neither is decided either way: Python answers these structurally.
                 "is_true": s.solver.is_true(rdi == 0x5004),
                 "is_false": s.solver.is_false(rdi == 0x5004),
+                # Implied (refuted) by the path constraints, still not decided
+                # structurally (angr-vmi2l.339).
+                "is_true_implied": s.solver.is_true(rdi >= 0x5000),
+                "is_false_refuted": s.solver.is_false(rdi < 0x5000),
                 "min": s.solver.min(rdi),
                 "max_extra": s.solver.max(rdi, extra_constraints=[rdi < 0x5010]),
                 "eval_extra": s.solver.eval(rdi, extra_constraints=[rdi == 0x5008]),
@@ -186,6 +190,32 @@ def test_a_bp_actions_solver_queries_run_against_the_stepping_state_like_python(
     assert expected[0]["satisfiable_extra"] is False
     assert expected[0]["max_extra"] == 0x500F
     assert _solver_queries_seen(project, lambda s: RustExplorationManager(project, [s])) == expected
+
+
+def _structural_predicates_after_step(project, make_mgr):
+    """is_true / is_false on a stashed state, under constraints that imply them."""
+    rdi = claripy.BVS("rdi", 64)
+    state = project.factory.blank_state(addr=project.entry)
+    state.regs.rdi = rdi
+    state.solver.add(rdi >= 0x5000, rdi < 0x6000)
+    mgr = make_mgr(state)
+    mgr.step()
+    s = mgr.active[0]
+    return (
+        s.solver.is_true(rdi >= 0x5000),
+        s.solver.is_false(rdi < 0x5000),
+        s.solver.is_true(rdi == rdi),
+        s.solver.is_false(rdi != rdi),
+    )
+
+
+def test_is_true_and_is_false_are_structural_out_of_step_like_python():
+    """The Rust context asked the solver, so a constraint-implied expr was
+    is_true on Rust only (angr-vmi2l.339)."""
+    project = angr.load_shellcode("mov dword ptr [rdi], 1\nspin: jmp spin", "amd64")
+    expected = _structural_predicates_after_step(project, lambda s: SimulationManager(project, [s]))
+    assert expected == (False, False, True, True)
+    assert _structural_predicates_after_step(project, lambda s: RustExplorationManager(project, [s])) == expected
 
 
 def test_a_bp_actions_solver_add_mid_step_refuses():

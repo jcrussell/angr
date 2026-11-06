@@ -57,6 +57,18 @@ audit) found no engine-side lever. They are tracked as bimodal
 (:doc:`rust_bimodal_variance`) and are not re-triaged as optimization
 candidates.
 
+**``solver.is_true`` / ``is_false`` stay structural** (``angr-vmi2l.339``).
+The Rust context answered them with a solver query (``!can_be_false``),
+which is the stronger and still sound answer: under ``x >= 5`` it called
+``is_true(x >= 5)`` true. ``SimSolver`` only simplifies the expression
+and checks for a concrete true, without consulting the path constraints.
+Callers (SimProcedures, BP actions, techniques) branch on the answer, so
+the stronger one sent the two engines down different paths. Parity won:
+the proxies call an empty ``claripy.Solver``'s ``is_true`` / ``is_false``,
+and the Rust pymethods were removed. A caller that wants the
+constraint-aware answer asks ``not solver.satisfiable(extra_constraints=[Not(e)])``
+on either engine.
+
 Memory and allocation
 ---------------------
 
