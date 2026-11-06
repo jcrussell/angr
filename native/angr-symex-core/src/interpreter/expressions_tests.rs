@@ -836,3 +836,32 @@ fn try_rust_memory_load_short_circuits_under_avoid_multivalued_reads() {
         "option on: the load must be fully unconstrained"
     );
 }
+
+/// angr-vmi2l.78: the native `x86g_use_seg_selector` serves only the
+/// protected-mode formula, so it defers to Python (which reads the state's
+/// CR0) until the manager says CR0.PE is set.
+#[test]
+fn eval_ccall_seg_selector_defers_unless_protected_mode() {
+    let callbacks = TestHost::default();
+    let ctx = SymContext::new_mock();
+    let mut interp = VEXInterpreter::new(VexArch::X86, &ctx);
+    let env = TypeEnv::new();
+    let cee = IRCallee {
+        name: "x86g_use_seg_selector".to_string(),
+        addr: 0,
+        mcx_mask: 0,
+    };
+    // ldt = gdt = 0, es = 0x1000, va = 0x10.
+    let args = [0u32, 0, 0x1000, 0x10].map(|v| IRExpr::Const(IRConst::U32(v)));
+    let res = interp.eval_ccall(&callbacks, &cee, IRType::I64, &args, &env);
+    assert!(
+        matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+        "seg selector with CR0.PE unknown must route to Python, got {res:?}"
+    );
+
+    interp.set_x86_protected_mode(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+    let linear = interp
+        .eval_ccall(&callbacks, &cee, IRType::I64, &args, &env)
+        .expect("protected-mode flat table is served natively");
+    assert_eq!(linear.as_u64(), Some(0x1000_0010));
+}

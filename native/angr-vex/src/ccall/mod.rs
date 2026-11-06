@@ -841,6 +841,11 @@ fn handle_x86_eflags_all(name: &str, args: &[SymBV], ret_bits: u32) -> Option<Sy
 /// chosen by tiBit) is zero, the common Linux-glibc-TLS case (e.g.
 /// mov %gs:0x14, %eax for stack canary reads). A real table lives in guest
 /// memory, which only the caller can read.
+///
+/// Protected mode only: with CR0.PE clear, Python returns `(sel << 4) + va`
+/// instead, and CR0 is not among the arguments. The interpreter defers the
+/// call while PE is not known set (`VEXInterpreter::set_x86_protected_mode`
+/// in angr-symex-core, angr-vmi2l.78).
 fn x86_use_seg_selector(ldt: u64, gdt: u64, selector: u64, va: u64) -> Option<u64> {
     // Bad selector: high bits set above 16. Match Python's bad() return.
     if selector & !0xFFFFu64 != 0 {

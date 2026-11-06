@@ -323,6 +323,15 @@ impl<'a> VEXInterpreter<'a> {
         // All-concrete thunks stay on the `u64` helpers, so the common case
         // builds no clarirs terms; the symbolic helpers take over when an
         // operand is symbolic or the concrete twin declines.
+        // The native helper serves only the protected-mode formula
+        // (angr-vmi2l.78); see `VEXInterpreter::set_x86_protected_mode`.
+        if cee.name == "x86g_use_seg_selector" && !self.x86_protected_mode() {
+            return Err(CbExecutionError::NeedPythonFallback(format!(
+                "x86g_use_seg_selector at 0x{:x}: CR0.PE not known set",
+                self.pc
+            )));
+        }
+
         let ret_bits = retty.bits();
         let concrete = arg_vals
             .iter()

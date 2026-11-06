@@ -24,6 +24,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use lru::LruCache;
 
@@ -49,6 +50,10 @@ pub(crate) struct ExecutionEnvironment {
     /// also prefer the native registry for hooks that land inside a NON-main
     /// loaded object. Python sets this explicitly on every manager.
     pub(crate) prefer_native_library_hooks: bool,
+    /// CR0.PE known set; handed to every interpreter through
+    /// `VEXInterpreter::set_x86_protected_mode`. Python sets it on every x86
+    /// manager.
+    pub(crate) x86_protected_mode: Arc<AtomicBool>,
 }
 
 /// Native-dispatch gate for a hooked PC.
@@ -115,6 +120,7 @@ impl ExecutionEnvironment {
             main_object_range: None,
             loader_object_ranges: Arc::from([]),
             prefer_native_library_hooks: true,
+            x86_protected_mode: Arc::new(AtomicBool::new(false)),
         }
     }
 }

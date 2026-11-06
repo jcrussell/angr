@@ -1517,6 +1517,10 @@ class RustExplorationManager(
             if settings is not None:
                 self._rust_mgr.set_native_lift(project.arch, **settings)
 
+        # The native x86g_use_seg_selector serves only protected mode; a
+        # state whose globals clear CR0.PE turns it off (_note_x86_cr0).
+        self._rust_mgr.set_x86_protected_mode(bool(project.arch.vex_archinfo.get("x86_cr0", 0) & 1))
+
         # Configure exploration strategy. Reuses the post-init setter so the
         # validation and FFI-call shape live in one place. Always invoke so a
         # bad value raises ValueError eagerly during construction; the
@@ -4526,6 +4530,7 @@ class RustExplorationManager(
             try:
                 if "globals" in getattr(angr_state, "plugins", {}):
                     self._py_state_globals[actual_state_id] = dict(angr_state.globals)
+                    self._note_x86_cr0(angr_state.globals)
             except MemoryError:
                 raise
             except Exception as e:
@@ -5960,6 +5965,15 @@ class RustExplorationManager(
             frame = dict(state.globals)
             glb.clear()
             glb.update(frame)
+            self._note_x86_cr0(frame)
+
+    def _note_x86_cr0(self, glb) -> None:
+        """Turn the native ``x86g_use_seg_selector`` off for good once a state's
+        ``globals["x86_cr0"]`` may clear CR0.PE, which ccall.py reads ahead of
+        ``arch.vex_archinfo`` (angr-vmi2l.78)."""
+        cr0 = glb.get("x86_cr0")
+        if cr0 is not None and not (isinstance(cr0, int) and cr0 & 1):
+            self._rust_mgr.set_x86_protected_mode(False)
 
     def _reconcile_mirror_options(self) -> None:
         """Take the options a stash mirror gained or lost since its export into its store."""

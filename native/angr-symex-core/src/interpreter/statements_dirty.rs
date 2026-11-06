@@ -101,6 +101,13 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(StmtResult::Continue);
         }
 
+        // The new CR0 lands in Python's `state.globals`, out of sight of the
+        // native `x86g_use_seg_selector` gate, so close it for good.
+        if dirty.cee.name == "x86g_dirtyhelper_write_cr0" {
+            self.x86_protected_mode
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
         // A helper with a memory effect does its own loads and stores. The
         // Python `dirty_call` callback runs it against the host's SimState,
         // not `rust_memory`, so its stores would be lost and its loads stale

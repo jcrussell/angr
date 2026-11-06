@@ -136,6 +136,18 @@ impl RustExplorationManager {
     pub fn set_prefer_native_library_hooks(&mut self, enabled: bool) {
         self.environment.prefer_native_library_hooks = enabled;
     }
+
+    /// Whether CR0.PE is set for every state, so the native
+    /// `x86g_use_seg_selector` may serve the protected-mode formula
+    /// (angr-vmi2l.78). Off by default, which defers the ccall to Python.
+    /// Stored into the flag the interpreters share, so a run in flight sees
+    /// it; see `VEXInterpreter::set_x86_protected_mode`.
+    #[angr_symex_macros::steady_guarded]
+    pub fn set_x86_protected_mode(&mut self, enabled: bool) {
+        self.environment
+            .x86_protected_mode
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 test_submod!("manager_methods_hooks_tests.rs" => tests);

@@ -389,3 +389,37 @@ fn symbolic_dirty_result_is_the_hosts_value() {
         "a wrong-width symbolic result must route to Python"
     );
 }
+
+/// angr-vmi2l.78: a `write_cr0` can clear CR0.PE in Python's globals, so it
+/// closes the native `x86g_use_seg_selector` gate on every interpreter that
+/// shares the flag, the manager's included.
+#[test]
+fn write_cr0_closes_the_seg_selector_gate() {
+    use angr_vex::ir::{DirtyFx, IRCallee, IRDirty};
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    let shared = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    interp.set_x86_protected_mode(std::sync::Arc::clone(&shared));
+    let irsb = make_irsb_with_temps(0x3000, &[IRType::I32]);
+    let dirty = IRDirty {
+        cee: IRCallee {
+            name: "x86g_dirtyhelper_write_cr0".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: None,
+        tmp: None,
+        mFx: DirtyFx::None,
+        mAddr: None,
+        mSize: 0,
+        nFxState: 0,
+        args: vec![IRExpr::Const(IRConst::U32(0))],
+    };
+    with_test_host(|cb| {
+        // No dirty_call callback, so the block routes to Python; the gate
+        // must close either way.
+        drop(interp.execute_stmt_with_callbacks(cb, &IRStmt::Dirty(dirty), &irsb));
+    });
+    assert!(!interp.x86_protected_mode());
+    assert!(!shared.load(std::sync::atomic::Ordering::Relaxed));
+}

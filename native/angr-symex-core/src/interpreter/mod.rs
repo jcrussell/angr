@@ -29,6 +29,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use lru::LruCache;
@@ -219,6 +220,12 @@ pub struct VEXInterpreter<'a> {
     /// `RustExplorationManager.set_native_lift` (angr-z087y). Shared, and
     /// called only on a cache miss (angr-mx00p.51.7).
     native_lifter: Option<Arc<dyn angr_vex::VEXLifter>>,
+    /// Whether CR0.PE is known set, so `x86g_use_seg_selector` may take its
+    /// native flat-table path; see [`Self::set_x86_protected_mode`]. Shared
+    /// with the manager and every sibling interpreter, so clearing it on a
+    /// `write_cr0` reaches them all. `false` by default: the ccall then
+    /// defers to Python, which reads the state's own CR0 (angr-vmi2l.78).
+    x86_protected_mode: Arc<AtomicBool>,
     /// Block cache (shared across runs) using Arc for O(1) cloning.
     block_cache: LruCache<u64, Arc<IRSB>>,
     /// Deferred forks collected during execution.
@@ -427,6 +434,7 @@ impl<'a> VEXInterpreter<'a> {
             skip_hook_once: None,
             arch,
             native_lifter: None,
+            x86_protected_mode: Arc::new(AtomicBool::new(false)),
             // Bounded default: this is the interpreter's own cache when it runs
             // standalone (engine.rs single-block exec, tests). It MUST stay
             // bounded/clone-safe because `fork()` clones it and lru's `Clone`
@@ -1031,6 +1039,7 @@ impl<'a> VEXInterpreter<'a> {
             skip_hook_once: self.skip_hook_once,
             arch: self.arch,
             native_lifter: self.native_lifter.clone(),
+            x86_protected_mode: Arc::clone(&self.x86_protected_mode),
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             deferred_forks: Vec::new(),            // Fresh deferred forks for fork
             deferred_fork_this_step: false,
@@ -1083,6 +1092,24 @@ impl<'a> VEXInterpreter<'a> {
     /// (missing/symbolic bytes, or a libVEX error).
     pub fn set_native_lifter(&mut self, lifter: Option<Arc<dyn angr_vex::VEXLifter>>) {
         self.native_lifter = lifter;
+    }
+
+    /// Share the manager's CR0.PE flag with this interpreter.
+    ///
+    /// Python's `x86g_use_seg_selector` linearizes `(sel << 4) + va` when the
+    /// state's CR0.PE is clear (`state.globals["x86_cr0"]`, else
+    /// `arch.vex_archinfo["x86_cr0"]`). Neither is visible here, so the
+    /// native helper, which only serves the protected-mode formula, runs
+    /// only while `flag` is set. A `x86g_dirtyhelper_write_cr0` clears it for
+    /// good, since the new CR0 lands in Python's globals.
+    pub fn set_x86_protected_mode(&mut self, flag: Arc<AtomicBool>) {
+        self.x86_protected_mode = flag;
+    }
+
+    /// Whether the native `x86g_use_seg_selector` may run; see
+    /// [`Self::set_x86_protected_mode`].
+    pub(super) fn x86_protected_mode(&self) -> bool {
+        self.x86_protected_mode.load(Ordering::Relaxed)
     }
 
     /// Set the Rust memory instance.
