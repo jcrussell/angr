@@ -5,6 +5,8 @@ data, mem[a])`` at every candidate, mapping each fresh page it touches. Rust
 used to skip candidates on pages neither side held and to hand sets over its
 ITE cap to the host's full store, which a proxy-backed state dropped. A CAS at
 a symbolic address took the same host store even for a single candidate.
+A candidate's else-leaf is the concrete store the same block made there
+before, not a fresh ``mem_`` filler (angr-vmi2l.194).
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import pytest
 
 import angr
+from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
 
 LOAD = 0x400000
@@ -66,3 +69,25 @@ def test_symbolic_write_addresses_store_reaches_every_candidate(engine, mask, ex
 @pytest.mark.parametrize("engine", ["py", "rust"])
 def test_cas_at_symbolic_address_lands(engine):
     assert _reaches_taken(engine, CAS_PROGRAM, set())
+
+
+# mov byte [rsp-0x10], 0x11; [jmp +0;] and edi, 4; mov byte [rsp+rdi-0x10], 0xaa; jmp $
+_PRIOR_STORE = b"\xc6\x44\x24\xf0\x11"
+_CANDIDATE_STORE = b"\x83\xe7\x04\xc6\x44\x3c\xf0\xaa\xeb\xfe"
+
+
+@pytest.mark.parametrize("engine", ["py", "rust"])
+@pytest.mark.parametrize("split", [False, True], ids=["same_block", "split_block"])
+def test_candidate_keeps_an_earlier_concrete_store(engine, split):
+    code = _PRIOR_STORE + (b"\xeb\x00" if split else b"") + _CANDIDATE_STORE
+    proj = angr.load_shellcode(code, arch="amd64", load_address=LOAD)
+    state = proj.factory.blank_state(addr=LOAD, add_options={angr.options.SYMBOLIC_WRITE_ADDRESSES})
+    y = claripy.BVS("y", 64)
+    state.regs.rdi = y
+    cell = state.solver.eval(state.regs.rsp) - 0x10
+    mgr = RustExplorationManager(proj, [state]) if engine == "rust" else proj.factory.simulation_manager(state)
+    mgr.explore(find=LOAD + len(code) - 2, n=10)
+    (found,) = mgr.found
+    mem = found.memory.load(cell, 1)
+    assert sorted(found.solver.eval_upto(mem, 4, extra_constraints=[y & 4 != 0])) == [0x11]
+    assert sorted(found.solver.eval_upto(mem, 4, extra_constraints=[y & 4 == 0])) == [0xAA]
