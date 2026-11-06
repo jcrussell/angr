@@ -58,7 +58,10 @@ Why binding pyvex's libVEX is parity-safe
 Native lift stands in for the callback only where the callback would be a
 plain libVEX lift. ``_native_lift_settings`` in ``rust_manager.py`` leaves it
 off when libVEX is not the arch's first pyvex lifter, a pyvex postprocessor is
-registered, the engine overrides ``lift_vex``, or ``kb.patches`` is non-empty (``angr-mx00p.46``).
+registered, or the engine overrides ``lift_vex``. ``kb.patches`` do not turn it
+off: Python lifts a patched project's code from the stepping state's memory, so
+each seeded state starts with the patched pages dirtied and lifts them from its
+own bytes (``angr-vmi2l.75``).
 Per block, ``try_native_lift`` falls back to the callback
 for a Thumb address and for a block libVEX ends in ``Ijk_NoDecode``: pyvex
 hands the rest of such a block to its per-arch Python lifters, the

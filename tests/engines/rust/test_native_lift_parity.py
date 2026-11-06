@@ -158,18 +158,58 @@ def test_native_lift_serves_opt_level_override():
     assert stats["native_lift_count"] >= 1 and stats["native_lift_fallback_count"] == 0
 
 
-def test_native_lift_off_with_patches():
-    """``lift_vex`` lifts patched bytes, which native lift does not read, so
-    native lift must stay off rather than run the unpatched instruction
-    (angr-mx00p.46)."""
+_PATCH_CODE = bytes.fromhex("4831c04883c001ebfe")  # xor rax,rax ; add rax,1 ; jmp $
+
+
+def _patched_project():
     import angr
 
-    code = bytes.fromhex("4831c04883c001ebfe")
-    project = angr.load_shellcode(code, arch="amd64", load_address=0x400000)
+    project = angr.load_shellcode(_PATCH_CODE, arch="amd64", load_address=0x400000)
     project.kb.patches.add_patch(0x400003, bytes.fromhex("4883c002"))  # add rax,2
-    mgr, stats = _explore(project, True, find=0x400007)
-    assert stats.get("native_lift_count", 0) == 0
-    assert mgr.found[0].solver.eval(mgr.found[0].regs.rax) == 2
+    return project
+
+
+def _patched_state(project, patched):
+    if not patched:
+        return project.factory.blank_state(addr=0x400000)
+    state = project.kb.patches.patched_entry_state.copy()
+    state.regs.ip = 0x400000
+    return state
+
+
+@pytest.mark.parametrize("use_native_lift", [False, True])
+@pytest.mark.parametrize("patched", [False, True])
+def test_kb_patches_lift_from_state_memory(use_native_lift, patched):
+    """With ``kb.patches`` set, Python's ``VEXLifter._load_bytes`` lifts from the
+    stepping state's memory: a ``blank_state`` runs the loaded ``add rax,1``
+    and a ``patched_entry_state`` the patched ``add rax,2``. The Rust engine
+    must do the same on both lift paths (angr-vmi2l.75)."""
+    from angr.exploration.rust_manager import RustExplorationManager
+
+    expected = 2 if patched else 1
+    project = _patched_project()
+    sm = project.factory.simulation_manager(_patched_state(project, patched))
+    sm.explore(find=0x400007, n=10)
+    assert [s.solver.eval(s.regs.rax) for s in sm.found] == [expected]
+
+    project = _patched_project()
+    mgr = RustExplorationManager(project, [_patched_state(project, patched)], use_native_lift=use_native_lift)
+    mgr.explore(find=0x400007, max_steps=10)
+    assert [s.solver.eval(s.regs.rax) for s in mgr.found] == [expected]
+
+
+@pytest.mark.parametrize("use_native_lift", [False, True])
+def test_kb_patches_added_after_construction(use_native_lift):
+    """A patch added after the manager is built leaves the seeded blank state's
+    memory unpatched, so it still runs ``add rax,1``, as Python does."""
+    import angr
+    from angr.exploration.rust_manager import RustExplorationManager
+
+    project = angr.load_shellcode(_PATCH_CODE, arch="amd64", load_address=0x400000)
+    mgr = RustExplorationManager(project, [project.factory.blank_state(addr=0x400000)], use_native_lift=use_native_lift)
+    project.kb.patches.add_patch(0x400003, bytes.fromhex("4883c002"))
+    mgr.explore(find=0x400007, max_steps=10)
+    assert [s.solver.eval(s.regs.rax) for s in mgr.found] == [1]
 
 
 def test_native_lift_off_with_postprocessor(monkeypatch):

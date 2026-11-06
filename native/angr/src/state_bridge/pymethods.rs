@@ -334,6 +334,16 @@ impl PyRustSimState {
         self.inner.file_system().add_symlink(link, target);
     }
 
+    /// Mark the code pages under `[addr, addr + size)` as dirtied, so their
+    /// lifts read this state's memory and skip the shared IRSB cache (see the
+    /// `RustSimState::dirtied_code_pages` field doc).
+    pub fn mark_code_pages_dirtied(&mut self, addr: u64, size: u64) {
+        let mut pages = (**self.inner.dirtied_code_pages()).clone();
+        pages.extend(crate::memory::PageIndex::range_covering(addr, size));
+        self.inner
+            .set_dirtied_code_pages(std::sync::Arc::new(pages));
+    }
+
     /// Get the history (basic block addresses).
     pub fn history(&self) -> Vec<u64> {
         self.inner.history().iter().copied().collect()

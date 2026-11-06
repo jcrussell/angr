@@ -477,7 +477,9 @@ pub struct RustSimState {
     /// interpreter skips the manager-wide IRSB cache for a block whose lift
     /// window touches one, so one state's patched code is never served to a
     /// sibling, nor a sibling's clean block to it (angr-vmi2l.163). Arc-shared
-    /// on fork; an over-wide set only costs re-lifts.
+    /// on fork; an over-wide set only costs re-lifts. A seeded state also
+    /// starts with the pages of every `kb.patches` patch, since Python lifts
+    /// a patched project's code from the stepping state (angr-vmi2l.75).
     #[merge_policy = "union"]
     #[merge_manual = "set union over a PageIndex set, not a bool OR"]
     dirtied_code_pages: Arc<rustc_hash::FxHashSet<crate::memory::PageIndex>>,

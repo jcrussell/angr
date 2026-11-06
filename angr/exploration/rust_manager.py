@@ -103,6 +103,7 @@ from pyvex.errors import PyVEXError
 
 from angr import claripy
 from angr.claripy.errors import ClaripyError
+from angr.engines.vex.lifter import VEX_IRSB_MAX_SIZE
 from angr.errors import (
     AngrError,
     AngrSyscallError,
@@ -1137,10 +1138,8 @@ def _native_lift_settings(project) -> dict | None:
     lift only stands in for it when that would be a plain libVEX lift with the
     engine's settings: libVEX is the arch's first pyvex lifter and no
     postprocessor rewrites its output, the engine keeps the stock
-    ``VEXLifter.lift_vex``, and no ``kb.patches`` are applied (``lift_vex``
-    lifts patched bytes from a patched state; native lift reads the loaded
-    image, angr-mx00p.46). Patches added after the manager is built are not
-    seen.
+    ``VEXLifter.lift_vex``. ``kb.patches`` keep it on: a stepped state lifts
+    its own memory, which native lift reads (angr-vmi2l.75).
     """
     from pyvex.lifting import LibVEXLifter
     from pyvex.lifting.lift_function import lifters, postprocessors
@@ -1153,8 +1152,6 @@ def _native_lift_settings(project) -> dict | None:
         return None
     engine = project.factory.default_engine
     if not isinstance(engine, VEXLifter) or type(engine).lift_vex is not VEXLifter.lift_vex:
-        return None
-    if project.kb.patches.items():
         return None
     return {
         "default_opt_level": engine._default_opt_level,
@@ -1329,9 +1326,9 @@ class RustExplorationManager(
             use_native_lift: If True (default), lift cold blocks in-process
                 through the native libVEX seam instead of the pyvex Python
                 callback. It stays off when the callback would not be a
-                plain libVEX lift (``kb.patches``, a custom pyvex lifter or
-                ``lift_vex``). Blocks whose bytes are not fully concrete in
-                the Rust memory sidecar, Thumb blocks, and blocks libVEX
+                plain libVEX lift (a custom pyvex lifter or ``lift_vex``).
+                Blocks whose bytes are not fully concrete in the Rust memory
+                sidecar, Thumb blocks, and blocks libVEX
                 cannot fully decode fall back to the callback with an
                 identical IRSB, so setting this False only costs speed,
                 never fidelity. See docs/advanced-topics/rust_libvex_ffi.rst.
@@ -2316,6 +2313,14 @@ class RustExplorationManager(
                     # binary buffer is stale; lift the fresh bytes Rust sent
                     # instead.
                     kwargs["byte_string"] = dirty_bytes
+                elif self._project.kb.patches.items():
+                    # A stateless lift with kb.patches set reads the patched
+                    # entry state, but a stepped state lifts its own memory
+                    # (VEXLifter._load_bytes). An unstored page of state
+                    # memory is the loaded image; a patched state's pages
+                    # arrive as dirty_bytes (angr-vmi2l.75).
+                    with contextlib.suppress(KeyError):
+                        kwargs["byte_string"] = self._project.loader.memory.load(addr, VEX_IRSB_MAX_SIZE)
                 block = self._project.factory.block(addr, **kwargs)
                 irsb = block.vex
                 if self._inspect_breakpoints.get("vex_lift"):
@@ -4410,6 +4415,12 @@ class RustExplorationManager(
                 # cat-(b) FALLBACK WITH LOSS: symlink push failed; native
                 # readlink for this link returns -1 (the pre-6.2 behavior).
                 l.debug("symlink seed push failed for %r: %s", link, e)
+
+        # Python lifts a patched project's code from the stepping state's
+        # memory (VEXLifter._load_bytes); a dirtied page makes the Rust lift
+        # read it too (angr-vmi2l.75).
+        for patch in self._project.kb.patches.values():
+            rust_state.mark_code_pages_dirtied(patch.addr, len(patch))
 
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
