@@ -244,3 +244,42 @@ fn test_merge_three_state_overlay_union_and_tiebreak() {
         "stdin_symbols must union across branches, dedup by name, self-order-first"
     );
 }
+
+// angr-vmi2l.199: `merge` keeps one arm's fd 0-2, so the manager refuses a
+// group whose std streams differ. Equal streams merge; a divergent stdout
+// (content or a write split), stderr, or stdin read is reported, naming the
+// first arm that differs.
+#[test]
+fn std_streams_diverge_reports_the_first_differing_stream() {
+    let mut a = RustSimState::new("amd64").unwrap();
+    let mut b = RustSimState::new("amd64").unwrap();
+    assert!(a.write_stdout(b"same"));
+    assert!(b.write_stdout(b"same"));
+    a.record_stdin_symbol("stdin_0".to_string(), 8);
+    b.record_stdin_symbol("stdin_0".to_string(), 8);
+    assert_eq!(a.std_streams_diverge(&[&b]), None);
+
+    let mut stdout_c = b.clone_for_merge();
+    assert!(stdout_c.write_stdout(b"!"));
+    let why = a.std_streams_diverge(&[&b, &stdout_c]).expect("stdout differs");
+    assert!(why.contains("fd 1") && why.contains("branch 2"), "{why}");
+
+    // Same bytes written as one write vs two: Python's SimPackets counts
+    // packets, so the split alone is a divergence.
+    let mut split_a = RustSimState::new("amd64").unwrap();
+    let mut split_b = RustSimState::new("amd64").unwrap();
+    assert!(split_a.write_stdout(b"ab"));
+    assert!(split_b.write_stdout(b"a"));
+    assert!(split_b.write_stdout(b"b"));
+    assert!(split_a.std_streams_diverge(&[&split_b]).is_some());
+
+    let mut stderr_d = b.clone_for_merge();
+    assert!(stderr_d.write_fd(2, b"err"));
+    let why = a.std_streams_diverge(&[&stderr_d]).expect("stderr differs");
+    assert!(why.contains("fd 2"), "{why}");
+
+    let mut stdin_e = b.clone_for_merge();
+    stdin_e.record_stdin_symbol("stdin_1".to_string(), 8);
+    let why = a.std_streams_diverge(&[&stdin_e]).expect("stdin differs");
+    assert!(why.contains("stdin"), "{why}");
+}

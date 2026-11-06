@@ -112,6 +112,7 @@ from angr.errors import (
     SimIRSBNoDecodeError,
     SimMemoryAddressError,
     SimMemoryError,
+    SimMergeError,
     SimOperationError,
     SimSegfaultException,
     SimSolverError,
@@ -7291,7 +7292,7 @@ class RustExplorationManager(
             "project.factory.simgr(...), whose copy() works on the Rust backend."
         )
 
-    def _merge_native(self, stash: str, state_ids: list[int]) -> bool:
+    def _merge_native(self, stash: str, state_ids: list[int]) -> list[int] | None:
         """Merge same-pc native states in-Rust, no export round trip (M3-4).
 
         Groups ``state_ids`` by program counter (the default ``merge_key``,
@@ -7306,27 +7307,34 @@ class RustExplorationManager(
         symbolic-file paths directly (no ``_export_fs_files_to_rust`` re-arms
         them). ``states_merged_native`` is surfaced Rust-side by ``merge_states``.
 
+        A group whose stdin, stdout or stderr differ across members is left
+        for the Python merge (``merge_refusal``, angr-vmi2l.199): the native
+        merge keeps one member's streams, while ``SimPackets.merge``
+        ITE-merges them or raises ``SimMergeError``.
+
         Returns:
-            True if the native path handled the merge (caller returns), False if
-            a pc lookup failed and the caller should fall back to the Python
-            export path.
+            The ids of the groups left for the Python export path (empty when
+            the native path handled every group), or None if a pc lookup
+            failed and the caller should merge every state in Python.
         """
         # Group by pc; a missing pc means we cannot group natively -> fall back.
         groups: dict[int, list[int]] = {}
         for sid in state_ids:
             pc = self._rust_mgr.get_state_pc_by_id(sid)
             if pc is None:
-                return False
+                return None
             groups.setdefault(pc, []).append(sid)
 
-        # Nothing reconverges -> no merge needed, but we still handled it.
-        if all(len(g) <= 1 for g in groups.values()):
-            return True
-
         merged_any = False
+        left_for_python: list[int] = []
         for group in groups.values():
             if len(group) <= 1:
                 # Singleton stays in the stash untouched.
+                continue
+            refusal = self._rust_mgr.merge_refusal(group)
+            if refusal is not None:
+                l.debug("merging group %s in Python: %s", group, refusal)
+                left_for_python.extend(group)
                 continue
             try:
                 self._rust_mgr.merge_states(group, stash)
@@ -7347,7 +7355,7 @@ class RustExplorationManager(
             # cat-(a) EXPECTED CONTROL FLOW: intermediate stash never created.
             with contextlib.suppress(RuntimeError, KeyError):
                 self._rust_mgr.clear_stash("_merge_drop")
-        return True
+        return left_for_python
 
     def merge(
         self, stash: str = "active", merge_func=None, merge_key=None, prune=True, **kwargs
@@ -7368,8 +7376,12 @@ class RustExplorationManager(
         # merge_states() and skip the export -> Python state.merge() ->
         # re-import round trip entirely. A custom merge_func or merge_key needs
         # exported SimStates, so those fall through to the Python path below.
-        if merge_func is None and merge_key is None and self._merge_native(stash, state_ids):
-            return self
+        if merge_func is None and merge_key is None:
+            left_for_python = self._merge_native(stash, state_ids)
+            if left_for_python is not None:
+                if not left_for_python:
+                    return self
+                state_ids = left_for_python
 
         # Export all states to Python SimStates for merging
         try:
@@ -7448,7 +7460,7 @@ class RustExplorationManager(
                         others = group[1:]
                         m, _, _ = base.merge(*others)
                         merged.append((m, group_demoted))
-                    except (AttributeError, TypeError, ValueError):
+                    except (AttributeError, TypeError, ValueError, SimMergeError, ClaripyError):
                         # cat-(b) FALLBACK WITH LOSS: built-in state.merge() failed;
                         # keep the group unmerged. Already warns.
                         l.warning("State merge failed for group at %s, keeping unmerged", key)

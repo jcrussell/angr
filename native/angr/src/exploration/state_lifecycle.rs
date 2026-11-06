@@ -171,6 +171,24 @@ impl RustExplorationManager {
         Ok(new_id)
     }
 
+    /// Why `_merge_states` refuses `state_ids`, or `None` when it would
+    /// merge them: see `RustSimState::std_streams_diverge`. Errors on an
+    /// unknown id, as `_merge_states` does.
+    pub(crate) fn _merge_refusal(&self, state_ids: &[u64]) -> PyResult<Option<String>> {
+        let states = state_ids
+            .iter()
+            .map(|&sid| {
+                self.sm
+                    .find_state(sid)
+                    .ok_or_else(|| PyValueError::new_err(format!("state {sid} not found")))
+            })
+            .collect::<PyResult<Vec<&RustSimState>>>()?;
+        Ok(match states.split_first() {
+            Some((first, others)) => first.std_streams_diverge(others),
+            None => None,
+        })
+    }
+
     pub(crate) fn _merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
         if state_ids.len() < 2 {
             return Err(PyValueError::new_err(
@@ -193,6 +211,12 @@ impl RustExplorationManager {
                 Some(state) => states.push(state.clone_for_merge()),
                 None => return Err(PyValueError::new_err(format!("state {sid} not found"))),
             }
+        }
+
+        if let Some(why) = self._merge_refusal(&state_ids)? {
+            return Err(PyValueError::new_err(format!(
+                "merge_states refused: {why}; merge these states in Python"
+            )));
         }
 
         self.fetch_host_pages_for_merge(&mut states);

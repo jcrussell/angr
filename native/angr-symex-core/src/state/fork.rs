@@ -451,6 +451,55 @@ impl RustSimState {
         forked
     }
 
+    /// Why `others` cannot be merged with this state without losing an arm's
+    /// stdin, stdout or stderr, or `None` when the arms agree on all three.
+    ///
+    /// [`merge`](Self::merge) keeps one arm's fd table, so when the arms
+    /// wrote different bytes to fd 1 or 2, or read different stdin, the
+    /// merged state's `posix.dumps` would answer with that arm's streams
+    /// under every merge condition. Python's `SimPackets.merge` raises
+    /// `SimMergeError` on a packet-count mismatch and ITE-merges otherwise,
+    /// so a caller that gets `Some` hands the group to the Python merge
+    /// instead (angr-vmi2l.199). Compared per arm: fd 0-2's
+    /// [`fd_info`](FileSystem::fd_info), content and write ends, and the
+    /// stdin symbols and read lengths.
+    pub fn std_streams_diverge(&self, others: &[&RustSimState]) -> Option<String> {
+        type FdStream<'a> = (
+            Option<(&'a str, u64, u32, usize, bool)>,
+            &'a [u8],
+            &'a [usize],
+        );
+        type Streams<'a> = (
+            Vec<FdStream<'a>>,
+            &'a [(String, u32)],
+            &'a [StdinReadLength],
+        );
+        fn streams(s: &RustSimState) -> Streams<'_> {
+            let fs = s.file_system_ref();
+            let fds: Vec<_> = (0..=2u32)
+                .map(|fd| (fs.fd_info(fd), fs.fd_content(fd), fs.fd_write_ends(fd)))
+                .collect();
+            (fds, s.stdin_symbols(), &s.stdin_read_lengths)
+        }
+        let base = streams(self);
+        others.iter().enumerate().find_map(|(i, other)| {
+            let (fds, syms, reads) = streams(other);
+            if let Some(fd) = (0..=2usize).find(|&fd| fds[fd] != base.0[fd]) {
+                Some(format!(
+                    "fd {fd} differs between branch 0 and branch {}",
+                    i + 1
+                ))
+            } else if syms != base.1 || reads != base.2 {
+                Some(format!(
+                    "stdin reads differ between branch 0 and branch {}",
+                    i + 1
+                ))
+            } else {
+                None
+            }
+        })
+    }
+
     /// Merge this state with one or more other states using symbolic merge conditions.
     ///
     /// Creates a new merged state where registers and memory that differ between
@@ -491,7 +540,10 @@ impl RustSimState {
         }
 
         // Merge the FileSystem by the longest-stdout heuristic (angr-ph300.75).
-        // This is a *documented stdout-only* merge contract: the merged state
+        // The manager's merge refuses arms whose std streams differ
+        // (`std_streams_diverge`, angr-vmi2l.199), so there the heuristic only
+        // picks among arms with identical fd 0-2. For a direct caller this is a
+        // *documented stdout-only* merge contract: the merged state
         // keeps exactly one branch's fd table, file offsets, writes, and
         // symbolic-content registry — a true per-file merge would need
         // byte-level ITE on every file's content keyed by the merge condition

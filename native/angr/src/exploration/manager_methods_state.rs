@@ -37,7 +37,8 @@ impl RustExplorationManager {
     /// Registers and memory that differ between states become ITE expressions.
     /// The merged state is placed into `dest_stash`.
     ///
-    /// Returns the merged state's ID.
+    /// Returns the merged state's ID. Raises `ValueError` without merging
+    /// when `merge_refusal` gives a reason.
     /// See `state_lifecycle::_merge_states` for the body.
     #[pyo3(signature = (state_ids, dest_stash="active"))]
     #[angr_symex_macros::steady_guard_exempt(
@@ -48,6 +49,13 @@ impl RustExplorationManager {
     )]
     pub fn merge_states(&mut self, state_ids: Vec<u64>, dest_stash: &str) -> PyResult<u64> {
         self._merge_states(state_ids, dest_stash)
+    }
+
+    /// Why `merge_states` would refuse `state_ids` (their stdin, stdout or
+    /// stderr differ, angr-vmi2l.199), or `None` when it would merge them.
+    /// See `state_lifecycle::_merge_refusal` for the body.
+    pub fn merge_refusal(&self, state_ids: Vec<u64>) -> PyResult<Option<String>> {
+        self._merge_refusal(&state_ids)
     }
 
     /// Fork an existing state (including the pending callback state) and add
