@@ -1204,6 +1204,38 @@ class TestRustExplorationPython:
         assert results[0] == results[1]
         assert results[0] == [0, ("w", 8, 4), 7, 17]
 
+    def test_keyword_filtered_breakpoint_fires_like_python(self):
+        """A keyword filter's ``BP.check`` calls ``state.solver.unique``; it raised and skipped later BPs (angr-vmi2l.204)."""
+        project = angr.load_shellcode(
+            "mov rax, 0x1122334455667788\nmov qword ptr [rsp-8], rax\nmov dword ptr [rsp-16], eax\n"
+            "mov byte ptr [rsp-20], al\nhere: jmp here",
+            "amd64",
+        )
+        results = []
+        for make in (project.factory.simulation_manager, lambda s: RustExplorationManager(project, s)):
+            seen = []
+            state = project.factory.call_state(project.entry)
+            sp = state.solver.eval(state.regs.rsp)
+            state.inspect.b(
+                "mem_write",
+                when=angr.BP_AFTER,
+                mem_write_length=4,
+                action=lambda st, seen=seen, sp=sp: seen.append(
+                    ("len4", sp - st.solver.eval(st.inspect.attrs.mem_write_address))
+                ),
+            )
+            state.inspect.b(
+                "mem_write",
+                when=angr.BP_AFTER,
+                action=lambda st, seen=seen: seen.append(("any", st.inspect.attrs.mem_write_length)),
+            )
+            mgr = make(state)
+            mgr.run(n=1)
+            assert not mgr.errored
+            results.append(seen)
+        assert results[0] == results[1]
+        assert results[0] == [("any", 8), ("len4", 22), ("any", 4), ("any", 1)]
+
     @pytest.mark.parametrize("n", [None, 3])
     def test_complete_technique_steps_nothing_like_python(self, fauxware_project, n):
         """run() asks complete() before the first step, so an already-complete technique's hooks never fire.

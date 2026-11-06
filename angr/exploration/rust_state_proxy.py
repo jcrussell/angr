@@ -661,6 +661,16 @@ class RustSolverProxyBase(_SolutionCountMixin):
         """Check if value is a valid solution for expr."""
         return self._query_ctx().solution(self._prepare_expr(expr), value)
 
+    def unique(self, expr, **kwargs):
+        """``SimSolver.unique``: a plain value is unique, else ask for two solutions.
+
+        On the base so the callback view's ``state.solver`` has it too:
+        ``BP.check`` calls it for every keyword filter (angr-vmi2l.204).
+        """
+        if not isinstance(expr, claripy.ast.Base):
+            return True
+        return len(self.eval_upto(expr, 2, **kwargs)) == 1
+
     def symbolic(self, expr):
         """Check if expression contains symbolic variables."""
         if isinstance(expr, claripy.ast.Base):
@@ -1204,10 +1214,6 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
 
     # is_true / is_false / solution come from ``RustSolverProxyBase`` — the
     # ``SimActionObject`` unwrap they need is supplied by ``_prepare_expr``.
-
-    def unique(self, expr, **kwargs):
-        results = self.eval_upto(expr, 2, **kwargs)
-        return len(results) == 1
 
     def single_valued(self, e):
         """``True`` if ``e`` is concrete or value-set has cardinality 1.

@@ -387,9 +387,9 @@ class TestRustInspectMarshalling:
         def on_read(s):
             events.append(
                 {
-                    "addr": s.inspect.mem_read_address,
-                    "length": s.inspect.mem_read_length,
-                    "endness": s.inspect.mem_read_endness,
+                    "addr": s.inspect.attrs.mem_read_address,
+                    "length": s.inspect.attrs.mem_read_length,
+                    "endness": s.inspect.attrs.mem_read_endness,
                 }
             )
 
@@ -416,10 +416,10 @@ class TestRustInspectMarshalling:
         def on_write(s):
             seen.append(
                 (
-                    s.inspect.mem_write_address,
-                    s.inspect.mem_write_length,
-                    s.inspect.mem_write_expr,
-                    s.inspect.mem_write_endness,
+                    s.inspect.attrs.mem_write_address,
+                    s.inspect.attrs.mem_write_length,
+                    s.inspect.attrs.mem_write_expr,
+                    s.inspect.attrs.mem_write_endness,
                 )
             )
 
@@ -468,7 +468,7 @@ class TestRustInspectMarshalling:
         hits = []
 
         def on_read(s):
-            hits.append(s.inspect.mem_read_length)
+            hits.append(s.inspect.attrs.mem_read_length)
 
         mgr._get_inspect_proxy().b("mem_read", when="before", action=on_read)
 
