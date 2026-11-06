@@ -78,7 +78,7 @@ use crate::symbolic::{
 };
 use angr_vex::Endness;
 
-use super::multi::MultiAlternative;
+use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{MemoryPage, PAGE_SIZE, PageIndex, Permission};
 use super::{
     Address, MemoryError, SymbolicMemory, as_symbolic_address_error, end_page_exclusive,
@@ -690,15 +690,47 @@ impl SymbolicMemory {
                 // payload straight back (and keeps the ITE-depth counter
                 // contract); `push` clears the collapse cache the moved
                 // payload carried.
-                let mut payload = self
-                    .multi_objects
-                    .remove(&Address(byte_addr))
-                    .unwrap_or_default();
+                let mut payload = match self.multi_objects.remove(&Address(byte_addr)) {
+                    Some(payload) => payload,
+                    None => self.prior_symbolic_alternative(Address(byte_addr)),
+                };
                 payload.push(alt);
                 self.set_multi_alternatives(byte_addr, payload);
             }
         }
         Ok(())
+    }
+
+    /// The payload a byte starts with when a Multi store first lands on it.
+    /// A plain-symbolic byte seeds it with its own lane under a true cond,
+    /// since `MultiPayload::collapse`'s else-leaf is the page's concrete
+    /// byte and `set_multi_alternatives` retires the symbolic object: without
+    /// the seed the byte read 0 wherever the address missed it, where
+    /// Python's conditional store reads the old value (angr-vmi2l.336). An
+    /// uninitialized byte is filled by the interpreter before the install
+    /// (`fill_uninit_under_load`), so it arrives here symbolic.
+    fn prior_symbolic_alternative(&self, addr: Address) -> MultiPayload {
+        let is_sym = self
+            .pages
+            .get(&addr.page_num())
+            .is_some_and(|page| page.is_symbolic(addr.page_offset()));
+        if !is_sym {
+            return MultiPayload::default();
+        }
+        let lane = silent_default!(
+            cat_c,
+            Self::symbolic_byte_lane(
+                &self.symbolic_objects,
+                &self.symbolic_spans,
+                addr,
+                self.endness,
+            ),
+            return MultiPayload::default(),
+            "multi install: byte {addr:?} is marked symbolic by the page bitmap but no \
+             symbolic_objects/symbolic_spans entry resolves it; the cell falls through to \
+             the page's concrete byte"
+        );
+        MultiPayload::from_alternatives(vec![MultiAlternative::new(RustBV::concrete(1, 1), lane)])
     }
 
     /// Production-safe Multi-cell install.

@@ -84,6 +84,14 @@ impl<'a> VEXInterpreter<'a> {
         // map them first. A `Single` store maps its pages on the `Unmapped` arms below.
         if !matches!(*conc_result, ConcretizationResult::Single(_)) {
             self.map_fresh_pages_for_candidates(callbacks, &conc_result, data_size)?;
+            // Python's conditional store per candidate loads the old bytes,
+            // minting a filler for each never-written one; the Multi cell
+            // falls through to it (angr-vmi2l.336).
+            if let Some(addrs) = conc_result.addresses() {
+                for cand in addrs {
+                    self.fill_uninit_under_load(callbacks, cand, data_size);
+                }
+            }
         }
 
         // Attempt store using pre-computed concretization

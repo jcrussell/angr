@@ -552,3 +552,28 @@ fn test_phase2_fork_independence_via_safe_install() {
     assert_eq!(parent_a.len(), 1, "parent must keep its single alternative");
     assert_eq!(child_a.len(), 2, "child accumulates appended alternative");
 }
+
+/// A Multi store over a plain-symbolic byte keeps that byte's old lane as
+/// the cell's innermost alternative, so a load where the address missed the
+/// candidate reads the old value and not the page's concrete 0
+/// (angr-vmi2l.336). A never-symbolic byte starts with an empty payload.
+#[test]
+fn test_multi_install_over_symbolic_byte_keeps_its_old_lane() {
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.map(0x1000, 0x1000, Permission::RWX);
+    let pre = RustBV::symbol("pre", 16);
+    mem.import_symbolic_value(0x1000, pre.clone(), None).unwrap();
+
+    let addr_var = RustBV::symbol("addr", 64);
+    mem.store_concrete_multi(&addr_var, &RustBV::concrete(0x41, 8), &[0x1001, 0x1002])
+        .expect("store_concrete_multi must succeed");
+
+    let over_sym = mem.get_multi_alternatives(0x1001).expect("Multi cell at 0x1001");
+    assert_eq!(over_sym.len(), 2);
+    let old_lane = SymbolicMemory::extract_byte_lane(&pre, 1, Endness::Little).unwrap();
+    assert_eq!(over_sym.alternatives()[0].value, old_lane);
+    assert_eq!(over_sym.alternatives()[0].cond.as_u64(), Some(1));
+
+    let over_concrete = mem.get_multi_alternatives(0x1002).expect("Multi cell at 0x1002");
+    assert_eq!(over_concrete.len(), 1);
+}

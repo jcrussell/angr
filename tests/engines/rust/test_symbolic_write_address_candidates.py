@@ -6,7 +6,9 @@ used to skip candidates on pages neither side held and to hand sets over its
 ITE cap to the host's full store, which a proxy-backed state dropped. A CAS at
 a symbolic address took the same host store even for a single candidate.
 A candidate's else-leaf is the concrete store the same block made there
-before, not a fresh ``mem_`` filler (angr-vmi2l.194).
+before, not a fresh ``mem_`` filler (angr-vmi2l.194). On a never-written
+byte it is that ``mem_`` filler, and on a symbolic byte its old value, not 0
+(angr-vmi2l.336).
 """
 
 from __future__ import annotations
@@ -91,3 +93,29 @@ def test_candidate_keeps_an_earlier_concrete_store(engine, split):
     mem = found.memory.load(cell, 1)
     assert sorted(found.solver.eval_upto(mem, 4, extra_constraints=[y & 4 != 0])) == [0x11]
     assert sorted(found.solver.eval_upto(mem, 4, extra_constraints=[y & 4 == 0])) == [0xAA]
+
+
+# and rsi, 3; mov [rdi+rsi], al; jmp +0; mov bl, [rdi+1]; jmp $
+_FRESH_CANDIDATE_STORE = b"\x48\x83\xe6\x03\x88\x04\x37\xeb\x00\x8a\x5f\x01\xeb\xfe"
+
+
+@pytest.mark.parametrize("engine", ["py", "rust"])
+@pytest.mark.parametrize("prior", ["fresh", "symbolic"])
+def test_missed_candidate_reads_its_old_byte(engine, prior):
+    proj = angr.load_shellcode(_FRESH_CANDIDATE_STORE, arch="amd64", load_address=LOAD)
+    state = proj.factory.blank_state(
+        addr=LOAD,
+        add_options={angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS, angr.options.SYMBOLIC_WRITE_ADDRESSES},
+    )
+    idx = claripy.BVS("idx", 64)
+    state.regs.rdi = 0x50000000
+    state.regs.rsi = idx
+    state.regs.al = 0x41
+    if prior == "symbolic":
+        state.memory.store(0x50000000, claripy.BVS("pre", 32))
+    mgr = RustExplorationManager(proj, [state]) if engine == "rust" else proj.factory.simulation_manager(state)
+    mgr.explore(find=LOAD + len(_FRESH_CANDIDATE_STORE) - 2, n=10)
+    (found,) = mgr.found
+    bl = found.regs.bl
+    assert found.solver.eval_upto(bl, 2, extra_constraints=[idx & 3 == 1]) == [0x41]
+    assert len(found.solver.eval_upto(bl, 3, extra_constraints=[idx & 3 != 1])) == 3

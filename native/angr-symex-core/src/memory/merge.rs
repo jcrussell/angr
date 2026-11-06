@@ -416,7 +416,7 @@ impl SymbolicMemory {
     /// Returns `None` when the sidecars disagree with the bitmap (missing
     /// entry, stale span width, out-of-range offset) so the caller can log and
     /// fall back.
-    fn symbolic_byte_lane(
+    pub(super) fn symbolic_byte_lane(
         symbolic_objects: &SymMap<Address, RustBV>,
         symbolic_spans: &SymMap<Address, (Address, u32)>,
         addr: Address,
