@@ -11,6 +11,7 @@ from sortedcontainers import SortedDict
 from angr import claripy
 from angr.errors import SimMemoryMissingError
 from angr.exploration._fallback import suppress_recoverable
+from angr.exploration.rust_callback_dispatch import _proc_no_return
 from angr.rustylib.vex_engine import arch_register_info
 from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
@@ -260,7 +261,7 @@ class RustStateSyncMixin:
             proc = sim_procedures[addr]
             name = proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
             num_args = getattr(proc, "num_args", 0) or 0
-            no_return = getattr(proc, "NO_RET", False)
+            no_return = _proc_no_return(proc)
             procs.append((addr, name, num_args, no_return))
             registered.add(addr)
             if _DBG:

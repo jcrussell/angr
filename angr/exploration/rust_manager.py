@@ -2490,7 +2490,7 @@ class RustExplorationManager(
                     if name in procs:
                         proc_class = procs[name]
                         num_args = getattr(proc_class, "num_args", 0) or 0
-                        no_ret = getattr(proc_class, "NO_RET", False)
+                        no_ret = _proc_no_return(proc_class)
                         l.debug(f"Resolved {name} to {lib_name}:{name}")
                         return (name, num_args, no_ret)
             except ImportError:
@@ -2508,7 +2508,7 @@ class RustExplorationManager(
                         if sym.name in procs:
                             proc_class = procs[sym.name]
                             num_args = getattr(proc_class, "num_args", 0) or 0
-                            no_ret = getattr(proc_class, "NO_RET", False)
+                            no_ret = _proc_no_return(proc_class)
                             l.debug(f"Resolved symbol {sym.name} to {lib_name}:{sym.name}")
                             return (sym.name, num_args, no_ret)
                 except ImportError:
