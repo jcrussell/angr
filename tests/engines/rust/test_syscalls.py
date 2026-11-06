@@ -672,6 +672,47 @@ class TestNativeFstatSyscall:
         # Python decides an fd / path Rust never saw (angr-mx00p.132.15).
         assert stats["syscall_python_fallback_count"] == 1, stats
 
+    def test_mips32_fstat64_matches_the_kernel_stat64_layout(self):
+        """MIPS32 BE ``fstat64`` writes the o32 ``struct stat64`` with
+        ``st_mode`` at 0x18, ``st_size`` at 0x38 and ``st_blksize`` at 0x58
+        on both engines, the Rust one natively (angr-vmi2l.288)."""
+        # open("/tmp/f", 0, 0) ; fstat64($v0, 0x5000)
+        shellcode = (
+            bytes.fromhex("24020fa52404600024050000240600000000000c")
+            + bytes.fromhex("0040202124021077240550000000000c")
+            + b"\x00" * 0x40
+        )
+        proj = angr.load_shellcode(shellcode, arch="MIPS32", simos="linux", load_address=0x1000)
+        after = 0x1024
+
+        def seed():
+            state = proj.factory.blank_state(addr=0x1000)
+            state.fs.insert("/tmp/f", angr.SimFile(name="f", content=b"hello"))
+            state.memory.store(0x6000, b"/tmp/f\x00")
+            state.memory.store(0x5000, b"\x00" * 0x68)
+            return state
+
+        def field(state, off, size):
+            return state.memory.load(0x5000 + off, size, endness=proj.arch.memory_endness)
+
+        simgr = proj.factory.simulation_manager(seed())
+        for _ in range(4):  # each block, then each syscall's SimProcedure
+            simgr.step()
+        (py,) = simgr.active
+        assert py.addr == after
+        assert py.solver.eval(field(py, 0x58, 4)) == 0x400
+        assert any(v.startswith("st_mode") for v in field(py, 0x18, 4).variables)
+        assert any(v.startswith("st_size") for v in field(py, 0x38, 8).variables)
+
+        mgr = RustExplorationManager(proj, [seed()])
+        mgr.run(max_steps=2)
+        assert mgr._rust_mgr.stats()["syscall_python_fallback_count"] == 0
+        (rs,) = mgr.active
+        assert rs.addr == after
+        assert rs.solver.eval(field(rs, 0x58, 4)) == 0x400
+        assert rs.solver.eval(field(rs, 0x18, 4)) == 0o100755
+        assert rs.solver.eval(field(rs, 0x38, 8)) == 5
+
 
 class TestNativeStatSyscall:
     """angr-k3ol.4: native ``stat`` resolves ``pathname`` via

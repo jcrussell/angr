@@ -225,50 +225,41 @@ fn write_arm_stat(
 }
 
 /// MIPS32 O32 `struct stat64` layout (LFS variant — the one 32-bit MIPS
-/// glibc emits via `stat64`/`lstat64`/`fstat64`/`fstatat64`). Mirrors
-/// `angr/procedures/linux_kernel/fstat64.py::_store_mips32` field-for-field,
-/// including its overlapping writes. Two things differ from the i386/ARM
-/// writers:
-///   1. `_store_mips32` uses `endness=self.state.arch.memory_endness`
-///      (not a hardcoded `Iend_LE`), because MIPS32 is big-endian (MIPS32EL
-///      is little). `memory_store` already applies the state's arch endness,
-///      so plain concrete stores reproduce Python's byte order on both.
-///   2. The MIPS layout writes NO `st_mode` and NO `st_nlink` field — angr's
-///      `_store_mips32` simply omits them (the struct is flagged "NOT CORRECT"
-///      upstream). So unlike the other Rust writers the `mode` argument is
-///      ignored (hence `_mode`) — every field but `st_size` (0x30) and
-///      `st_blksize` (0x50) is zero. The 96-bit zero stores at 0x04/0x24 plus
-///      the overlapping field stores fully cover bytes 0x00..0x5F with no gap,
-///      so no stale memory leaks where `st_mode` would sit.
-///
-/// As with the i386/ARM writers the value widths come from
-/// `posix.fstat_with_result`'s `Stat` tuple (`st_dev`/`st_ino`/`st_rdev`/
-/// `st_size`/`st_blksize`/`st_blocks`/times are 64-bit; `st_uid`/`st_gid`
-/// are 32-bit), NOT the packed struct widths — replaying Python's exact
-/// store order reproduces its byte output.
+/// glibc emits via `stat64`/`lstat64`/`fstat64`/`fstatat64`), per the
+/// kernel's `arch/mips/include/uapi/asm/stat.h`. Mirrors
+/// `angr/procedures/linux_kernel/fstat64.py::_store_mips32`
+/// field-for-field (angr-vmi2l.288). Unlike the i386/ARM writers each
+/// field is stored at its kernel width, not `posix.fstat_with_result`'s
+/// 64-bit `Stat` width: MIPS32 is big-endian (MIPS32EL is little), and a
+/// 64-bit store of a 32-bit field would put the value's high half where
+/// the field sits. `memory_store` applies the state's arch endness, so
+/// plain concrete stores match Python's `arch.memory_endness` stores.
+/// The stores tile bytes 0x00..0x68 with no gap.
 fn write_mips32_stat(
     state: &mut RustSimState,
     buf: u64,
     size: u64,
-    _mode: u32,
+    mode: u32,
 ) -> Result<(), SyscallError> {
-    store_stat_u64(state, buf, 0x00, 0)?; // st_dev
-    store_stat_zero96(state, buf, 0x04)?; // 96-bit zero pad (overlaps st_dev upper)
+    store_stat_u32(state, buf, 0x00, 0)?; // st_dev
+    store_stat_zero96(state, buf, 0x04)?; // st_pad0
     store_stat_u64(state, buf, 0x10, 0)?; // st_ino
-    store_stat_u32(state, buf, 0x18, 0)?; // st_uid
-    store_stat_u32(state, buf, 0x1C, 0)?; // st_gid
-    store_stat_u64(state, buf, 0x20, 0)?; // st_rdev
-    store_stat_zero96(state, buf, 0x24)?; // 96-bit zero pad (overlaps st_rdev upper)
-    store_stat_u64(state, buf, 0x30, size)?; // st_size
-    store_stat_u64(state, buf, 0x38, 0)?; // st_atime
-    store_stat_u64(state, buf, 0x3C, 0)?; // st_atimensec (overlaps st_atime upper)
-    store_stat_u64(state, buf, 0x40, 0)?; // st_mtime
-    store_stat_u64(state, buf, 0x44, 0)?; // st_mtimensec
-    store_stat_u64(state, buf, 0x48, 0)?; // st_ctime
-    store_stat_u64(state, buf, 0x4C, 0)?; // st_ctimensec
-    store_stat_u64(state, buf, 0x50, ST_BLKSIZE)?; // st_blksize (64-bit; upper overlaps the zero pad below)
-    store_stat_u32(state, buf, 0x54, 0)?; // 32-bit zero pad
-    store_stat_u64(state, buf, 0x58, 0)?; // st_blocks
+    store_stat_u32(state, buf, 0x18, mode)?; // st_mode
+    store_stat_u32(state, buf, 0x1C, 0)?; // st_nlink
+    store_stat_u32(state, buf, 0x20, 0)?; // st_uid
+    store_stat_u32(state, buf, 0x24, 0)?; // st_gid
+    store_stat_u32(state, buf, 0x28, 0)?; // st_rdev
+    store_stat_zero96(state, buf, 0x2C)?; // st_pad1
+    store_stat_u64(state, buf, 0x38, size)?; // st_size
+    store_stat_u32(state, buf, 0x40, 0)?; // st_atime
+    store_stat_u32(state, buf, 0x44, 0)?; // st_atime_nsec
+    store_stat_u32(state, buf, 0x48, 0)?; // st_mtime
+    store_stat_u32(state, buf, 0x4C, 0)?; // st_mtime_nsec
+    store_stat_u32(state, buf, 0x50, 0)?; // st_ctime
+    store_stat_u32(state, buf, 0x54, 0)?; // st_ctime_nsec
+    store_stat_u32(state, buf, 0x58, ST_BLKSIZE as u32)?; // st_blksize
+    store_stat_u32(state, buf, 0x5C, 0)?; // st_pad2
+    store_stat_u64(state, buf, 0x60, 0)?; // st_blocks
     Ok(())
 }
 

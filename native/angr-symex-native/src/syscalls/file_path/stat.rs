@@ -75,10 +75,7 @@
 //!   symlink-only path stat'd as unknown even though `readlink`
 //!   resolved it). A dangling link falls back to Python; an over-long chain is `-1`
 //!   (`ENOENT` / `ELOOP`). Same arch coverage as `stat`:
-//!   AMD64 + X86 + ARM + MIPS32. Caveat: MIPS32's `struct stat64`
-//!   layout writes no `st_mode` field at all (see
-//!   `write_mips32_stat`), so there `lstat` on a symlink is
-//!   distinguishable from a regular file only by `st_size`.
+//!   AMD64 + X86 + ARM + MIPS32.
 //! * `newfstatat` adds `openat`-style dirfd handling: absolute paths
 //!   and `AT_FDCWD` resolve via `FileSystem`; relative paths with any
 //!   other dirfd fall back to Python (we do not model directory fds). Its

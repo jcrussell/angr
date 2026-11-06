@@ -656,9 +656,7 @@ Stubbed / incomplete
   reads (``angr-9ke6b.235``): ``lstat`` reports a registered symlink
   as ``S_IFLNK | 0777`` sized to its raw target bytes, and ``stat``/``newfstatat`` walk the link to its target,
   up to ``MAX_SYMLINK_HOPS``, returning ``-1`` on a dangling link or a
-  cycle. MIPS32 is a partial exception: its ``struct stat64`` writer
-  emits no ``st_mode`` field at all, so there the link shows up only in
-  ``st_size``.
+  cycle.
 
 .. _native-documented-divergences:
 

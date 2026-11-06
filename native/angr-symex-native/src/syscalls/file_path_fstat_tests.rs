@@ -220,47 +220,57 @@ fn fstat_known_fd_writes_arm_layout_and_returns_zero() {
 #[test]
 fn fstat_known_fd_writes_mips32_layout_and_returns_zero() {
     // MIPS32 O32 fstat64 / struct stat64 layout (`write_mips32_stat`),
-    // mirroring angr/procedures/linux_kernel/fstat64.py::_store_mips32.
-    // Notable differences from i386/ARM: st_size at 0x30, st_blksize at
-    // 0x50, and NO st_mode field is written (angr's MIPS layout omits it).
-    // "mipsel" gives a little-endian MIPS32 so the read_u*_le helpers apply.
-    let mut state = RustSimState::new("mipsel").expect("state");
-    assert_eq!(state.arch().name(), "MIPS32");
-    state.map_memory(0x4000, 0x1000, Permission::RW);
+    // mirroring angr/procedures/linux_kernel/fstat64.py::_store_mips32 and
+    // the kernel's arch/mips/include/uapi/asm/stat.h (angr-vmi2l.288).
+    // Both byte orders: on big-endian a field stored wider than its kernel
+    // width would read back as its value's high half. `memory_load` decodes
+    // in the state's endness, so the read_u*_le helpers read the field value.
+    for little_endian in [true, false] {
+        let mut state = RustSimState::new_with_endian("mips32", Some(little_endian)).expect("state");
+        assert_eq!(state.arch().name(), "MIPS32");
+        state.map_memory(0x4000, 0x1000, Permission::RW);
+        // Prefill so a byte the writer skips shows up as nonzero.
+        for off in (0..0x70).step_by(8) {
+            state
+                .memory_store(0x4000 + off, RustBV::concrete(u64::MAX as u128, 64))
+                .expect("prefill");
+        }
 
-    let fd = state
-        .file_system()
-        .open_with_content(
-            "/tmp/mips".into(),
-            FdFlags::ReadOnly,
-            b"hello, world!".to_vec(),
-        )
-        .expect("fd space is not exhausted in tests");
+        let fd = state
+            .file_system()
+            .open_with_content(
+                "/tmp/mips".into(),
+                FdFlags::ReadOnly,
+                b"hello, world!".to_vec(),
+            )
+            .expect("fd space is not exhausted in tests");
 
-    let out = NativeFstatSyscall
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(fd as u128, 32),
-                RustBV::concrete(0x4000, 32),
-            ],
-        )
-        .expect("fstat ok");
-    assert_eq!(expect_continue(out), 0);
+        let out = NativeFstatSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd as u128, 32),
+                    RustBV::concrete(0x4000, 32),
+                ],
+            )
+            .expect("fstat ok");
+        assert_eq!(expect_continue(out), 0);
 
-    // st_size at 0x30 (u64).
-    assert_eq!(read_u64_le(&state, 0x4000 + 0x30), 13);
-    // st_blksize at 0x50 (low word of the 64-bit store).
-    assert_eq!(read_u32_le(&state, 0x4000 + 0x50), ST_BLKSIZE as u32);
-    // st_dev at 0 — zero.
-    assert_eq!(read_u64_le(&state, 0x4000), 0);
-    // st_ino at 0x10 — zero.
-    assert_eq!(read_u64_le(&state, 0x4000 + 0x10), 0);
-    // st_blocks at 0x58 — zero.
-    assert_eq!(read_u64_le(&state, 0x4000 + 0x58), 0);
-    // MIPS layout omits st_mode entirely — the byte where i386/ARM put it
-    // (0x10) is covered by the st_ino store and stays zero (NOT S_IFREG).
-    assert_eq!(read_u32_le(&state, 0x4000 + 0x10), 0);
+        let le = little_endian;
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x18), S_IFREG_0755 as u32, "st_mode le={le}");
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x1C), 0, "st_nlink le={le}");
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x38), 13, "st_size le={le}");
+        assert_eq!(read_u32_le(&state, 0x4000 + 0x58), ST_BLKSIZE as u32, "st_blksize le={le}");
+        // Every other byte of the 0x68-byte struct is zero.
+        for off in (0..0x68).step_by(4) {
+            if matches!(off, 0x18 | 0x38 | 0x3C | 0x58) {
+                continue;
+            }
+            assert_eq!(read_u32_le(&state, 0x4000 + off), 0, "offset {off:#x} le={le}");
+        }
+        // Nothing past the struct is touched.
+        assert_eq!(read_u64_le(&state, 0x4000 + 0x68), u64::MAX, "le={le}");
+    }
 }
 
 #[test]
