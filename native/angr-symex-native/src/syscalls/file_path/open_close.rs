@@ -15,7 +15,9 @@
 use super::{NEG_ONE, dirfd_allows, read_path};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
-use crate::syscalls::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use crate::syscalls::{
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, extract_int_fd_arg,
+};
 
 /// `open(pathname, flags, mode) → fd` — allocate a fresh fd in the
 /// Rust `FileSystem` keyed by `pathname`. Mirrors
@@ -139,7 +141,7 @@ impl NativeSyscall for NativeCloseSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let fd = extract_concrete_arg(&args[0], "close fd")?;
+        let fd = extract_int_fd_arg(&args[0], "close fd")?;
         // An fd not open here may be one a bounced proc opened in Python
         // (a symbolic file is never registered), so Python closes it.
         if !state.file_system_ref().is_open(fd as u32) {

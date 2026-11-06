@@ -101,7 +101,9 @@ use super::stat_layouts::{S_IFLNK_0777, S_IFREG_0755, require_stat_arch, write_s
 use super::{NEG_ONE, dirfd_allows, read_path};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-use crate::syscalls::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg};
+use crate::syscalls::{
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, extract_int_fd_arg,
+};
 
 /// `AT_SYMLINK_NOFOLLOW` — `newfstatat`'s flag bit that selects
 /// `lstat` semantics. ARM64's asm-generic ABI has no legacy `lstat`
@@ -192,7 +194,7 @@ impl NativeSyscall for NativeFstatSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let fd = extract_concrete_arg(&args[0], "fstat fd")?;
+        let fd = extract_int_fd_arg(&args[0], "fstat fd")?;
         let buf = extract_concrete_arg(&args[1], "fstat statbuf")?;
 
         // Arch check first: avoid mutating state.memory if we will fall

@@ -472,3 +472,28 @@ fn dup2_and_dup3_newfd_boundary_sweep_matches_newfd_limit() {
         }
     }
 }
+
+/// Both dup2 fds are C `int`s, so bits 63:32 are ignored: Linux answers
+/// `dup2(0, 0x1_0000_0005)` with 5 and `dup2(0, 0x1_0000_0000)` with 0
+/// (angr-vmi2l.341).
+#[test]
+fn dup2_ignores_dirty_upper_half_of_fds() {
+    let mut state = RustSimState::new("amd64").expect("state");
+    for (oldfd, newfd, want) in [
+        (0, 0x1_0000_0005, 5),
+        (0x1_0000_0000, 0x2_0000_0000, 0),
+        (0, 0x1_0000_0000, 0),
+    ] {
+        let outcome = NativeDup2Syscall
+            .call(
+                &mut state,
+                &[RustBV::concrete(oldfd, 64), RustBV::concrete(newfd, 64)],
+            )
+            .expect("native");
+        match outcome {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, want, "dup2({oldfd:#x}, {newfd:#x})"),
+            _ => panic!("dup2({oldfd:#x}, {newfd:#x}) expected Continue"),
+        }
+    }
+    assert!(state.file_system_ref().is_open(5));
+}

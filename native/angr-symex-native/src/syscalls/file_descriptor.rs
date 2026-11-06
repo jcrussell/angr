@@ -89,8 +89,8 @@
 //! `-EBADF` in the kernel ABI (matches Python's 4096-fd ulimits ceiling).
 
 use super::{
-    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, stub_syscall,
-    symbolic_outcome, syscall_stub_key,
+    NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, extract_int_fd_arg,
+    stub_syscall, symbolic_outcome, syscall_stub_key,
 };
 use crate::state::{MAX_FD, RustSimState};
 use crate::symbolic::RustBV;
@@ -192,7 +192,7 @@ fn fcntl_dispatch(
     label: &'static str,
     stub_name: &'static str,
 ) -> Result<SyscallOutcome, SyscallError> {
-    let fd = extract_concrete_arg(&args[0], "fcntl fd")?;
+    let fd = extract_int_fd_arg(&args[0], "fcntl fd")?;
     let cmd = extract_concrete_arg(&args[1], "fcntl cmd")?;
     // args[2] = arg — unused by the handled cmds. For F_SETFL it
     // would be the new flags; we accept any value (including
@@ -276,7 +276,7 @@ impl NativeSyscall for NativeIoctlSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let _fd = extract_concrete_arg(&args[0], "ioctl fd")?;
+        let _fd = extract_int_fd_arg(&args[0], "ioctl fd")?;
         let cmd = extract_concrete_arg(&args[1], "ioctl cmd")?;
         // args[2] = arg — unused by the handled cmds; accept any value
         // (including symbolic) without forcing concretization.
@@ -316,7 +316,7 @@ impl NativeSyscall for NativeDupSyscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
+        let oldfd = extract_int_fd_arg(&args[0], "oldfd")?;
         require_open_fd(state, "dup", oldfd)?;
         let ret = match state.file_system().dup(oldfd as u32) {
             Some(newfd) => newfd as u64,
@@ -345,8 +345,8 @@ impl NativeSyscall for NativeDup2Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
-        let newfd = extract_concrete_arg(&args[1], "newfd")?;
+        let oldfd = extract_int_fd_arg(&args[0], "oldfd")?;
+        let newfd = extract_int_fd_arg(&args[1], "newfd")?;
         let ret = dup2_body(state, "dup2", oldfd, newfd)?;
         Ok(SyscallOutcome::Continue { ret })
     }
@@ -372,8 +372,8 @@ impl NativeSyscall for NativeDup3Syscall {
         state: &mut RustSimState,
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
-        let oldfd = extract_concrete_arg(&args[0], "oldfd")?;
-        let newfd = extract_concrete_arg(&args[1], "newfd")?;
+        let oldfd = extract_int_fd_arg(&args[0], "oldfd")?;
+        let newfd = extract_int_fd_arg(&args[1], "newfd")?;
         // args[2] = flags — O_CLOEXEC modeling is out of scope, so the
         // value is never read; accept any value (including symbolic)
         // without forcing concretization, same as fcntl_dispatch/ioctl.

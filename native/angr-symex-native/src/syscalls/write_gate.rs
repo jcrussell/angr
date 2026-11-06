@@ -36,8 +36,8 @@ use crate::symbolic::RustBV;
 
 /// The validated write target handed to a [`write_path_gate`] body.
 pub(crate) struct WriteTarget {
-    /// The fd as the guest passed it — concrete, nonzero, and open in the Rust
-    /// `FileSystem`. Reported verbatim in the fallback messages.
+    /// Bits 31:0 of the fd the guest passed — concrete, nonzero, and open in
+    /// the Rust `FileSystem`. Reported verbatim in the fallback messages.
     fd: u64,
     /// The syscall's name, for those messages.
     name: &'static str,
@@ -79,7 +79,8 @@ where
     // Step 1. `RustBV::as_u64` rather than `extract_concrete_arg` so the
     // `"{name} fd"` context is only formatted on the symbolic path — `writev`
     // is glibc stdio's flush path, hit on essentially every printf.
-    let Some(fd) = fd_arg.as_u64() else {
+    // The fd is a C `int`: bits 31:0 only (`extract_int_fd_arg`).
+    let Some(fd) = fd_arg.as_u64().map(|fd| fd & u64::from(u32::MAX)) else {
         state.file_system().demote_all_symbolic_content();
         return Err(SyscallError::SymbolicArgument(format!("{name} fd")));
     };

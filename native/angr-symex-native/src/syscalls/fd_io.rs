@@ -49,7 +49,7 @@ use super::errno::NEG_ONE;
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
-    gather_concrete_bytes, gather_concrete_bytes_into, write_path_gate,
+    extract_int_fd_arg, gather_concrete_bytes, gather_concrete_bytes_into, write_path_gate,
 };
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -82,7 +82,7 @@ impl NativeSyscall for NativeLseekSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = extract_concrete_arg(&args[0], "lseek fd")?;
+        let fd = extract_int_fd_arg(&args[0], "lseek fd")?;
         // `off_t` is word-width: sign-extend so a 32-bit -1 is not +0xffffffff.
         let offset = crate::procedures::arch_signed_word(
             state,
@@ -200,7 +200,7 @@ impl NativeSyscall for NativeReadvSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = extract_concrete_arg(&args[0], "readv fd")?;
+        let fd = extract_int_fd_arg(&args[0], "readv fd")?;
         let iov = extract_concrete_arg(&args[1], "readv iov")?;
         let iovcnt = extract_concrete_arg(&args[2], "readv iovcnt")?;
         if iovcnt > MAX_IOVCNT {
@@ -372,7 +372,7 @@ impl NativeSyscall for NativePread64Syscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = extract_concrete_arg(&args[0], "pread64 fd")?;
+        let fd = extract_int_fd_arg(&args[0], "pread64 fd")?;
         let buf = extract_concrete_arg(&args[1], "pread64 buf")?;
         let nbyte = extract_concrete_arg(&args[2], "pread64 nbyte")?;
         // Symbolic offset is unsupported by Python's pread64 (raises

@@ -53,7 +53,8 @@
 use super::require_syscall_args;
 use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
-    extract_concrete_arg, fresh_byte_names, gather_concrete_bytes, mint_symbolic_bytes,
+    extract_concrete_arg, extract_int_fd_arg, fresh_byte_names, gather_concrete_bytes,
+    mint_symbolic_bytes,
 };
 use crate::memory::{PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 use crate::procedures::stdin_common::{mint_stdin_bytes, stdin_seed_ends_before};
@@ -173,7 +174,7 @@ impl NativeSyscall for NativeTransmitSyscall {
         require_syscall_args!(self, args);
         // `CGC_ENFORCE_FD` sends every transmit to fd 1, whatever the guest
         // passed, as `procedures/cgc/transmit.py` does (angr-vmi2l.139).
-        let fd = match extract_concrete_arg(&args[0], "transmit fd") {
+        let fd = match extract_int_fd_arg(&args[0], "transmit fd") {
             Ok(_) if state.has_option("CGC_ENFORCE_FD") => 1,
             Ok(fd) => fd,
             Err(e) => {
@@ -249,7 +250,7 @@ impl NativeSyscall for NativeReceiveSyscall {
         require_syscall_args!(self, args);
         // `CGC_ENFORCE_FD` reads every receive from fd 0, as
         // `procedures/cgc/receive.py` does (angr-vmi2l.139).
-        let fd = extract_concrete_arg(&args[0], "receive fd")?;
+        let fd = extract_int_fd_arg(&args[0], "receive fd")?;
         let fd = if state.has_option("CGC_ENFORCE_FD") {
             0
         } else {

@@ -30,7 +30,8 @@
 
 use super::require_syscall_args;
 use super::{
-    MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
+    MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
+    extract_concrete_arg, extract_int_fd_arg,
 };
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -60,7 +61,7 @@ impl NativeSyscall for NativeReadSyscall {
         args: &[RustBV],
     ) -> Result<SyscallOutcome, SyscallError> {
         require_syscall_args!(self, args);
-        let fd = extract_concrete_arg(&args[0], "read fd")?;
+        let fd = extract_int_fd_arg(&args[0], "read fd")?;
         let buf = extract_concrete_arg(&args[1], "read buf")?;
         let count = extract_concrete_arg(&args[2], "read count")?;
 

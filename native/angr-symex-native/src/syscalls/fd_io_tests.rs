@@ -167,17 +167,24 @@ fn writev_symbolic_byte_leaves_fd_untouched() {
 fn writev_stdin_falls_back() {
     let mut state = fresh_state();
     write_iovec_array(&mut state, 0x2000, &[(0x3000, 1)]);
-    let err = NativeWritevSyscall
-        .call(
-            &mut state,
-            &[
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(1, 64),
-            ],
-        )
-        .expect_err("fallback");
-    assert!(matches!(err, SyscallError::Other(_)));
+    // The second fd is 0 with a dirty upper half, which the `int` fd ignores
+    // (angr-vmi2l.341).
+    for fd in [0, 0x1_0000_0000] {
+        let err = NativeWritevSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(fd, 64),
+                    RustBV::concrete(0x2000, 64),
+                    RustBV::concrete(1, 64),
+                ],
+            )
+            .expect_err("fallback");
+        assert!(
+            matches!(&err, SyscallError::Other(m) if m.contains("stdin")),
+            "fd={fd:#x}: {err:?}"
+        );
+    }
 }
 
 #[test]

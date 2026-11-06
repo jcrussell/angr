@@ -77,6 +77,19 @@ pub(crate) fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, Sysc
         .ok_or_else(|| SyscallError::SymbolicArgument(name.to_string()))
 }
 
+/// Extract a concrete C `int` fd argument as bits 31:0 of its register, or
+/// return `SymbolicArgument(name)`.
+///
+/// The kernel declares every fd parameter `int` (`unsigned int` for
+/// `read`/`write`/`close`/`dup2`), so it ignores bits 63:32, which the ABI
+/// leaves undefined. Python reads the 32-bit prototype-typed value on AMD64,
+/// the one arch whose syscall prototypes angr types; truncating on every arch
+/// keeps the kernel's answer elsewhere too (angr-vmi2l.341). The libc-proc
+/// counterpart is `declare_proc!`'s `int` kind.
+pub(crate) fn extract_int_fd_arg(arg: &RustBV, name: &str) -> Result<u64, SyscallError> {
+    Ok(extract_concrete_arg(arg, name)? & u64::from(u32::MAX))
+}
+
 /// A guest-controlled integer paired with the cap it was checked against.
 ///
 /// Handlers that size an allocation or a page-walk from a syscall argument get

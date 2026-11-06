@@ -554,3 +554,23 @@ fn stream_reads_under_short_reads_fall_back() {
         .expect("a concrete-content read stays native");
     assert!(matches!(outcome, SyscallOutcome::Continue { ret: 4 }));
 }
+
+/// The fd is a C `int`: bits 63:32 are ignored, so a dirty upper half on
+/// fd 0 still reads stdin (angr-vmi2l.341).
+#[test]
+fn read_ignores_dirty_upper_half_of_fd() {
+    let mut state = fresh_state_with_buf();
+    let outcome = NativeReadSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1_0000_0000, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(4, 64),
+            ],
+        )
+        .expect("stdin read is native");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 4 }));
+    let byte = state.memory_load(0x2000, 1).expect("loaded");
+    assert!(byte.as_u64().is_none(), "stdin bytes are symbolic");
+}
