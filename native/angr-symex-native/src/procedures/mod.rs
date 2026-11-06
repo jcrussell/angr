@@ -165,6 +165,17 @@ pub fn extract_concrete_arg(arg: &RustBV, name: &str) -> Result<u64, ProcedureEr
         .ok_or_else(|| ProcedureError::SymbolicArgument(name.to_string()))
 }
 
+/// A C `int` argument: bits 31:0 of the argument register (`declare_proc!`'s
+/// `int_bv` kind). An argument already at most 32 bits wide (a 32-bit arch)
+/// is returned as is.
+pub fn c_int_bv(arg: &RustBV) -> RustBV {
+    if arg.width() > 32 {
+        arg.extract(31, 0)
+    } else {
+        arg.clone()
+    }
+}
+
 /// Bail out to Python when a requested size/count `n` exceeds the native cap
 /// `max`.
 ///

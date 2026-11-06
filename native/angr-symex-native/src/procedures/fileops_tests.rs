@@ -228,6 +228,33 @@ fn test_dup_basic() {
     assert_eq!(state.file_system_ref().fd_info(4).unwrap().0, "a.txt");
 }
 
+/// angr-vmi2l.103: `dup`/`dup2` take C `int` fds, so bits 63:32 of the
+/// register, which the ABI leaves undefined, are ignored, as in Python's
+/// prototype-typed call. `dup(0x1_0000_0003)` is `dup(3)`, not EBADF.
+#[test]
+fn test_dup_ignores_dirty_upper_half() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
+    NativeOpen
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x1000, 64), RustBV::concrete(O_RDWR, 64)],
+        )
+        .unwrap();
+    let result = NativeDup
+        .call(&mut state, &[RustBV::concrete(0x1_0000_0003, 64)])
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(4));
+    let result = NativeDup2
+        .call(
+            &mut state,
+            &[RustBV::concrete(0xdead_0000_0003, 64), RustBV::concrete(0x1_0000_0009, 64)],
+        )
+        .unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(9));
+    assert!(state.file_system_ref().is_open(9));
+}
+
 #[test]
 fn test_dup_closed_fd() {
     let mut state = RustSimState::new("amd64").unwrap();
@@ -352,9 +379,10 @@ fn test_dup2_huge_newfd_returns_ebadf_without_wrapping_next_fd() {
 
     // No syscall layer sits above this proc to apply NEWFD_LIMIT, so these
     // used to reach FileSystem::dup2's raw `next_fd = newfd + 1` bump
-    // (angr-03vl4.52). 0xFFFF_FFFF wraps the u32 counter; 0x1_0000_0000 is
-    // additionally a `as u32` truncation to 0 == stdin.
-    for newfd in [0xFFFF_FFFFu128, 0x1_0000_0000, u128::from(u64::MAX)] {
+    // (angr-03vl4.52). 0xFFFF_FFFF would wrap the u32 counter; as a C `int`
+    // both values are -1. (0x1_0000_0000 is the `int` 0, not a huge fd:
+    // `test_dup_ignores_dirty_upper_half`.)
+    for newfd in [0xFFFF_FFFFu128, u128::from(u64::MAX)] {
         let result = NativeDup2
             .call(
                 &mut state,
@@ -373,14 +401,15 @@ fn test_dup2_huge_newfd_returns_ebadf_without_wrapping_next_fd() {
 }
 
 #[test]
-fn test_dup_oldfd_wider_than_u32_is_not_truncated() {
+fn test_dup_oldfd_wider_than_u32_is_the_int_fd() {
     let mut state = RustSimState::new("amd64").unwrap();
-    // 0x1_0000_0000 truncates to 0 (stdin, which IS open), so an `as u32`
-    // cast would happily duplicate stdin here (angr-03vl4.52).
+    // angr-03vl4.52 refused 0x1_0000_0000 as an out-of-range fd. It is the C
+    // `int` 0 (stdin, which IS open) with a dirty upper half, and Python's
+    // prototype-typed dup duplicates stdin (angr-vmi2l.103).
     let result = NativeDup
         .call(&mut state, &[RustBV::concrete(0x1_0000_0000, 64)])
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    assert_eq!(result.unwrap().as_u64(), Some(3));
 }
 
 #[test]

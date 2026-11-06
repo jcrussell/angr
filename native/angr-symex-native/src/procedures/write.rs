@@ -29,7 +29,7 @@ crate::declare_proc! {
     /// fall back to Python.
     name = "write",
     struct = NativeWrite,
-    args = [fd: concrete, buf: concrete, count: concrete],
+    args = [fd: int, buf: concrete, count: concrete],
     call |state| {
         if fd == 0 {
             return Err(ProcedureError::Other(

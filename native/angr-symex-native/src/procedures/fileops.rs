@@ -179,7 +179,7 @@ crate::declare_proc! {
     /// (`0x1_0000_0000` → 0 → stdin; angr-03vl4.52).
     name = "dup",
     struct = NativeDup,
-    args = [oldfd: concrete],
+    args = [oldfd: int],
     call |state| {
         let duped = match u32::try_from(oldfd) {
             Ok(oldfd) => state.file_system().dup(oldfd),
@@ -209,7 +209,7 @@ crate::declare_proc! {
     /// `next_fd` bump inside [`FileSystem::dup2`](crate::state::FileSystem::dup2).
     name = "dup2",
     struct = NativeDup2,
-    args = [oldfd: concrete, newfd: concrete],
+    args = [oldfd: int, newfd: int],
     call |state| {
         let dup2ed = match (u32::try_from(oldfd), u32::try_from(newfd)) {
             (Ok(oldfd), Ok(newfd)) => state.file_system().dup2(oldfd, newfd),

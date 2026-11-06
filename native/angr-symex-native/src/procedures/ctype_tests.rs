@@ -108,7 +108,7 @@ fn test_symbolic_tolower_returns_symbolic() {
     drop(ctx);
     let p = NativeToLower;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
-    assert_eq!(result.width(), 64);
+    assert_eq!(result.width(), 32);
     assert!(result.as_u64().is_none());
 
     s.add_constraint(eq);
@@ -264,8 +264,9 @@ fn test_predicates_compare_full_width_not_low_byte() {
 #[test]
 fn test_case_shift_preserves_out_of_range_argument() {
     let mut s = make_state();
-    assert_eq!(call_word(&NativeToLower, &mut s, u64::MAX), u64::MAX);
-    assert_eq!(call_word(&NativeToUpper, &mut s, u64::MAX), u64::MAX);
+    // EOF is the 32-bit `int` -1; the shell widens the 32-bit return.
+    assert_eq!(call_word(&NativeToLower, &mut s, u64::MAX), 0xffff_ffff);
+    assert_eq!(call_word(&NativeToUpper, &mut s, u64::MAX), 0xffff_ffff);
     // Aliases of 'A'/'a' one byte up must not be shifted either.
     let hi_a = 0x100 + u64::from(b'A');
     assert_eq!(call_word(&NativeToLower, &mut s, hi_a), hi_a);
@@ -310,5 +311,32 @@ fn test_symbolic_tolower_preserves_eof() {
         .unwrap();
     s.add_constraint(eq);
     let ctx = s.solver().borrow();
-    assert_eq!(ctx.min(&result, false), Some(u128::from(u64::MAX)));
+    assert_eq!(result.width(), 32);
+    assert_eq!(ctx.min(&result, false), Some(0xffff_ffff));
+}
+
+/// angr-vmi2l.103: the argument is a C `int`, so bits 63:32 of the register,
+/// which the ABI leaves undefined, must not change the answer. Python reads
+/// the prototype-typed 32-bit value: `isdigit(0x1_0000_0030)` is `isdigit('0')`
+/// and `tolower(0x10_0000_0041)` is `'a'`.
+#[test]
+fn test_dirty_upper_half_is_ignored() {
+    let mut s = make_state();
+    assert_eq!(call_word(&NativeIsDigit, &mut s, 0x1_0000_0030), 1);
+    assert_eq!(call_word(&NativeIsBlank, &mut s, 0xdead_0000_0020), 1);
+    assert_eq!(call_word(&NativeToLower, &mut s, 0x10_0000_0041), u64::from(b'a'));
+    assert_eq!(call_word(&NativeToUpper, &mut s, 0x10_0000_0062), u64::from(b'B'));
+    assert_eq!(call_word(&NativeToLower, &mut s, 0x10_0000_0031), 0x31);
+    // The 0x100 alias still lives in the low 32 bits, so it is still rejected.
+    assert_eq!(call_word(&NativeIsDigit, &mut s, 0x1_0000_0130), 0);
+
+    let sym = RustBV::symbol("c", 64);
+    let eq = sym.eq(&RustBV::concrete(0x1_0000_0030, 64));
+    let result = NativeIsDigit
+        .call(&mut s, std::slice::from_ref(&sym))
+        .unwrap()
+        .unwrap();
+    s.add_constraint(eq);
+    let ctx = s.solver().borrow();
+    assert_eq!(ctx.min(&result, false), Some(1));
 }

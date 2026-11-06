@@ -567,9 +567,9 @@ crate::declare_proc! {
     /// Native strtol: `long strtol(const char *nptr, char **endptr, int base)`.
     name = "strtol",
     struct = NativeStrtol,
-    args = [nptr: concrete, endptr: concrete, base: concrete],
+    args = [nptr: concrete, endptr: concrete, base: int],
     call |state| {
-        run_strtol(state, nptr, Some(endptr), base as i64, None)
+        run_strtol(state, nptr, Some(endptr), i64::from(base), None)
     }
 }
 
@@ -578,9 +578,9 @@ crate::declare_proc! {
     /// interpretation.
     name = "strtoul",
     struct = NativeStrtoul,
-    args = [nptr: concrete, endptr: concrete, base: concrete],
+    args = [nptr: concrete, endptr: concrete, base: int],
     call |state| {
-        run_strtol(state, nptr, Some(endptr), base as i64, None)
+        run_strtol(state, nptr, Some(endptr), i64::from(base), None)
     }
 }
 
@@ -623,12 +623,12 @@ crate::declare_proc! {
     /// Pinned by `test_strtoll_ilp32_falls_back_to_python` in strtol_tests.rs.
     name = "strtoll",
     struct = NativeStrtoll,
-    args = [nptr: concrete, endptr: concrete, base: concrete],
+    args = [nptr: concrete, endptr: concrete, base: int],
     call |state| {
         if state.arch().bits() < 64 {
             return Err(ProcedureError::NotImplemented);
         }
-        run_strtol(state, nptr, Some(endptr), base as i64, None)
+        run_strtol(state, nptr, Some(endptr), i64::from(base), None)
     }
 }
 
@@ -638,12 +638,12 @@ crate::declare_proc! {
     /// `test_strtoull_ilp32_falls_back_to_python`. See strtoll above.
     name = "strtoull",
     struct = NativeStrtoull,
-    args = [nptr: concrete, endptr: concrete, base: concrete],
+    args = [nptr: concrete, endptr: concrete, base: int],
     call |state| {
         if state.arch().bits() < 64 {
             return Err(ProcedureError::NotImplemented);
         }
-        run_strtol(state, nptr, Some(endptr), base as i64, None)
+        run_strtol(state, nptr, Some(endptr), i64::from(base), None)
     }
 }
 

@@ -67,19 +67,23 @@ fn test_write_unknown_fd_falls_back() {
 fn test_write_stdin_falls_back() {
     // fd=0 is open (stdin) but we refuse to write — fall back so the
     // Python posix model can produce EBADF.
-    let mut state = RustSimState::new("amd64").unwrap();
-    state.map_memory_data(0x1000, b"x", Permission::RWX);
-    let result = NativeWrite.call(
-        &mut state,
-        &[
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(1, 64),
-        ],
-    );
-    assert!(result.is_err());
-    // The native handler must not have appended to stdin's content.
-    assert_eq!(state.file_system_ref().fd_content(0), b"");
+    // The fd is a C `int` (angr-vmi2l.103): 0x1_0000_0000 is fd 0 with a dirty
+    // upper half and must take the same refusal, not the FileSystem path.
+    for fd in [0u128, 0x1_0000_0000] {
+        let mut state = RustSimState::new("amd64").unwrap();
+        state.map_memory_data(0x1000, b"x", Permission::RWX);
+        let result = NativeWrite.call(
+            &mut state,
+            &[
+                RustBV::concrete(fd, 64),
+                RustBV::concrete(0x1000, 64),
+                RustBV::concrete(1, 64),
+            ],
+        );
+        assert!(result.is_err(), "write({fd:#x}, ...) must fall back");
+        // The native handler must not have appended to stdin's content.
+        assert_eq!(state.file_system_ref().fd_content(0), b"");
+    }
 }
 
 #[test]

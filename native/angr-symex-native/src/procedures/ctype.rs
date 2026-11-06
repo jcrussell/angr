@@ -5,15 +5,21 @@
 //!
 //! Each takes a single int argument and returns 0 or non-zero.
 //!
-//! **Full-width comparison (angr-6cp06.1).** The argument is compared at its
-//! own width (the arch word — native procs receive pointer-sized register
-//! values), *not* truncated to bits\[7:0\]. The Python siblings this module
-//! mirrors (`angr/procedures/libc/isdigit.py`, `tolower.py`, ...) all compare
-//! the full `c` unsigned, so truncating diverged: `isdigit(304)` was true
-//! natively (`304 & 0xff == b'0'`) and false in Python, and `tolower(EOF)`
-//! returned `255` instead of preserving `-1` — breaking the ubiquitous
-//! `while ((c = getchar()) != EOF) putchar(tolower(c));` idiom. The symbolic
-//! path shares the concrete path's range tables, so the two cannot drift.
+//! **`int`-width comparison (angr-6cp06.1, angr-vmi2l.103).** The argument is
+//! a C `int`: bits 31:0 of the argument register (`declare_proc!`'s `int_bv`
+//! kind), compared unsigned at 32 bits and *not* truncated to bits\[7:0\].
+//! The Python siblings this module mirrors (`angr/procedures/libc/isdigit.py`,
+//! `tolower.py`, ...) compare the whole prototype-typed 32-bit `c` unsigned.
+//! Truncating to a byte diverged: `isdigit(304)` was true natively
+//! (`304 & 0xff == b'0'`) and false in Python, and `tolower(EOF)` returned
+//! `255` instead of preserving `-1`, which broke the ubiquitous
+//! `while ((c = getchar()) != EOF) putchar(tolower(c));` idiom. Comparing the
+//! whole 64-bit register diverged the other way: the ABI leaves bits 63:32
+//! undefined, so a dirty upper half turned `isdigit('0')` false and leaked
+//! into `tolower`'s 64-bit return. `tolower`/`toupper` return their 32-bit
+//! result, which the shell's `write_proc_return_with_abi` widens. The
+//! symbolic path shares the concrete path's range tables, so the two cannot
+//! drift.
 //!
 //! **Panic policy (angr-9ke6b.212):** the guest-supplied argument reaches these
 //! procedures as a `RustBV` and is never unwrapped — a symbolic argument takes
@@ -245,7 +251,7 @@ crate::declare_proc! {
     /// `int isdigit(int c)` — returns nonzero if `c` is an ASCII digit.
     name = "isdigit",
     struct = NativeIsDigit,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'0', b'9')])
     }
@@ -255,7 +261,7 @@ crate::declare_proc! {
     /// `int isalpha(int c)`.
     name = "isalpha",
     struct = NativeIsAlpha,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'A', b'Z'), (b'a', b'z')])
     }
@@ -271,7 +277,7 @@ crate::declare_proc! {
     /// branch under the native fast path than under Python.
     name = "isspace",
     struct = NativeIsSpace,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, C_SPACE_RANGES)
     }
@@ -281,7 +287,7 @@ crate::declare_proc! {
     /// `int isalnum(int c)`.
     name = "isalnum",
     struct = NativeIsAlnum,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'Z'), (b'a', b'z')])
     }
@@ -291,7 +297,7 @@ crate::declare_proc! {
     /// `int isupper(int c)`.
     name = "isupper",
     struct = NativeIsUpper,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'A', b'Z')])
     }
@@ -301,7 +307,7 @@ crate::declare_proc! {
     /// `int islower(int c)`.
     name = "islower",
     struct = NativeIsLower,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'a', b'z')])
     }
@@ -311,7 +317,7 @@ crate::declare_proc! {
     /// `int isxdigit(int c)`.
     name = "isxdigit",
     struct = NativeIsXdigit,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(b'0', b'9'), (b'A', b'F'), (b'a', b'f')])
     }
@@ -321,7 +327,7 @@ crate::declare_proc! {
     /// `int isprint(int c)`.
     name = "isprint",
     struct = NativeIsPrint,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(0x20, 0x7e)])
     }
@@ -331,7 +337,7 @@ crate::declare_proc! {
     /// `int isascii(int c)` — nonzero if `c` is a 7-bit ASCII value [0, 127].
     name = "isascii",
     struct = NativeIsAscii,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(0x00, 0x7f)])
     }
@@ -341,7 +347,7 @@ crate::declare_proc! {
     /// `int isblank(int c)` — nonzero for space (0x20) or tab (0x09).
     name = "isblank",
     struct = NativeIsBlank,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         set_predicate(state, &c, b" \t")
     }
@@ -351,7 +357,7 @@ crate::declare_proc! {
     /// `int iscntrl(int c)` — nonzero for control chars [0, 31] or DEL (127).
     name = "iscntrl",
     struct = NativeIsCntrl,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(0x00, 0x1f), (0x7f, 0x7f)])
     }
@@ -361,7 +367,7 @@ crate::declare_proc! {
     /// `int isgraph(int c)` — nonzero for printable non-space chars [33, 126].
     name = "isgraph",
     struct = NativeIsGraph,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(state, &c, &[(0x21, 0x7e)])
     }
@@ -372,7 +378,7 @@ crate::declare_proc! {
     /// `[91,96]`, `[123,126]` (matches Python's ispunct ranges).
     name = "ispunct",
     struct = NativeIsPunct,
-    args = [c: bv],
+    args = [c: int_bv],
     call |state| {
         ranges_predicate(
             state,
@@ -386,7 +392,7 @@ crate::declare_proc! {
     /// `int tolower(int c)` — convert uppercase to lowercase.
     name = "tolower",
     struct = NativeToLower,
-    args = [c: bv],
+    args = [c: int_bv],
     call |_state| {
         case_shift(&c, b'A', b'Z', 32)
     }
@@ -396,7 +402,7 @@ crate::declare_proc! {
     /// `int toupper(int c)` — convert lowercase to uppercase.
     name = "toupper",
     struct = NativeToUpper,
-    args = [c: bv],
+    args = [c: int_bv],
     call |_state| {
         case_shift(&c, b'a', b'z', -32)
     }

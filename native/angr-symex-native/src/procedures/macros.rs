@@ -24,6 +24,15 @@
 //!     callers fall back to Python.
 //!   * `bv` — clone the raw `RustBV` and bind it; the body decides how to
 //!     handle symbolic / concrete cases.
+//!   * `int` — a C `int` parameter: `concrete`, then truncated to bits 31:0
+//!     and bound as an `i32`.
+//!   * `int_bv` — a C `int` parameter as a `RustBV` truncated to bits 31:0.
+//!
+//! The two `int` kinds exist because the ABI leaves bits 63:32 of a 64-bit
+//! argument register undefined for an `int`, and Python angr reads the
+//! argument through the libc prototype as a 32-bit value. Comparing the whole
+//! register lets a caller's dirty upper half change the answer
+//! (angr-vmi2l.103).
 //!
 //! An optional `no_return = true` flag overrides the default `no_return()`
 //! from the trait (terminal procedures like `exit`, `abort`).
@@ -114,6 +123,16 @@ macro_rules! declare_proc {
     // ---- extraction helpers ----
     (@extract concrete, $args:ident, $idx:ident, $name:expr) => {
         $crate::procedures::extract_concrete_arg(&$args[$idx], $name)
+    };
+    (@extract int, $args:ident, $idx:ident, $name:expr) => {
+        $crate::procedures::extract_concrete_arg(&$args[$idx], $name)
+            .map(|v| v as u32 as i32)
+    };
+    (@extract int_bv, $args:ident, $idx:ident, $name:expr) => {
+        ::std::result::Result::<
+            $crate::symbolic::RustBV,
+            $crate::procedures::ProcedureError,
+        >::Ok($crate::procedures::c_int_bv(&$args[$idx]))
     };
     (@extract bv, $args:ident, $idx:ident, $name:expr) => {
         ::std::result::Result::<

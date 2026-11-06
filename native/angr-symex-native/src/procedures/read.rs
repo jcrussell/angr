@@ -50,7 +50,7 @@ crate::declare_proc! {
     /// ```
     name = "read",
     struct = NativeRead,
-    args = [fd: concrete, buf: concrete, count: concrete],
+    args = [fd: int, buf: concrete, count: concrete],
     call |state| {
         if count == 0 {
             return Ok(Some(arch_word(state, 0u64)));
