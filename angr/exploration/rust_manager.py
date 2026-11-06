@@ -1763,6 +1763,9 @@ class RustExplorationManager(
         )
 
         self._inspect_breakpoints: dict[str, list] = {evt: [] for evt in _RUST_INSPECT_SUPPORTED_EVENTS}
+        # Caller-owned states handed to ``_add_rust_state``: a BP set on one
+        # after it was added is adopted at the next step (angr-vmi2l.176).
+        self._inspect_seed_states: list[weakref.ref] = []
         self._INSPECT_EVENT_BITS = dict(_RUST_INSPECT_EVENT_BITS)
         # Reentrancy guard: when a user action callback runs, suppress
         # nested inspect dispatch on the same manager. uq4n.4 covers
@@ -2882,6 +2885,26 @@ class RustExplorationManager(
                     added = True
         if added:
             self._update_inspect_bitmask()
+
+    def _adopt_late_inspect_breakpoints(self, *, release_seeds: bool) -> None:
+        """Adopt BPs set after construction on a seed state or a stash mirror.
+
+        Under ``SimulationManager`` the stepped state is the one the caller
+        holds, so ``state.inspect.b(...)`` on the seed after ``simgr(state)``,
+        or on ``simgr.active[i]``, fires. Here those are a caller-owned seed
+        and the Python mirror of a Rust state, neither of which Rust steps,
+        so every entry that hands control to Rust re-reads their inspectors
+        (``_invalidate_state_export_cache``) (angr-vmi2l.176). A seed stops
+        being read once Rust steps (*release_seeds*): ``SimulationManager``
+        steps its seed once, and a BP set on it later never fires. A removal
+        is not mirrored: only ``RustInspectProxy.remove_breakpoint`` drops a BP.
+        """
+        live = [ref for ref in self._inspect_seed_states if ref() is not None]
+        self._inspect_seed_states = [] if release_seeds else live
+        for ref in live:
+            self._seed_inspect_breakpoints(ref())
+        for state in list(self._state_cache.values()):
+            self._seed_inspect_breakpoints(state)
 
     def _make_inspect_state_for(self, state_id: int):
         """Build the state object the user action sees during inspect dispatch.
@@ -4128,6 +4151,8 @@ class RustExplorationManager(
             exporter._detach_export_proxies(angr_state, binding.state_id)
 
         self._seed_inspect_breakpoints(caller_state)
+        if not any(ref() is caller_state for ref in self._inspect_seed_states):
+            self._inspect_seed_states.append(weakref.ref(caller_state))
 
         # Concretize stack-relative registers for Rust compatibility
         self._concretize_stack_registers(angr_state)

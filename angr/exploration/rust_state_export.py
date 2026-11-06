@@ -893,6 +893,8 @@ class RustStateExportMixin:
         caller that does not hand control to Rust next (the Rust states were
         already replaced, or only states were added).
         """
+        # Ahead of the detach, which moves a held mirror out of the cache.
+        self._adopt_late_inspect_breakpoints(release_seeds=detach_held)
         # Ahead of the detach, which re-syncs the mirrors from the store.
         self._reconcile_mirror_options()
         if detach_held:

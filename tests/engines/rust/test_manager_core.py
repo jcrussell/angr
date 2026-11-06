@@ -1204,6 +1204,40 @@ class TestRustExplorationPython:
         assert results[0] == results[1]
         assert results[0] == [0, ("w", 8, 4), 7, 17]
 
+    @pytest.mark.parametrize(("target", "expected"), [("seed_unstepped", [4, 2]), ("seed", []), ("active", [2])])
+    def test_breakpoint_set_after_construction_fires_like_python(self, target, expected):
+        """A BP set after simgr() on the seed or on simgr.active[0] fires as under Python (angr-vmi2l.176)."""
+        project = angr.load_shellcode(
+            "mov dword ptr [rsp-8], eax\njmp next\nnext:\nmov word ptr [rsp-16], ax\nhere: jmp here",
+            "amd64",
+        )
+        results = []
+
+        def rust(s):
+            mgr = RustExplorationManager(project, s)
+            mgr.set_block_granular(True)
+            return mgr
+
+        for make in (project.factory.simulation_manager, rust):
+            seen = []
+            state = project.factory.call_state(project.entry)
+            mgr = make(state)
+            if target != "seed_unstepped":
+                mgr.step()
+            holder = mgr.active[0] if target == "active" else state
+            holder.inspect.b(
+                "mem_write",
+                when=angr.BP_AFTER,
+                action=lambda st, seen=seen: seen.append(st.inspect.attrs.mem_write_length),
+            )
+            mgr.step(n=2 if target == "seed_unstepped" else 1)
+            assert not mgr.errored
+            results.append(seen)
+        assert results[0] == results[1]
+        # SimulationManager steps its seed once: a BP set on it afterwards
+        # never fires.
+        assert results[0] == expected
+
     def test_keyword_filtered_breakpoint_fires_like_python(self):
         """A keyword filter's ``BP.check`` calls ``state.solver.unique``; it raised and skipped later BPs (angr-vmi2l.204)."""
         project = angr.load_shellcode(

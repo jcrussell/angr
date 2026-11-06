@@ -2134,6 +2134,16 @@ once applies to every state in that manager. This is a deviation from
 Python's ``SimInspector`` semantics, where ``state.copy()`` forks
 breakpoints with the state.
 
+A BP set with plain ``state.inspect.b(...)`` joins the same storage.
+That covers a seed state, whether the BP was set before or after the
+manager was built, as long as it was set before the first step. It also
+covers a stash entry such as ``mgr.active[0]``. Each step re-reads
+those inspectors (``RustExplorationManager._adopt_late_inspect_breakpoints``).
+A seed stops being read once the manager steps, matching
+``SimulationManager``, which steps its seed only once. Removing a BP
+from one of those inspectors does not remove it from the manager; use
+``RustInspectProxy.remove_breakpoint``.
+
 Reentrancy
 ~~~~~~~~~~
 
@@ -2176,8 +2186,8 @@ this document so callers can find these workarounds in order:
               # Inspect the call target / caller PC here.
               ...
 
-      mgr = RustExplorationManager(proj, [state])
       state.inspect.b("exit", when=angr.BP_BEFORE, action=on_call)
+      mgr = RustExplorationManager(proj, [state])
 
    The supported set is enumerated in the *Supported events* table
    above; check it before falling back to the next workarounds.
