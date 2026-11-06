@@ -619,6 +619,9 @@ impl<'a> VEXInterpreter<'a> {
                 addr,
                 size: unmapped_size,
             }) => {
+                if let Some(fault) = self.strict_unmapped_fault(callbacks, addr, size) {
+                    return Err(CbExecutionError::Memory(fault));
+                }
                 if let Some(filler) = self.install_filler_at_concrete(callbacks, addr_val, size) {
                     return Ok(Some(filler));
                 }

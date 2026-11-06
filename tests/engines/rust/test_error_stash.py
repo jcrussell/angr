@@ -218,48 +218,62 @@ class TestErrorRecovery:
         # Non-multiple-of-16 width straddling a chunk boundary (16 + 4).
         assert state.memory_load(0x1000, 20) == pattern[:20]
 
-    def test_symbolic_load_to_unmapped_address_does_not_stay_active(self):
-        """Symbolic load address pinned to a single unmapped value must NOT
-        keep the state in `active`. It should land in `errored` (or at minimum
-        `deadended`) — silently falling back to address 0 / a fresh symbol
-        would diverge from Python angr (which raises SimUnsatError /
-        SimMemoryAddressError under STRICT_PAGE_ACCESS).
-
-        Locks down current behaviour (angr-ho6i): if the engine ever silently
-        keeps the state in `active`, this test fails.
-        """
+    @staticmethod
+    def _strict_unmapped_run(code: bytes, rdi=None):
+        """Run *code* (ending ``jmp $``) at 0x1000 under STRICT_PAGE_ACCESS
+        on both engines; return the (Python, Rust) errored lists."""
         from angr import claripy
         from angr import sim_options as o
 
-        # mov rax, [rdi]   -> 48 8b 07
-        # ret              -> c3
-        # rdi will be constrained to 0xDEADBEEF, which is OUTSIDE the only
-        # mapped region [0x1000, 0x2000) (the loaded shellcode page).
-        shellcode = bytes.fromhex("488b07c3")
-        proj = angr.load_shellcode(shellcode, arch="AMD64", load_address=0x1000)
+        results = []
+        for engine in ("python", "rust"):
+            proj = angr.load_shellcode(code, arch="AMD64", load_address=0x1000)
+            state = proj.factory.blank_state(
+                addr=0x1000,
+                add_options={o.STRICT_PAGE_ACCESS, o.ZERO_FILL_UNCONSTRAINED_REGISTERS},
+            )
+            if rdi is not None:
+                rdi_sym = claripy.BVS("rdi_addr", 64)
+                state.regs.rdi = rdi_sym
+                state.solver.add(rdi_sym == rdi)
+            if engine == "rust":
+                mgr = RustExplorationManager(proj, [state])
+                mgr.run(n=3)
+                assert mgr.stash_counts().get("active", 0) == 0, mgr.stash_counts()
+            else:
+                mgr = proj.factory.simulation_manager(state)
+                mgr.run(n=3)
+                assert not mgr.active
+            results.append(list(mgr.errored))
+        return results
 
-        state = proj.factory.blank_state(
-            addr=0x1000,
-            add_options={o.STRICT_PAGE_ACCESS},
-        )
+    def _assert_unmapped_segfault(self, code: bytes, page: int, rdi=None):
+        from angr.errors import SimSegfaultException
 
-        rdi_sym = claripy.BVS("rdi_addr", 64)
-        state.regs.rdi = rdi_sym
-        state.solver.add(rdi_sym == 0xDEADBEEF)
-        assert state.solver.satisfiable(), (
-            "Sanity: rdi==0xDEADBEEF is satisfiable on its own; the *load* "
-            "from that address is what should fail, not the constraint set."
-        )
+        for errored in self._strict_unmapped_run(code, rdi):
+            assert len(errored) == 1
+            err = errored[0].error
+            assert isinstance(err, SimSegfaultException), err
+            assert (err.addr, err.reason) == (page, "unmapped")
 
-        mgr = RustExplorationManager(proj, [state])
-        mgr.run(max_steps=10)
+    def test_symbolic_load_to_unmapped_address_errors(self):
+        """A symbolic load address pinned to an unmapped page errors the state
+        with Python's ``SimSegfaultException(page, "unmapped")`` under
+        STRICT_PAGE_ACCESS (angr-ho6i, angr-vmi2l.258). The code spins on
+        ``jmp $`` so a load that does not fault leaves the state active."""
+        # mov rax, [rdi]; jmp $
+        self._assert_unmapped_segfault(bytes.fromhex("488b07ebfe"), 0xDEADB000, rdi=0xDEADBEEF)
 
-        counts = mgr.stash_counts()
-        assert counts.get("active", 0) == 0, (
-            f"State remained in active despite load from unmapped 0xDEADBEEF "
-            f"under STRICT_PAGE_ACCESS; stashes={counts} — engine silently "
-            f"continued instead of erroring or dead-ending."
-        )
+    def test_symbolic_store_to_unmapped_address_errors(self):
+        """Write twin of the symbolic load test (angr-vmi2l.258)."""
+        # mov [rdi], rax; jmp $
+        self._assert_unmapped_segfault(bytes.fromhex("488907ebfe"), 0xDEADB000, rdi=0xDEADBEEF)
+
+    def test_concrete_load_and_store_to_unmapped_address_error(self):
+        """Concrete-address load and store to an unmapped page (angr-vmi2l.258)."""
+        # mov rax, [0x3008]; jmp $   /   mov [0x3008], rax; jmp $
+        self._assert_unmapped_segfault(bytes.fromhex("488b042508300000ebfe"), 0x3000)
+        self._assert_unmapped_segfault(bytes.fromhex("4889042508300000ebfe"), 0x3000)
 
     def test_dcas_cmpxchg16b_no_python_fallback(self):
         """`cmpxchg16b` lifts to a VEX `CAS` with `old_hi`/`expdHi`/`dataHi`

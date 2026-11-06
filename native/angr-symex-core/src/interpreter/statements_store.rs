@@ -155,6 +155,9 @@ impl<'a> VEXInterpreter<'a> {
                 addr,
                 size: unmapped_size,
             }) => {
+                if let Some(fault) = self.strict_unmapped_fault(callbacks, addr, data_size) {
+                    return Err(CbExecutionError::Memory(fault));
+                }
                 if let ConcretizationResult::Single(store_addr) = *conc_result
                     && self.fetch_host_pages_for_store(callbacks, store_addr, data_size)?
                     && self.map_fresh_pages_for_store(callbacks, store_addr, data_size)

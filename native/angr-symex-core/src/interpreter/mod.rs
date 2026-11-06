@@ -681,6 +681,34 @@ impl<'a> VEXInterpreter<'a> {
         Some(filler)
     }
 
+    /// Under STRICT_PAGE_ACCESS, the fault for an access to `[addr, addr +
+    /// size)` that touches a page neither side holds (angr-vmi2l.258).
+    ///
+    /// Python's `PrivilegedPagingMixin` raises `SimSegfaultException(page,
+    /// "unmapped")` rather than create such a page. Without this the
+    /// `Unmapped` arms fell back to the callback ladder, which minted a
+    /// filler (`synthesize_unservable_load`) or wrote the store into the
+    /// host, and the state kept running. The error names the page base, as
+    /// Python's does. A page the host holds is left to the fetch paths.
+    pub(super) fn strict_unmapped_fault(
+        &self,
+        callbacks: &dyn EngineHost,
+        addr: u64,
+        size: usize,
+    ) -> Option<MemoryError> {
+        let rust_mem = self.rust_memory.as_ref()?;
+        if !rust_mem.enforce_permissions() {
+            return None;
+        }
+        crate::memory::PageIndex::range_covering(addr, size as u64)
+            .map(|page| page.base_addr())
+            .find(|&base| !rust_mem.is_mapped(base) && !callbacks.has_page(base))
+            .map(|base| MemoryError::Unmapped {
+                addr: base,
+                size: size as u64,
+            })
+    }
+
     /// Whether every store buffer outside `rust_memory` is empty, so a
     /// filler written into it cannot shadow a buffered write.
     fn store_buffers_empty(&self) -> bool {
