@@ -108,7 +108,7 @@ fn test_record_exit_survives_fork_and_serialization() {
 fn test_defer_exit_survives_fork_and_serialization() {
     let mut state = RustSimState::new("amd64").unwrap();
     assert!(!state.exit_pending());
-    state.defer_exit(0x70_0030);
+    state.defer_exit(0x70_0030, None);
     let mut forked = state.fork();
     let restored = RustSimState::from_serialized(&forked.to_serialized()).expect("from_serialized");
     for s in [&state, &forked, &restored] {

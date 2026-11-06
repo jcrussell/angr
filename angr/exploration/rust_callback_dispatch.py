@@ -783,6 +783,10 @@ class RustCallbackDispatchMixin:
             l.debug("Failed to inject Rust stdin data into posix: %s", e)
 
     _SIMPROC_NO_RET_TERMINAL = {"exit", "_exit", "abort", "__stack_chk_fail"}
+    # The terminals whose status needs no state: Python's abort.py (and its
+    # __stack_chk_fail alias) does self.exit(1). exit/_exit read theirs from
+    # an argument, so they run and take their successor's (angr-vmi2l.151).
+    _SIMPROC_FIXED_EXIT_STATUS = {"abort": 1, "__stack_chk_fail": 1}
 
     def _run_callback_scoped(self, inner, event: _ExplorationEvent):
         """Run a callback handler body, closing its fork scope however it exits.
@@ -1125,7 +1129,8 @@ class RustCallbackDispatchMixin:
         """Skip state creation for procedures that always deadend.
 
         Two cases:
-        - NO_RET terminal procedures (exit, abort, etc.) — known statically.
+        - NO_RET terminal procedures with a fixed status (abort,
+          __stack_chk_fail) — known statically.
         - Exit-continuation cache hits — observed dynamically when ALL
           successors had Ijk_Exit on a NO_RET procedure (see
           invariant-exit-continuation-cache memory).
@@ -1133,14 +1138,17 @@ class RustCallbackDispatchMixin:
         Returns True if the callback was handled (caller should return).
         """
         proc_no_ret = getattr(proc, "NO_RET", False)
-        is_terminal = proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL
+        is_terminal = proc_no_ret and name in self._SIMPROC_FIXED_EXIT_STATUS
         is_cached_exit = addr_int in self._exit_continuation_addrs
         if not (is_terminal or is_cached_exit):
             return False
         if _DBG:
             reason = "no-return procedure" if is_terminal else "exit continuation"
             l.debug(f"Fast path: {reason} {name} at 0x{addr:x} — deadending")
-        if is_cached_exit:
+        if is_terminal:
+            status = claripy.BVV(self._SIMPROC_FIXED_EXIT_STATUS[name], self._project.arch.bits)
+            self._rust_mgr.record_state_exit(self._current_callback_state_id, addr, status)
+        else:
             self._rust_mgr.record_state_exit(
                 self._current_callback_state_id, addr, self._exit_continuation_addrs[addr_int]
             )
@@ -1276,6 +1284,8 @@ class RustCallbackDispatchMixin:
         if proc_no_ret and name in self._SIMPROC_NO_RET_TERMINAL:
             if _DBG:
                 l.debug(f"No-return procedure {name} with successors — deadending")
+            exit_code = _terminate_exit_code(all_succs[0]) if all_succs else None
+            self._rust_mgr.record_state_exit(event.callback_state_id, addr, exit_code)
             self._rust_mgr.deadend_pending_callback(event.callback_state_id)
             self._set_callback_state(None)
             self._current_callback_state_id = None

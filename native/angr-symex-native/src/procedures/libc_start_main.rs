@@ -36,9 +36,10 @@ crate::declare_proc! {
     struct = NativeLibcStartMain,
     args = [_main: bv, _argc: bv, _argv: bv, _init: bv, _fini: bv],
     no_return = true,
-    call |_state| {
-        // after_main does self.exit(0); native equivalent is just deadending.
-        Ok(None)
+    call |state| {
+        // after_main does self.exit(0): deadend with status 0
+        // (`NativeSimProcedure::no_return`).
+        Ok(Some(crate::symbolic::RustBV::concrete(0, state.arch().bits())))
     }
 }
 

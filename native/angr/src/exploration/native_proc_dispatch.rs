@@ -51,6 +51,8 @@ pub(crate) fn effective_pc(state: &RustSimState) -> u64 {
 pub(crate) enum NativeProcDisposition {
     Returned {
         no_return: bool,
+        /// The return value, or with `no_return` the exit status for
+        /// `RustSimState::record_exit`.
         ret_val: Option<RustBV>,
     },
     SubCall {
@@ -163,6 +165,14 @@ pub(crate) fn dispatch_native_proc(
     match native_proc.call_ex(state, &args) {
         Ok(ProcOutcome::Return(ret_val)) => {
             counters.native_call(name);
+            // Only a proc that is itself no-return returns an exit status
+            // (`NativeSimProcedure::no_return`); one made no-return by the
+            // Python registration tuple returned an ordinary value.
+            let ret_val = if no_return && !native_proc.no_return() {
+                None
+            } else {
+                ret_val
+            };
             NativeProcDisposition::Returned { no_return, ret_val }
         }
         Ok(ProcOutcome::CallAndResume {

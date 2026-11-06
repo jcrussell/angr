@@ -331,7 +331,10 @@ pub trait NativeSimProcedure: Send + Sync {
     /// Get the number of arguments this procedure expects.
     fn num_args(&self) -> usize;
 
-    /// Whether this procedure never returns (e.g., exit, abort).
+    /// Whether this procedure never returns (e.g., exit, abort). A no-return
+    /// procedure's return value is its exit status, not a register write: the
+    /// dispatcher records it with `RustSimState::record_exit`, and `None`
+    /// means no `terminate` event.
     fn no_return(&self) -> bool {
         false
     }

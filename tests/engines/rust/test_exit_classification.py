@@ -17,7 +17,9 @@
 * Native no-return procedure exit (angr-mx00p.132.55): a state a native
   no-return procedure deadends records the procedure as its last
   ``bbl_addrs`` entry with ``Ijk_Exit``, as Python's ``SimProcedure.exit``
-  step does.
+  step does, and the ``terminate`` event's status: exit/_exit's argument,
+  abort's 1 (angr-vmi2l.151). So does a Python exit/abort the callback
+  dispatcher deadends without stepping.
 """
 
 from __future__ import annotations
@@ -125,6 +127,48 @@ class TestNativeProcedureExit:
         (state,) = rust.deadended
         assert list(state.history.bbl_addrs) == list(expected.history.bbl_addrs)
         assert state.history.jumpkind == expected.history.jumpkind == "Ijk_Exit"
+
+
+def _exits(states):
+    """Each state's jumpkind and ``terminate`` statuses, sorted."""
+    out = []
+    for state in states:
+        codes = tuple(
+            state.solver.eval_one(event.objects["exit_code"])
+            for event in state.history.events
+            if event.type == "terminate"
+        )
+        out.append((state.history.jumpkind, codes))
+    return sorted(out)
+
+
+class TestProcedureExitStatus:
+    def test_native_exit_reports_its_status(self):
+        # fauxware's rejected() calls exit(1), which the native exit runs.
+        proj = angr.Project(os.path.join(BIN_LOCATION, "tests", "x86_64", "fauxware"), auto_load_libs=False)
+        python = angr.SimulationManager(proj, active_states=[proj.factory.entry_state()]).run()
+        rust = RustExplorationManager(proj, [proj.factory.entry_state()])
+        rust.run()
+        assert ("Ijk_Exit", (1,)) in _exits(python.deadended)
+        assert _exits(rust.deadended) == _exits(python.deadended)
+
+    @pytest.mark.parametrize(("proc", "status"), [("exit", 3), ("_exit", 3), ("abort", 1), ("__stack_chk_fail", 1)])
+    def test_hooked_exit_reports_its_status(self, proc, status):
+        # mov edi, 3; call 0x100 — the hook is Python's libc proc, so Rust
+        # runs exit/_exit in Python and deadends abort without stepping it.
+        code = b"\xbf\x03\x00\x00\x00\xe8\xf6\x00\x00\x00".ljust(0x101, b"\x90")
+        results = []
+        for engine in ("python", "rust"):
+            proj = angr.load_shellcode(code, arch="amd64")
+            proj.hook(0x100, angr.SIM_PROCEDURES["libc"]["abort" if status == 1 else "exit"](display_name=proc))
+            state = proj.factory.blank_state(addr=0)
+            if engine == "python":
+                mgr = angr.SimulationManager(proj, active_states=[state]).run()
+            else:
+                mgr = RustExplorationManager(proj, [state])
+                mgr.run()
+            results.append(_exits(mgr.deadended))
+        assert results[0] == results[1] == [("Ijk_Exit", (status,))]
 
 
 class TestVsyscallHookSyscall:

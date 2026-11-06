@@ -330,11 +330,11 @@ impl RustSimState {
     }
 
     /// End a block-granular step at the no-return procedure at `addr` as
-    /// Python's does: [`Self::record_exit`] (no status), and the state stays
-    /// active until the next step deadends it. See the
-    /// `RustSimState::exit_pending` field doc.
-    pub fn defer_exit(&mut self, addr: u64) {
-        self.record_exit(addr, None);
+    /// Python's does: [`Self::record_exit`], and the state stays active until
+    /// the next step deadends it. See the `RustSimState::exit_pending` field
+    /// doc.
+    pub fn defer_exit(&mut self, addr: u64, exit_code: Option<RustBV>) {
+        self.record_exit(addr, exit_code);
         self.exit_pending = true;
     }
 

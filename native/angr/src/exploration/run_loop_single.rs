@@ -380,13 +380,13 @@ impl RustExplorationManager {
                             // A granular step stops at the exit instead, like
                             // Python's `Ijk_Exit` successor (angr-mx00p.136.30).
                             if no_return && self.block_granular {
-                                state.defer_exit(pc);
+                                state.defer_exit(pc, ret_val);
                                 return Ok(StepOutcome::Successors(vec![state]));
                             }
                             if no_return {
                                 // Recorded as Python's `SimProcedure.exit`
                                 // step does (angr-mx00p.132.55).
-                                state.record_exit(pc, None);
+                                state.record_exit(pc, ret_val);
                                 self.push_or_drop_terminal(STASH_DEADENDED, state);
                                 return Ok(StepOutcome::Routed);
                             }

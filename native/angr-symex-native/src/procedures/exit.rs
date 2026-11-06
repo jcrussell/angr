@@ -3,8 +3,14 @@
 //! These are no-return procedures that terminate the current state.
 //! They don't need Python callbacks since they just deadend the state.
 //!
+//! Each returns its exit status, which the dispatcher hands to
+//! `RustSimState::record_exit` for the export's `terminate` event (see
+//! `NativeSimProcedure::no_return`), as Python's `SimProcedure.exit` records
+//! it: exit/_exit pass their argument, abort and `__stack_chk_fail` (aliases
+//! of Python's `abort`) pass 1 (angr-vmi2l.151).
+//!
 //! exit/_exit declare their `status` arg as `bv` (not `concrete`) so a
-//! symbolic exit status is simply ignored rather than forcing a Python
+//! symbolic exit status is passed through rather than forcing a Python
 //! fallback — preserving the always-deadend behavior regardless of arg form.
 
 crate::declare_proc! {
@@ -15,11 +21,10 @@ crate::declare_proc! {
     /// ```
     name = "exit",
     struct = NativeExit,
-    args = [_status: bv],
+    args = [status: bv],
     no_return = true,
     call |_state| {
-        // No-return: just return None to signal state should be deadended.
-        Ok(None)
+        Ok(Some(status))
     }
 }
 
@@ -27,10 +32,10 @@ crate::declare_proc! {
     /// Native _exit implementation (same as exit for our purposes).
     name = "_exit",
     struct = NativeUnderscoreExit,
-    args = [_status: bv],
+    args = [status: bv],
     no_return = true,
     call |_state| {
-        Ok(None)
+        Ok(Some(status))
     }
 }
 
@@ -40,8 +45,8 @@ crate::declare_proc! {
     struct = NativeAbort,
     args = [],
     no_return = true,
-    call |_state| {
-        Ok(None)
+    call |state| {
+        Ok(Some(abort_status(state)))
     }
 }
 
@@ -57,9 +62,14 @@ crate::declare_proc! {
     struct = NativeStackChkFail,
     args = [],
     no_return = true,
-    call |_state| {
-        Ok(None)
+    call |state| {
+        Ok(Some(abort_status(state)))
     }
+}
+
+/// Python's `abort.py` exit status, `self.exit(1)` at the arch's width.
+fn abort_status(state: &crate::state::RustSimState) -> crate::symbolic::RustBV {
+    crate::symbolic::RustBV::concrete(1, state.arch().bits())
 }
 
 test_submod!("exit_tests.rs" => tests);

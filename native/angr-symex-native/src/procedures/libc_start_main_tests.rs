@@ -12,7 +12,7 @@ fn test_libc_start_main_no_return() {
 }
 
 #[test]
-fn test_libc_start_main_returns_none() {
+fn test_libc_start_main_exits_with_status_zero() {
     let mut state = RustSimState::new("amd64").unwrap();
     let proc = NativeLibcStartMain;
     let args = vec![
@@ -22,6 +22,7 @@ fn test_libc_start_main_returns_none() {
         RustBV::concrete(0, 64),          // init
         RustBV::concrete(0, 64),          // fini
     ];
-    let result = proc.call(&mut state, &args).unwrap();
-    assert!(result.is_none());
+    let status = proc.call(&mut state, &args).unwrap().expect("exit status");
+    assert_eq!(status.as_u64(), Some(0));
+    assert_eq!(status.width(), 64);
 }

@@ -559,9 +559,9 @@ use super::super::native_proc_dispatch::{
 /// the disposition match.
 enum SimProcResolution {
     /// A native proc ran to completion in-line and the state is already landed
-    /// at its return site. `no_return` deadends the main state rather than
+    /// at its return site. An `exit` deadends the main state rather than
     /// continuing it.
-    RanNatively { no_return: bool },
+    RanNatively { exit: Option<ProcExit> },
     /// Bounce this call to Python: either no native proc was preferred/found,
     /// or one ran but its guest sub-call setup failed.
     PythonFallback,
@@ -570,6 +570,10 @@ enum SimProcResolution {
     /// this message rather than bounced.
     Segfault(String),
 }
+
+/// A no-return proc's exit, carrying its status for
+/// `RustSimState::record_exit` (`NativeSimProcedure::no_return`).
+struct ProcExit(Option<RustBV>);
 
 /// Decide whether this hook may run natively and, if so, run it.
 ///
@@ -664,18 +668,21 @@ fn apply_native_disposition(
     let ctx = cc.ctx;
     match disposition {
         NativeProcDisposition::Returned { no_return, ret_val } => {
-            if !no_return {
-                if let Some(rv) = ret_val {
-                    ctx.cc.write_proc_return(state, rv);
-                }
-                state.return_from_procedure(return_addr);
-                // Only stack-return ABIs (x86/AMD64) pop the return address, so
-                // only they advance SP here; the shared helper gates that and
-                // is what keeps this site and `step_one`'s inline native path
-                // in `run_loop_single.rs` from drifting (angr-c7xno.29).
-                advance_sp_past_return_addr(state, ctx.cc.pops_return_addr);
+            if no_return {
+                return SimProcResolution::RanNatively {
+                    exit: Some(ProcExit(ret_val)),
+                };
             }
-            SimProcResolution::RanNatively { no_return }
+            if let Some(rv) = ret_val {
+                ctx.cc.write_proc_return(state, rv);
+            }
+            state.return_from_procedure(return_addr);
+            // Only stack-return ABIs (x86/AMD64) pop the return address, so
+            // only they advance SP here; the shared helper gates that and
+            // is what keeps this site and `step_one`'s inline native path
+            // in `run_loop_single.rs` from drifting (angr-c7xno.29).
+            advance_sp_past_return_addr(state, ctx.cc.pops_return_addr);
+            SimProcResolution::RanNatively { exit: None }
         }
         NativeProcDisposition::SubCall {
             proc_name,
@@ -699,7 +706,7 @@ fn apply_native_disposition(
                 // book it as a native call (mirrors `step_one`).
                 counters.native_calls += 1;
                 *counters.call_counts.entry(name.to_owned()).or_insert(0) += 1;
-                SimProcResolution::RanNatively { no_return: false }
+                SimProcResolution::RanNatively { exit: None }
             }
             Err(e) => {
                 // Setup failed (symbolic SP / unmapped slot); we bounce to
@@ -730,7 +737,7 @@ fn apply_native_disposition(
 
 /// Materialize the forks a natively-completed proc deferred, then build the
 /// continue outcome: the main state continues alongside them, unless the proc
-/// was `no_return`, in which case it deadends and only the forks carry on. A
+/// exited (`exit`), in which case it deadends and only the forks carry on. A
 /// block-granular step defers that deadend by one step (`defer_exit`).
 fn continue_after_native_proc(
     cc: &CoreCtx,
@@ -739,7 +746,7 @@ fn continue_after_native_proc(
     fork_base: Option<RustSimState>,
     payload: ForkPayload,
     root_hint: u64,
-    no_return: bool,
+    exit: Option<ProcExit>,
 ) -> CoreOutcome {
     let mut forks_out = Vec::new();
     let mut pruned = Vec::new();
@@ -755,12 +762,14 @@ fn continue_after_native_proc(
             fork_ids: &mut fork_ids,
         },
     );
-    if no_return && !cc.ctx.block_granular {
+    if !cc.ctx.block_granular
+        && let Some(ProcExit(exit_code)) = exit
+    {
         // Deadend the main state; surviving forks continue. The exit is
         // recorded as Python's `SimProcedure.exit` step records it, so the
         // export's `bbl_addrs` ends at the procedure (angr-mx00p.132.55).
         let addr = state.pc();
-        state.record_exit(addr, None);
+        state.record_exit(addr, exit_code);
         CoreOutcome {
             ret: CoreReturn::Continue(forks_out),
             pruned,
@@ -770,11 +779,11 @@ fn continue_after_native_proc(
             root_hint,
         }
     } else {
-        if no_return {
+        if let Some(ProcExit(exit_code)) = exit {
             // A granular step leaves the state at the exit, like Python's
             // `Ijk_Exit` successor (`RustSimState::exit_pending`).
             let addr = state.pc();
-            state.defer_exit(addr);
+            state.defer_exit(addr, exit_code);
         }
         let succ = with_forks_in_python_order(Some(state), forks_out);
         CoreOutcome {
@@ -837,9 +846,9 @@ pub(super) fn handle_simprocedure_core(
         return_addr,
         disposition,
     ) {
-        SimProcResolution::RanNatively { no_return } => continue_after_native_proc(
-            cc, counters, state, fork_base, payload, root_hint, no_return,
-        ),
+        SimProcResolution::RanNatively { exit } => {
+            continue_after_native_proc(cc, counters, state, fork_base, payload, root_hint, exit)
+        }
         SimProcResolution::PythonFallback => {
             // Python SimProcedure fallback (counters recorded; bounce builds the
             // PendingCallback after set_pc(addr)+add_to_history(addr)).
