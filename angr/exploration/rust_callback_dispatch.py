@@ -23,6 +23,16 @@ import time
 from typing import TYPE_CHECKING
 
 from angr import claripy
+from angr.calling_conventions import (
+    SimCCAArch64,
+    SimCCARM,
+    SimCCARMHF,
+    SimCCCdecl,
+    SimCCN64,
+    SimCCO32,
+    SimCCSystemVAMD64,
+    default_cc,
+)
 from angr.errors import SimStateError
 from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import (
@@ -118,7 +128,7 @@ class _RustInjectedStdin(claripy.Annotation):
         return True
 
 
-def _simproc_dispatch_name(proc) -> str:
+def _simproc_dispatch_name(proc, project) -> str:
     """Canonical name used to dispatch a SimProcedure to the Rust native registry.
 
     Prefer ``display_name`` over ``__class__.__name__``: SimLibrary instantiates
@@ -134,7 +144,7 @@ def _simproc_dispatch_name(proc) -> str:
     """
     name = getattr(proc, "display_name", None)
     name = str(name) if name else proc.__class__.__name__ if hasattr(proc, "__class__") else str(proc)
-    if not _native_dispatch_eligible(proc):
+    if not _native_dispatch_eligible(proc, project):
         # No native proc is registered under this key, so the hook bounces to
         # the user's own ``run()`` (angr-vmi2l.121).
         return f"{_PYTHON_ONLY_PREFIX}{name}"
@@ -146,7 +156,14 @@ def _simproc_dispatch_name(proc) -> str:
 _PYTHON_ONLY_PREFIX = "python:"
 
 
-def _native_dispatch_eligible(proc) -> bool:
+#: The ``SimCC`` classes whose integer argument and return registers match the
+#: arch-default convention the native dispatcher extracts through
+#: (``default_cc_for_arch`` in ``arch/calling_conventions.rs``). ``SimCCARMHF``
+#: differs from ``SimCCARM`` only in float arguments.
+_NATIVE_CC_CLASSES = frozenset({SimCCCdecl, SimCCSystemVAMD64, SimCCARM, SimCCARMHF, SimCCAArch64, SimCCO32, SimCCN64})
+
+
+def _native_dispatch_eligible(proc, project) -> bool:
     """Whether the native proc of the same name may stand in for ``proc``.
 
     Only a stock angr procedure qualifies: its class is defined under
@@ -154,9 +171,22 @@ def _native_dispatch_eligible(proc) -> bool:
     ``run()`` and the native proc would ignore). A user class named like the
     function it models (``class rand(angr.SimProcedure)``, angr's own naming
     convention) defaults its ``display_name`` to that name, and must still run.
+
+    Its calling convention must also be one the native dispatcher models
+    (``_NATIVE_CC_CLASSES``): Python extracts arguments through ``proc.cc``,
+    which is the library's default (``SimCCMicrosoftAMD64`` for a Windows x64
+    import) or a hook's explicit ``cc=``. A proc with no cc yet gets the
+    platform default when it executes, as ``SimProcedure.execute`` binds it
+    (angr-vmi2l.125).
     """
     module = getattr(type(proc), "__module__", "") or ""
-    return module.startswith("angr.procedures.") and not getattr(proc, "kwargs", None)
+    if not module.startswith("angr.procedures.") or getattr(proc, "kwargs", None):
+        return False
+    cc = getattr(proc, "cc", None)
+    if cc is not None:
+        return type(cc) in _NATIVE_CC_CLASSES
+    platform = project.simos.name if project.simos is not None else None
+    return default_cc(project.arch.name, platform=platform) in _NATIVE_CC_CLASSES
 
 
 def _proc_no_return(proc) -> bool:
@@ -170,7 +200,7 @@ def _proc_no_return(proc) -> bool:
     return bool(getattr(proc, "NO_RET", False)) or getattr(proc, "returns", True) is False
 
 
-def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
+def _unconstrained_stub_spec(proc, project) -> tuple[str, int] | None:
     """``(dispatch_name, ret_bits)`` if ``proc`` is a plain ``ReturnUnconstrained``, else None.
 
     ``SimLibrary`` hands out ``ReturnUnconstrained`` for every symbol it has no
@@ -186,7 +216,7 @@ def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
     returns (``_proc_no_return``: Python deadends it, the native stub would
     resume after the call).
 
-    ``arch`` is the project's arch: an unbound ``SimType`` cannot report its size
+    ``project`` supplies the arch: an unbound ``SimType`` cannot report its size
     (``ValueError: Can't tell my size without an arch!``), and at registration
     time the stub's prototype has not been bound yet — Python only binds it when
     the procedure executes.
@@ -202,13 +232,13 @@ def _unconstrained_stub_spec(proc, arch) -> tuple[str, int] | None:
         if returnty is None:
             return None
         if returnty._arch is None:
-            returnty = returnty.with_arch(arch)
+            returnty = returnty.with_arch(project.arch)
         size = returnty.size
     except (AttributeError, TypeError, ValueError):
         return None
     if not size:
         return None
-    return _simproc_dispatch_name(proc), int(size)
+    return _simproc_dispatch_name(proc, project), int(size)
 
 
 #: Set ``ANGR_BOUNCE_TRACE=1`` to have every SimProcedure park-and-bounce into
@@ -873,7 +903,7 @@ class RustCallbackDispatchMixin:
         # Find the SimProcedure
         proc = self._find_simprocedure(addr, name)
         if _BOUNCE_TRACE:
-            _emit_bounce_trace(_simproc_dispatch_name(proc) if proc is not None else name, addr, proc)
+            _emit_bounce_trace(_simproc_dispatch_name(proc, self._project) if proc is not None else name, addr, proc)
         if proc is None:
             # Stale/unknown hook fired (e.g. proj.unhook raced the Rust hook
             # table, or a hook addr with no backing proc). Resuming at addr+1
@@ -1072,7 +1102,7 @@ class RustCallbackDispatchMixin:
         proc = self._project._sim_procedures.get(addr)
         if proc is None and name:
             for proc_addr, candidate in self._project._sim_procedures.items():
-                proc_name = _simproc_dispatch_name(candidate)
+                proc_name = _simproc_dispatch_name(candidate, self._project)
                 if proc_name == name:
                     if _DBG:
                         l.debug(f"Found SimProcedure {name} at 0x{proc_addr:x} (callback was at 0x{addr:x})")
@@ -1201,7 +1231,7 @@ class RustCallbackDispatchMixin:
                     cont_proc = self._project._sim_procedures.get(cont_addr_int)
                     if not cont_proc:
                         continue
-                    cont_name = _simproc_dispatch_name(cont_proc)
+                    cont_name = _simproc_dispatch_name(cont_proc, self._project)
                     cont_num_args = getattr(cont_proc, "num_args", 0) or 0
                     cont_no_return = _proc_no_return(cont_proc)
                     self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])

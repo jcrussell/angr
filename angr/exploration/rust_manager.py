@@ -3552,13 +3552,13 @@ class RustExplorationManager(
         # Get hooked addresses from project
         if hasattr(self._project, "_sim_procedures"):
             for addr, proc in self._project._sim_procedures.items():
-                name = _simproc_dispatch_name(proc)
+                name = _simproc_dispatch_name(proc, self._project)
                 num_args = getattr(proc, "num_args", 0) or 0
                 no_return = _proc_no_return(proc)
                 procs.append((addr, name, num_args, no_return))
                 # Track this hook as registered
                 self._registered_hooks.add(addr)
-                spec = _unconstrained_stub_spec(proc, self._project.arch)
+                spec = _unconstrained_stub_spec(proc, self._project)
                 if spec is not None:
                     stubs.setdefault(*spec)
 

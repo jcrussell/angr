@@ -82,10 +82,11 @@ def test_disable_native_procedure_opt_out():
 
 
 def test_dispatch_name():
+    proj = angr.Project(_BINARY, auto_load_libs=False)
     stock = angr.SIM_PROCEDURES["libc"]["rand"]()
-    assert _native_dispatch_eligible(stock)
-    assert _simproc_dispatch_name(stock) == "rand"
-    assert not _native_dispatch_eligible(rand())
-    assert _simproc_dispatch_name(rand()) == "python:rand"
+    assert _native_dispatch_eligible(stock, proj)
+    assert _simproc_dispatch_name(stock, proj) == "rand"
+    assert not _native_dispatch_eligible(rand(), proj)
+    assert _simproc_dispatch_name(rand(), proj) == "python:rand"
     # Constructor kwargs reach run(), which the native proc would ignore.
-    assert not _native_dispatch_eligible(angr.SIM_PROCEDURES["stubs"]["ReturnUnconstrained"](return_val=3))
+    assert not _native_dispatch_eligible(angr.SIM_PROCEDURES["stubs"]["ReturnUnconstrained"](return_val=3), proj)

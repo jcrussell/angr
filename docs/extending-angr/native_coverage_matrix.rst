@@ -33,8 +33,11 @@ Native SimProcedure coverage
 Every entry below is registered in ``NativeProcedureRegistry::new``
 (``native/angr-symex-native/src/procedures/mod.rs``). The registry is **name-keyed**
 across all architectures — the calling-convention layer extracts
-arguments from the right registers, so a single handler serves every
-arch where the C ABI matches. Rows are grouped by function family and
+arguments through each arch's default C convention, so a single handler
+serves every arch where the C ABI matches. A hook whose ``proc.cc`` is any
+other convention (a Windows x64 import's ``SimCCMicrosoftAMD64``, an x86
+``SimCCStdcall``, a hook's explicit ``cc=``) runs in Python instead; see
+``_native_dispatch_eligible`` in ``angr/exploration/rust_callback_dispatch.py``. Rows are grouped by function family and
 list every name the registry answers to, **including aliases** (an
 alias reuses the same impl — see ``NativeProcedureRegistry::register``).
 

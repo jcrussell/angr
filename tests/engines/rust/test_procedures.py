@@ -3193,7 +3193,7 @@ class TestReturnUnconstrainedStub:
         proj = fauxware_project
         addr = proj.loader.extern_object.allocate()
         proj.hook(addr, ReturnUnconstrained(display_name="zz_stub_plain"))
-        spec = _unconstrained_stub_spec(proj._sim_procedures[addr], proj.arch)
+        spec = _unconstrained_stub_spec(proj._sim_procedures[addr], proj)
         assert spec is not None
         name, bits = spec
         assert name == "zz_stub_plain"
@@ -3208,10 +3208,10 @@ class TestReturnUnconstrainedStub:
         # A stub with return_val= returns that value, not a fresh symbol: Python keeps it.
         addr = proj.loader.extern_object.allocate()
         proj.hook(addr, ReturnUnconstrained(display_name="zz_stub_retval", return_val=7))
-        assert _unconstrained_stub_spec(proj._sim_procedures[addr], proj.arch) is None
+        assert _unconstrained_stub_spec(proj._sim_procedures[addr], proj) is None
         proj.unhook(addr)
         # A real SimProcedure is not a stub.
-        assert _unconstrained_stub_spec(angr.SIM_PROCEDURES["libc"]["strlen"](), proj.arch) is None
+        assert _unconstrained_stub_spec(angr.SIM_PROCEDURES["libc"]["strlen"](), proj) is None
 
     def test_stub_registered_natively_on_manager_init(self, fauxware_project):
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained

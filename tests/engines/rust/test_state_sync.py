@@ -1557,7 +1557,7 @@ class TestHooksAndProcedures:
         assert stats["find_addrs"] == 0
         assert stats["avoid_addrs"] == 0
 
-    def test_simproc_dispatch_name_prefers_display_name(self):
+    def test_simproc_dispatch_name_prefers_display_name(self, fauxware_project):
         """angr-gbk6: dispatch name follows display_name, not class.
 
         SimLibrary instantiates unimplemented libc symbols as
@@ -1571,12 +1571,12 @@ class TestHooksAndProcedures:
         from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
 
         stub = ReturnUnconstrained(display_name="setenv")
-        assert _simproc_dispatch_name(stub) == "setenv"
+        assert _simproc_dispatch_name(stub, fauxware_project) == "setenv"
 
         # First-class SimProc keeps its class name (display_name defaults to
         # type(self).__name__ in SimProcedure.__init__).
         real = getenv()
-        assert _simproc_dispatch_name(real) == "getenv"
+        assert _simproc_dispatch_name(real, fauxware_project) == "getenv"
 
     def test_register_simprocedures_uses_display_name_for_stubs(self, fauxware_project, monkeypatch):
         """angr-gbk6: _register_simprocedures wires stubs to Rust by symbol.
