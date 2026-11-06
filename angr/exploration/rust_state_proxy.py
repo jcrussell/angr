@@ -1991,35 +1991,62 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                     raise SimMemoryError(f"{addr:#x} is not mapped")
         return result
 
-    def map_region(self, addr, length, permissions, **_kwargs):
-        """``state.memory.map_region(addr, length, permissions)`` on a callback state.
+    def map_region(self, addr, length, permissions, *, init_zero=False, **_kwargs):
+        """``state.memory.map_region(addr, length, permissions)`` on the Rust state.
 
-        Accepted without an FFI call only inside the heap range every Rust
-        state registers as a lazy region (``RustSimState.HEAP_REGION``): there
+        Inside the heap range every Rust state registers as a lazy region
+        (``RustSimState.HEAP_REGION``) it returns without an FFI call: there
         :meth:`store` maps pages on write through
         ``set_state_memory_concrete_automap``, and unwritten pages read with
         the same symbolic fill a Python ``map_region`` would give. The caller
         that reaches it is a bounced SimProcedure growing the heap plugin's
         mapped extent (``SimHeapBase._ensure_mapped``) (angr-vmi2l.314).
 
-        Any other range raises: a bounced ``mmap`` / ``VirtualAlloc`` /
-        ``allocate`` asks for a mapping (zero-filled, for ``init_zero``) that
-        Rust would not make, and dropping it would let later reads see the
-        wrong bytes.
+        Any other range maps its pages on the Rust state, zero-filled for
+        ``init_zero`` and otherwise read with a fresh filler. A page already
+        mapped raises ``SimMemoryError(msg, page_addr)`` with the pages before
+        it left mapped, as ``PagedMemoryMixin.map_region`` does: a bounced
+        ``mmap`` retries at the next address and ``set_brk`` moves the break
+        there (angr-vmi2l.146).
         """
-        del permissions
-        start, size = _heap_region()
+        from angr.errors import SimMemoryError  # pylint: disable=import-outside-toplevel
+        from angr.exploration.rust_state_sync import (  # pylint: disable=import-outside-toplevel
+            swap_permission_bit_order,
+        )
+
+        lo, size = self._concrete_region("map_region", addr, length)
+        start, heap_size = _heap_region()
+        if start <= lo and lo + size <= start + heap_size:
+            return
+        if not isinstance(permissions, int):
+            if permissions.symbolic:
+                raise NotImplementedError("RustMemoryProxy.map_region: symbolic permissions")
+            permissions = permissions.concrete_value
+        bits = swap_permission_bit_order(permissions)
+        with self._handoff_write(lambda state: state.memory.map_region(lo, size, permissions, init_zero=init_zero)):
+            collided = self._mgr.map_state_region(self._write_state_id, lo, size, bits, bool(init_zero))
+            if collided is not None:
+                raise SimMemoryError("Page is already mapped", collided)
+
+    def unmap_region(self, addr, length, **_kwargs):
+        """``state.memory.unmap_region(addr, length)``: drop the pages from the Rust state.
+
+        An unmapped page is skipped, as in ``PagedMemoryMixin.unmap_region``
+        (angr-vmi2l.146).
+        """
+        lo, size = self._concrete_region("unmap_region", addr, length)
+        with self._handoff_write(lambda state: state.memory.unmap_region(lo, size)):
+            self._mgr.unmap_state_region(self._write_state_id, lo, size)
+
+    @staticmethod
+    def _concrete_region(op, addr, length):
+        """``(addr, length)`` as ints; a symbolic bound raises ``NotImplementedError``."""
         try:
             lo = int(addr.concrete_value if hasattr(addr, "concrete_value") else addr)
-            hi = lo + int(length.concrete_value if hasattr(length, "concrete_value") else length)
+            size = int(length.concrete_value if hasattr(length, "concrete_value") else length)
         except (TypeError, AttributeError) as e:
-            raise NotImplementedError(f"RustMemoryProxy.map_region: symbolic range ({addr!r}, {length!r})") from e
-        if start <= lo and hi <= start + size:
-            return
-        raise NotImplementedError(
-            f"RustMemoryProxy.map_region({lo:#x}, {hi - lo:#x}) is outside the Rust heap region "
-            f"[{start:#x}, {start + size:#x}); the mapping cannot be applied to the Rust state"
-        )
+            raise NotImplementedError(f"RustMemoryProxy.{op}: symbolic range ({addr!r}, {length!r})") from e
+        return lo, size
 
     # merge / widen: see _ProxyStatePluginMixin.
 

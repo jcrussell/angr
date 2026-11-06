@@ -629,6 +629,55 @@ impl RustExplorationManager {
         })
     }
 
+    /// Map every page under `[addr, addr + length)` with the Rust-order
+    /// permission `bits`, in ascending order, as
+    /// `PagedMemoryMixin.map_region` does. A page without `init_zero` has
+    /// every byte uninitialized, so a load mints the filler Python's default
+    /// page would. Stops at the first page the state already maps and
+    /// returns its base address, leaving the pages before it mapped, as
+    /// Python's `_map_page` raises mid-loop (`SimSystemPosix.set_brk` moves
+    /// the break to that address). Backs `RustMemoryProxy.map_region`
+    /// (angr-vmi2l.146).
+    pub(crate) fn _map_state_region(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        length: u64,
+        bits: u8,
+        init_zero: bool,
+    ) -> PyResult<Option<u64>> {
+        self.with_state_mut(state_id, |state| {
+            let perm = crate::memory::Permission::from_bits(bits);
+            let mem = state.memory_mut();
+            for page in crate::memory::PageIndex::range_covering(addr, length) {
+                let base = page.base_addr();
+                if mem.is_mapped(base) {
+                    return Ok(Some(base));
+                }
+                mem.map(base, crate::memory::PAGE_SIZE, perm);
+                if !init_zero {
+                    mem.mark_uninit(base, crate::memory::PAGE_SIZE);
+                }
+            }
+            Ok(None)
+        })
+    }
+
+    /// Drop every page under `[addr, addr + length)` from a state; an
+    /// unmapped page is skipped, as in `PagedMemoryMixin.unmap_region`.
+    /// Backs `RustMemoryProxy.unmap_region` (angr-vmi2l.146).
+    pub(crate) fn _unmap_state_region(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        length: u64,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            state.memory_mut().unmap(addr, length);
+            Ok(())
+        })
+    }
+
     /// Every program-written symbolic object in a state's memory, as
     /// `(addr, value)` pairs.
     ///

@@ -1017,3 +1017,47 @@ fn export_includes_bare_symbol_stored_over_import() {
     });
     assert!(addrs.contains(&0x1000), "bare symbol stored over an import not exported: {addrs:?}");
 }
+
+/// `RustMemoryProxy.map_region` / `unmap_region` lean on these: a map stops
+/// at the first page already mapped, keeps the pages before it and reports
+/// that page's base; a page mapped without `init_zero` is uninitialized; an
+/// unmap drops the pages (angr-vmi2l.146).
+#[test]
+fn map_state_region_stops_at_a_mapped_page_and_unmap_drops_the_pages() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let mut state = RustSimState::new("amd64").expect("amd64 state");
+    state.map_memory(0x5_2000, 0x1000, crate::memory::Permission::from_bits(4));
+    let state_id = stash_found(&mut mgr, state);
+
+    assert_eq!(
+        mgr._map_state_region(state_id, 0x5_0000, 0x3000, 6, false)
+            .expect("state found"),
+        Some(0x5_2000),
+    );
+    assert_eq!(
+        mgr._map_state_region(state_id, 0x6_0010, 0x1000, 6, true)
+            .expect("state found"),
+        None,
+    );
+    mgr.with_state(state_id, |state| {
+        let mem = state.memory();
+        assert_eq!(mem.page_permissions(0x50).map(|p| p.to_bits()), Some(6));
+        assert_eq!(mem.page_permissions(0x51).map(|p| p.to_bits()), Some(6));
+        assert_eq!(mem.page_permissions(0x52).map(|p| p.to_bits()), Some(4));
+        assert_eq!(mem.uninit_runs(0x5_0000u64, 0x2000), vec![(0x5_0000, 0x2000)]);
+        assert!(mem.is_mapped(0x6_1000u64));
+        assert!(mem.uninit_runs(0x6_0000u64, 0x2000).is_empty());
+        Ok(())
+    })
+    .expect("state found");
+
+    mgr._unmap_state_region(state_id, 0x5_0000, 0x2000)
+        .expect("state found");
+    mgr.with_state(state_id, |state| {
+        assert!(!state.memory().is_mapped(0x5_0000u64));
+        assert!(!state.memory().is_mapped(0x5_1000u64));
+        assert!(state.memory().is_mapped(0x5_2000u64));
+        Ok(())
+    })
+    .expect("state found");
+}

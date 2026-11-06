@@ -316,6 +316,35 @@ impl RustExplorationManager {
         self._set_state_page_permissions(state_id, addr, bits)
     }
 
+    /// Map the pages under `[addr, addr + length)` on a state with Rust-order
+    /// permission `bits`, uninitialized unless `init_zero`; the base of the
+    /// first page already mapped (where mapping stopped), else `None`.
+    /// See `state_api::_map_state_region` for the body.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "maps pages on one state_id-scoped state's own memory; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn map_state_region(
+        &mut self,
+        state_id: u64,
+        addr: u64,
+        length: u64,
+        bits: u8,
+        init_zero: bool,
+    ) -> PyResult<Option<u64>> {
+        self._map_state_region(state_id, addr, length, bits, init_zero)
+    }
+
+    /// Drop the pages under `[addr, addr + length)` from a state.
+    /// See `state_api::_unmap_state_region` for the body.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "unmaps pages on one state_id-scoped state's own memory; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn unmap_state_region(&mut self, state_id: u64, addr: u64, length: u64) -> PyResult<()> {
+        self._unmap_state_region(state_id, addr, length)
+    }
+
     /// Like `set_state_memory_concrete`, but widens the state's lazy region to
     /// cover the target page so a store to an otherwise-unmapped address
     /// auto-maps instead of erroring `Unmapped` (angr-ijwp0). Used by

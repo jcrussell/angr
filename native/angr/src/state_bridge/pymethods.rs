@@ -85,7 +85,7 @@ impl PyRustSimState {
 
     /// `(start, size)` of the heap range every state registers as a lazy
     /// region (`RustSimState::new_state_memory`). Python reads it to tell a
-    /// `map_region` that Rust already covers from one it would drop
+    /// `map_region` that Rust already covers from one it must map
     /// (`RustMemoryProxy.map_region`).
     #[classattr]
     #[allow(non_snake_case, reason = "Python class constant")]
