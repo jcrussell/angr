@@ -140,11 +140,13 @@ fn test_strtol_octal_auto() {
 // ---------- Symbolic-byte tests ----------
 
 #[test]
-fn test_atoi_single_symbolic_digit_returns_symbolic() {
+fn test_atoi_symbolic_digit_returns_symbolic() {
     let mut state = RustSimState::new("amd64").unwrap();
-    // Buffer: "?\0" — one fully-symbolic byte then null.
+    // Buffer: "?\0" — one symbolic byte, constrained to a digit, then null.
     state.map_memory_data(0x1000, b"X\x00", Permission::RWX);
-    let _sym = place_symbolic_byte(&mut state, 0x1000, "d0");
+    let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
+    state.add_constraint(sym.uge(&RustBV::concrete(b'0' as u128, 8)));
+    state.add_constraint(sym.ule(&RustBV::concrete(b'9' as u128, 8)));
     let p = NativeAtoi;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
@@ -152,6 +154,77 @@ fn test_atoi_single_symbolic_digit_returns_symbolic() {
         .unwrap();
     assert_eq!(result.width(), 64);
     assert!(result.as_u64().is_none(), "expected symbolic result");
+}
+
+/// Run native strtol(0x10000, NULL, `base`) over `text`, with the bytes at
+/// `sym_at` replaced by free symbolic bytes, and return the call's result.
+fn strtol_with_free_bytes(
+    text: &[u8],
+    sym_at: &[u64],
+    base: u64,
+) -> Result<Option<RustBV>, ProcedureError> {
+    let mut state = RustSimState::new("amd64").unwrap();
+    setup_string(&mut state, 0x10000, text);
+    for &i in sym_at {
+        place_symbolic_byte(&mut state, 0x10000 + i, &format!("b{i}"));
+    }
+    NativeStrtol.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x10000, 64),
+            RustBV::concrete(0, 64),
+            RustBV::concrete(u128::from(base), 64),
+        ],
+    )
+}
+
+/// A symbolic byte that may be a sign, or may complete a `0` / `0x` base
+/// prefix the base auto-detects, defers to Python: the digit accumulator
+/// models neither, so test_strtol's `+8` / `-0x` paths were lost and a
+/// wrapped unsigned run reached its `-0xcdcd` branch (angr-mx00p.132.75).
+#[test]
+fn test_strtol_undecided_sign_or_prefix_falls_back_to_python() {
+    // (text, symbolic offsets, base)
+    let cases: &[(&[u8], &[u64], u64)] = &[
+        (b"XX", &[0, 1], 10),  // sign
+        (b"  X5", &[2], 10),   // sign after concrete whitespace
+        (b"X5", &[0], 0),      // leading `0`: octal
+        (b"-X5", &[1], 0),     // leading `0` after a concrete sign
+        (b"0X5", &[1], 0),     // `0` then `x` or an octal digit
+        (b"0X5", &[1], 16),    // `0` then `x`
+        (b"Xx5", &[0], 16),    // `0` before a concrete `x`
+    ];
+    for &(text, sym_at, base) in cases {
+        let shown = String::from_utf8_lossy(text);
+        assert!(
+            matches!(
+                strtol_with_free_bytes(text, sym_at, base),
+                Err(ProcedureError::SymbolicArgument(_))
+            ),
+            "{shown:?} base {base} with {sym_at:?} symbolic must defer to Python"
+        );
+    }
+}
+
+/// The same shapes stay native once the sign or prefix is decided: a concrete
+/// sign, or a base whose detection the symbolic byte cannot change.
+#[test]
+fn test_strtol_decided_prefix_with_symbolic_digits_stays_native() {
+    let cases: &[(&[u8], &[u64], u64)] = &[
+        (b"-XX", &[1, 2], 10),
+        (b"+X", &[1], 8),
+        (b"0X5", &[1], 8),
+        (b"0x5X", &[3], 16),
+        (b"7X", &[1], 0),
+    ];
+    for &(text, sym_at, base) in cases {
+        let shown = String::from_utf8_lossy(text);
+        let out = strtol_with_free_bytes(text, sym_at, base);
+        assert!(
+            matches!(out, Ok(Some(_))),
+            "{shown:?} base {base} with {sym_at:?} symbolic must stay native: {out:?}"
+        );
+    }
 }
 
 #[test]
@@ -165,12 +238,12 @@ fn test_atoi_single_symbolic_digit_constrained() {
     let eq = sym.eq(&target);
     drop(ctx);
 
+    state.add_constraint(eq);
     let p = NativeAtoi;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    state.add_constraint(eq);
     let ctx = state.solver().borrow();
     assert_eq!(ctx.min(&result, false), Some(7));
     assert_eq!(ctx.max(&result, false), Some(7));
@@ -193,14 +266,14 @@ fn test_atoi_three_symbolic_digits_constrained() {
     let c2 = s2.eq(&three);
     drop(ctx);
 
+    state.add_constraint(c0);
+    state.add_constraint(c1);
+    state.add_constraint(c2);
     let p = NativeAtoi;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    state.add_constraint(c0);
-    state.add_constraint(c1);
-    state.add_constraint(c2);
     let ctx = state.solver().borrow();
     assert_eq!(ctx.min(&result, false), Some(123));
     assert_eq!(ctx.max(&result, false), Some(123));
@@ -219,13 +292,13 @@ fn test_atoi_symbolic_digit_range_bounds() {
     let c_hi = sym.ule(&nine);
     drop(ctx);
 
+    state.add_constraint(c_lo);
+    state.add_constraint(c_hi);
     let p = NativeAtoi;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    state.add_constraint(c_lo);
-    state.add_constraint(c_hi);
     let ctx = state.solver().borrow();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(9));
@@ -362,6 +435,9 @@ fn test_strtoll_symbolic_digits_constrained() {
     let c2 = s2.eq(&six);
     drop(ctx);
 
+    state.add_constraint(c0);
+    state.add_constraint(c1);
+    state.add_constraint(c2);
     let p = NativeStrtoll;
     let result = p
         .call(
@@ -374,9 +450,6 @@ fn test_strtoll_symbolic_digits_constrained() {
         )
         .unwrap()
         .unwrap();
-    state.add_constraint(c0);
-    state.add_constraint(c1);
-    state.add_constraint(c2);
     let ctx = state.solver().borrow();
     assert_eq!(ctx.min(&result, false), Some(456));
     assert_eq!(ctx.max(&result, false), Some(456));
@@ -393,6 +466,7 @@ fn test_strtol_base_16_symbolic_letter_digit() {
     let eq = sym.eq(&a);
     drop(ctx);
 
+    state.add_constraint(eq);
     let p = NativeStrtol;
     let result = p
         .call(
@@ -405,7 +479,6 @@ fn test_strtol_base_16_symbolic_letter_digit() {
         )
         .unwrap()
         .unwrap();
-    state.add_constraint(eq);
     let ctx = state.solver().borrow();
     assert_eq!(ctx.min(&result, false), Some(10));
     assert_eq!(ctx.max(&result, false), Some(10));

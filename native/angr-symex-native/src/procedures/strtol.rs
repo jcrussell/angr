@@ -9,8 +9,11 @@
 //!     accum_{i+1} = ITE(stay_i, accum_i, accum_i*base + digit_value(b_i))
 //!     stay_i = terminated_i OR !is_digit(b_i)
 //! The final result is `accum_n` (and is negated if a concrete '-' prefix
-//! was consumed). The whitespace, sign, and base-prefix bytes must be
-//! concrete; if any of them is symbolic we fall back to Python.
+//! was consumed). The sign and base-prefix bytes must be decided: a symbolic
+//! byte the path constraints let be a sign (or, for bases 0 and 16, the `0` /
+//! `x` of a base prefix) falls back to Python, whose `strtol_inner` forks
+//! those cases (angr-mx00p.132.75). A symbolic byte that cannot be one starts
+//! the digit region.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** the string
 //! bytes are guest data, so this module carries
@@ -24,7 +27,7 @@
 use super::ctype::{is_c_space, may_continue_numeric_subject};
 use super::{ProcedureError, arch_word};
 use crate::state::RustSimState;
-use crate::symbolic::RustBV;
+use crate::symbolic::{RustBV, SymContext};
 
 /// Initial raw-scan window, and the hard cap on the *symbolic* accumulator's
 /// digit positions (the concrete path grows past it — see `MAX_SCAN_BYTES`).
@@ -162,18 +165,28 @@ fn hex_prefix_has_digit(bytes: &[RustBV], idx: usize) -> bool {
 /// index immediately after the prefix and, if a digit region can follow, the
 /// chosen base + sign.
 ///
-/// Infallible by construction (angr-6cp06.4): every rejection this step can
-/// reach — input exhausted, base outside 2..=36 — is expressed as a `None`
-/// base/sign, not an error, so the caller always has a `prefix_end` to write
-/// through `endptr`. It deliberately does *not* return `ProcedureError`; a
-/// `Result` here read as a Python-fallback path that does not exist.
+/// Every *concrete* rejection this step can reach — input exhausted, base
+/// outside 2..=36 — is expressed as a `None` base/sign, not an error, so the
+/// caller always has a `prefix_end` to write through `endptr` (angr-6cp06.4).
+/// The one `Err` is the Python fallback: a symbolic byte that `ctx` lets be a
+/// sign, or the `0` / `x` of a base prefix the base may auto-detect. The digit
+/// accumulator models neither, so treating such a byte as a digit drops the
+/// signed and prefixed paths and keeps ones C cannot reach (angr-mx00p.132.75).
 ///
-/// Symbolic bytes break out of each prefix-handling step (treated as "not
-/// whitespace / not sign / not base prefix"); the digit accumulator then
-/// handles them. This matches the design constraint that callers using
-/// symbolic bytes typically constrain them to digits, so the prefix steps
-/// are effectively a concrete-only fast forward.
-fn parse_concrete_prefix(bytes: &[RustBV], base_arg: i64) -> (usize, Option<(u32, bool)>) {
+/// A symbolic byte that cannot be one of those breaks out of the
+/// prefix-handling steps and starts the digit region. Symbolic whitespace is
+/// not skipped: Python's `strtol` skips none, and the accumulator reads such a
+/// byte as a non-digit.
+fn parse_concrete_prefix(
+    ctx: &SymContext,
+    bytes: &[RustBV],
+    base_arg: i64,
+) -> Result<(usize, Option<(u32, bool)>), ProcedureError> {
+    let undecided = |what: &str| {
+        Err(ProcedureError::SymbolicArgument(format!(
+            "strtol: symbolic byte may be a {what}"
+        )))
+    };
     let mut idx = 0;
 
     // Whitespace: only consume *concretely* whitespace bytes. A symbolic
@@ -188,10 +201,13 @@ fn parse_concrete_prefix(bytes: &[RustBV], base_arg: i64) -> (usize, Option<(u32
         }
     }
     if idx >= bytes.len() {
-        return (idx, None);
+        return Ok((idx, None));
     }
 
     // Sign: only consume a *concrete* '+' or '-'.
+    if bytes[idx].as_u64().is_none() && may_be_any(ctx, &bytes[idx], b"+-") {
+        return undecided("sign");
+    }
     let mut negative = false;
     if let Some(b) = bytes[idx].as_u64() {
         if (b as u8) == b'-' {
@@ -202,7 +218,24 @@ fn parse_concrete_prefix(bytes: &[RustBV], base_arg: i64) -> (usize, Option<(u32
         }
     }
     if idx >= bytes.len() {
-        return (idx, None);
+        return Ok((idx, None));
+    }
+
+    // A base prefix is the `0` (base 0: octal) or `0x` (bases 0 and 16) the
+    // detection below consumes; a symbolic byte that may complete one forks
+    // octal / hex / decimal.
+    if base_arg == 0 || base_arg == 16 {
+        let lead = &bytes[idx];
+        let next = bytes.get(idx + 1);
+        let lead_symbolic = lead.as_u64().is_none();
+        let next_symbolic = next.is_some_and(|n| n.as_u64().is_none());
+        let lead_may_be_zero = may_be_any(ctx, lead, b"0");
+        let next_may_be_x = next.is_some_and(|n| may_be_any(ctx, n, b"xX"));
+        let hex_undecided = (lead_symbolic || next_symbolic) && lead_may_be_zero && next_may_be_x;
+        let octal_undecided = base_arg == 0 && lead_symbolic && lead_may_be_zero;
+        if hex_undecided || octal_undecided {
+            return undecided("base prefix");
+        }
     }
 
     // Base detection.
@@ -256,9 +289,27 @@ fn parse_concrete_prefix(bytes: &[RustBV], base_arg: i64) -> (usize, Option<(u32
     };
 
     if !(2..=36).contains(&base) {
-        return (idx, None);
+        return Ok((idx, None));
     }
-    (idx, Some((base, negative)))
+    Ok((idx, Some((base, negative))))
+}
+
+/// Can `byte` equal any of `set` under the path constraints in `ctx`? A
+/// concrete byte answers without the solver; an undecided solver answers yes, so the caller falls back to Python.
+fn may_be_any(ctx: &SymContext, byte: &RustBV, set: &[u8]) -> bool {
+    if let Some(v) = byte.as_u64() {
+        return set.contains(&(v as u8));
+    }
+    let byte_8 = if byte.width() == 8 {
+        byte.clone()
+    } else {
+        byte.extract(7, 0)
+    };
+    let mut cond = RustBV::concrete(0, 1);
+    for &c in set {
+        cond = cond.or(&byte_8.eq(&RustBV::concrete(u128::from(c), 8)));
+    }
+    ctx.can_be_true(&cond)
 }
 
 /// Concrete digit-only parser. Returns (magnitude, num_consumed).
@@ -377,7 +428,10 @@ fn run_strtol(
     let bytes = read_subject_bytes(state, addr)?;
     let bits = state.arch().bits();
 
-    let (prefix_end, prefix) = parse_concrete_prefix(&bytes, base_arg);
+    let (prefix_end, prefix) = {
+        let ctx = state.solver().borrow();
+        parse_concrete_prefix(&ctx, &bytes, base_arg)?
+    };
 
     // No digits possible (empty after prefix or invalid base).
     let (base, negative) = match prefix {
