@@ -165,6 +165,11 @@ def _rust_state_get(mgr, getter: str, state_id: int, *args, default=None, warn: 
 _REGISTER_OVERLAP_CACHE: dict[str, dict[str, frozenset[str]]] = {}
 
 
+# x87 names relative to the stack top (``NameResolutionMixin``'s stn_map / tag_map).
+_X87_STACK_SLOTS = frozenset(f"st{n}" for n in range(8))
+_X87_TAG_SLOTS = frozenset(f"tag{n}" for n in range(8))
+
+
 def _get_overlap_map(arch) -> dict[str, frozenset[str]]:
     """Per-arch map of register name -> frozenset of names whose (offset, size) overlaps.
 
@@ -1392,6 +1397,10 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             raise AttributeError(name)
         if name in self._cache:
             return self._cache[name]
+        x87_slot = self._x87_stack_slot(name)
+        if x87_slot is not None:
+            # Not cached under ``name``: the slot moves with ``ftop``.
+            return self._load_unguarded(*x87_slot)
         canonical = self._canonical_name(name)
         slice_of = self._unmodelled_register_slice(canonical)
         if slice_of is not None:
@@ -1415,6 +1424,28 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         result = self._recover_symbolic_register_ast(canonical, width) if val is None else claripy.BVV(val, width)
         self._cache[name] = result
         return result
+
+    def _x87_stack_slot(self, name):
+        """``(offset, size)`` of the x87 slot ``stN`` / ``tagN`` names, or ``None``.
+
+        ``stN`` and ``tagN`` are not archinfo registers: they are relative to
+        the x87 stack top, resolved the way ``NameResolutionMixin`` resolves
+        them for ``SimState.registers``. A symbolic ``ftop`` has no single
+        slot and raises ``NotImplementedError``.
+        """
+        if self._arch.name not in ("X86", "AMD64"):
+            return None
+        if name in _X87_STACK_SLOTS:
+            base, size = self._arch.registers["fpu_regs"][0], 8
+        elif name in _X87_TAG_SLOTS:
+            base, size = self._arch.registers["fpu_tags"][0], 1
+        else:
+            return None
+        ftop = self.ftop
+        if ftop.symbolic:
+            raise NotImplementedError(f"register '{name}' under a symbolic ftop on {self._arch.name}")
+        index = (int(name[-1]) + ftop.concrete_value) & 7
+        return base + index * size, size
 
     def _is_engine_register(self, name):
         """Whether Rust reads ``name`` itself (or the arch has no table)."""
@@ -1597,6 +1628,18 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
             self._write_register(name, value)
 
     def _write_register(self, name, value):
+        x87_slot = self._x87_stack_slot(name)
+        if x87_slot is not None:
+            offset, size = x87_slot
+            ast = self._coerce_to_ast(value, size * 8)
+            if ast.size() < size * 8:
+                ast = ast.zero_extend(size * 8 - ast.size())
+            slot_name = self._arch.register_size_names.get((offset, size))
+            if slot_name is not None:
+                self._write_register(slot_name, ast)
+            else:
+                self._store_register_slice(*self._offset_register_slice(offset, size), ast)
+            return
         canonical = self._canonical_name(name)
         slice_of = self._unmodelled_register_slice(canonical)
         if slice_of is not None:
