@@ -7232,14 +7232,20 @@ class RustExplorationManager(
             return found[0]
         return None
 
-    def copy(self) -> RustExplorationManager:
-        """Return self for SimulationManager API compatibility.
+    def copy(self, deep: bool = False) -> RustExplorationManager:
+        """Refuse: this manager cannot be copied (angr-vmi2l.239).
 
-        RustExplorationManager is stateful and backed by a single Rust object,
-        so a true deep copy isn't possible. Return self to satisfy callers like
-        angr.callable that store a reference to the manager.
+        ``SimulationManager.copy`` returns an independent manager to use as a
+        checkpoint. Every stash here lives in one Rust manager, so returning
+        ``self`` would alias the original: stepping the "copy" would step it.
+        A ``SimulationManager`` built by ``project.factory.simgr`` runs on the
+        Rust engine through its backend and supports ``copy``.
         """
-        return self
+        raise NotImplementedError(
+            "RustExplorationManager.copy() is not supported: its stashes live in "
+            "one Rust manager, so a copy would alias the original. Use "
+            "project.factory.simgr(...), whose copy() works on the Rust backend."
+        )
 
     def _merge_native(self, stash: str, state_ids: list[int]) -> bool:
         """Merge same-pc native states in-Rust, no export round trip (M3-4).

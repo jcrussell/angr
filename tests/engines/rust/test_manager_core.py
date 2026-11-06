@@ -2293,6 +2293,24 @@ class TestExplorationEvent:
         assert event.steps_taken == 0, f"steps_taken must be 0 (no active states to step); got {event.steps_taken}"
 
 
+class TestManagerCopy:
+    """``copy()`` never returns a manager that aliases the original (angr-vmi2l.239)."""
+
+    @pytest.mark.parametrize("deep", [False, True])
+    def test_rust_manager_copy_refuses(self, fauxware_project, deep):
+        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        with pytest.raises(NotImplementedError, match="alias"):
+            mgr.copy(deep=deep)
+
+    def test_rust_backend_simgr_copy_is_independent(self, fauxware_project):
+        simgr = fauxware_project.factory.simgr(fauxware_project.factory.entry_state(), engine="rust")
+        before = [s.addr for s in simgr.active]
+        copied = simgr.copy()
+        copied.step()
+        assert copied.active and [s.addr for s in copied.active] != before
+        assert [s.addr for s in simgr.active] == before
+
+
 class TestRustEdgeCases:
     """Edge-case tests for Rust state and solver."""
 
