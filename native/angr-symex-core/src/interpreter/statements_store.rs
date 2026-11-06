@@ -79,9 +79,9 @@ impl<'a> VEXInterpreter<'a> {
             );
         }
 
-        // A candidate on a page neither side holds would be skipped by the
-        // multi install, where Python maps each page it writes; map them
-        // first. A `Single` store maps its pages on the `Unmapped` arms below.
+        // A candidate on a page neither side holds would make the multi
+        // install refuse the store, where Python maps each page it writes;
+        // map them first. A `Single` store maps its pages on the `Unmapped` arms below.
         if !matches!(*conc_result, ConcretizationResult::Single(_)) {
             self.map_fresh_pages_for_candidates(callbacks, &conc_result, data_size)?;
         }
@@ -228,11 +228,12 @@ impl<'a> VEXInterpreter<'a> {
 
     /// `fetch_host_pages_for_store` then `map_fresh_pages_for_store` over each
     /// unmapped page under any candidate of a `Multiple`/`Strided` store.
-    /// `install_multi_for_candidates_safe` drops a candidate on a page that is
-    /// neither mapped nor lazy (SILENT cat-b), so without this a symbolic store
-    /// over fresh memory wrote nothing at all, where Python's `Range` maps each
-    /// page it writes (angr-vmi2l.324). A page the host may hold but does not
-    /// serve stays unmapped, as for a `Single` store.
+    /// `install_multi_for_candidates_safe` refuses a candidate on a page that
+    /// is neither mapped nor lazy (`Unmapped`, angr-vmi2l.181), so without
+    /// this every symbolic store over fresh memory would fall back to Python,
+    /// whose `Range` maps each page it writes (angr-vmi2l.324). A page the
+    /// host may hold but does not serve stays unmapped, as for a `Single`
+    /// store, and the store falls back.
     fn map_fresh_pages_for_candidates(
         &mut self,
         callbacks: &dyn EngineHost,

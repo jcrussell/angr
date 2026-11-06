@@ -256,10 +256,13 @@ fn test_phase2_safe_install_lazy_region_signals() {
     assert_eq!(mem.multi_cell_count(), 0);
 }
 
-/// The Phase 2 safe installer must silently skip candidates whose pages
-/// are unmapped and NOT in any lazy region.
+/// angr-vmi2l.181: a candidate on a page that is neither mapped nor lazy
+/// is still a cell the address can resolve to, so the safe installer must
+/// refuse the whole store with `Unmapped` (the interpreter then falls back
+/// to Python) rather than install over the mapped candidates only and lose
+/// the write on the other path.
 #[test]
-fn test_phase2_safe_install_skips_unmapped_non_lazy() {
+fn test_phase2_safe_install_refuses_unmapped_non_lazy() {
     let ctx = SymContext::new_mock();
     let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
@@ -275,22 +278,27 @@ fn test_phase2_safe_install_skips_unmapped_non_lazy() {
     );
     let value = RustBV::concrete(0xAB, 8);
 
-    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
-        .expect("non-lazy unmapped candidate must be silently skipped");
-
-    // Only the mapped candidate (0x1000) got a Multi cell.
-    assert_eq!(mem.multi_cell_count(), 1);
-    assert!(mem.get_multi_alternatives(0x1000).is_some());
-    assert!(mem.get_multi_alternatives(0x2000).is_none());
+    let err = mem
+        .store_symbolic_unified(addr_var, value, &ctx, &concretizer)
+        .expect_err("a non-lazy unmapped candidate must refuse the store");
+    match err {
+        MemoryError::Unmapped { addr, size } => {
+            assert_eq!((addr, size), (0x2000, 1), "must name the unmapped candidate");
+        }
+        other => panic!("expected Unmapped, got {other:?}"),
+    }
+    // Nothing was installed on the mapped candidate either.
+    assert_eq!(mem.multi_cell_count(), 0);
+    assert!(mem.get_multi_alternatives(0x1000).is_none());
 }
 
-/// angr-sqfj8.74: when the non-lazy-unmapped filter above empties the
-/// candidate list entirely, `install_multi_for_candidates_safe` drops the
-/// whole store and returns `Ok` rather than erroring — the `SILENT(cat-b)`
-/// case documented at that site. Pins the boundary so a future change that
-/// turns "all candidates unreachable" into an error fails loudly here.
+/// angr-vmi2l.181: an all-unmapped, non-lazy candidate set used to drop the
+/// store and return `Ok` (angr-sqfj8.74 pinned that). The path where the
+/// address equals a candidate stayed feasible, so a later load read the old
+/// byte. It must now refuse with `Unmapped`, map nothing, and install
+/// nothing.
 #[test]
-fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
+fn test_phase2_safe_install_refuses_when_every_candidate_unmapped() {
     let ctx = SymContext::new_mock();
     let concretizer = multi_write_concretizer();
     let mut mem = SymbolicMemory::new(Endness::Little);
@@ -307,13 +315,16 @@ fn test_phase2_safe_install_drops_store_when_every_candidate_unmapped() {
     );
     let value = RustBV::concrete(0xAB, 8);
 
-    mem.store_symbolic_unified(addr_var, value, &ctx, &concretizer)
-        .expect("all-unreachable candidate set must drop the store, not error");
-
-    // Nothing was installed and no page was auto-mapped by the drop.
+    let err = mem
+        .store_symbolic_unified(addr_var, value, &ctx, &concretizer)
+        .expect_err("an all-unmapped candidate set must refuse, not drop");
+    assert!(
+        matches!(err, MemoryError::Unmapped { addr: 0x1000, size: 1 }),
+        "expected Unmapped at the first candidate, got {err:?}"
+    );
     assert_eq!(mem.multi_cell_count(), 0);
-    assert!(mem.get_multi_alternatives(0x1000).is_none());
-    assert!(mem.get_multi_alternatives(0x2000).is_none());
+    assert!(!mem.is_mapped(0x1000));
+    assert!(!mem.is_mapped(0x2000));
 }
 
 /// angr-9ke6b.94: with `enforce_permissions` on, a Multiple-concretized

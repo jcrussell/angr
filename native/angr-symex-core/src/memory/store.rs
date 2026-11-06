@@ -33,9 +33,9 @@
 //! | [`SymbolicMemory::store_concrete_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, zero RW in lazy regions | clear |
 //! | [`SymbolicMemory::store_concrete_le_bytes_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, per chunk | clear |
 //! | [`SymbolicMemory::store_symbolic`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | no | clear (eager ITE per candidate) |
-//! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
+//! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (concrete-address path only) | **yes**, zero RW for every candidate | **install** (bare) |
-//! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` | mapped candidates only | **install** (`_safe`) |
+//! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | `SymbolicMemory::store_concrete_multi` (`#[cfg(test)]`) | explicit candidate list | W | never — auto-mapped | **yes**, zero RW | **install** (bare, test rig) |
 //!
 //! Notes that the axes alone don't carry:
@@ -50,9 +50,8 @@
 //! * The bare vs. `_safe` Multi installer is the whole auto-map distinction:
 //!   `install_multi_for_candidates` maps every candidate page RW, while
 //!   `install_multi_for_candidates_safe` returns `UnmappedPageInRegion` for a
-//!   lazy-region miss (so Python's backer data is fetched first) and silently
-//!   filters non-lazy misses as unreachable — when that filter empties the
-//!   candidate list the store is dropped entirely (tagged `SILENT(cat-b)`).
+//!   lazy-region miss (so Python's backer data is fetched first) and
+//!   `Unmapped` for any other miss, before installing anything.
 //! * Every symbolic entry point drops the store entirely under
 //!   AVOID_MULTIVALUED_WRITES, before any page is touched (tagged
 //!   `SILENT(cat-b)` at the two `_unified` sites).
@@ -715,10 +714,11 @@ impl SymbolicMemory {
     ///   pages here would diverge state from Python (which has the
     ///   backer data) — same invariant that
     ///   `check_candidate_pages` and `store_concrete_lazy` enforce.
-    /// * Otherwise filter `addrs` down to candidates whose pages are
-    ///   already mapped (non-lazy unmapped pages are treated as
-    ///   unreachable since the symbolic address could not validly
-    ///   resolve to them) and pass to `install_multi_for_candidates`.
+    /// * Otherwise, if any candidate page is unmapped, return
+    ///   `Unmapped { addr: first_such_candidate }` before touching memory:
+    ///   the address can still resolve there, so filtering it out would
+    ///   drop the write on that path (angr-vmi2l.181). With every page
+    ///   mapped, pass the whole set to `install_multi_for_candidates`.
     ///   The load side no longer filters (`check_candidate_pages`).
     pub(super) fn install_multi_for_candidates_safe(
         &mut self,
@@ -728,14 +728,14 @@ impl SymbolicMemory {
     ) -> Result<(), MemoryError> {
         let size = value.width() / 8;
 
-        // Probe every candidate's pages first. Lazy-region misses must
-        // surface so the interpreter fetches the page; non-lazy misses
-        // are silently filtered.
-        let mut ready: Vec<u64> = Vec::with_capacity(addrs.len());
+        // Probe every candidate's pages first. A lazy-region miss surfaces
+        // at once so the interpreter fetches the page; any other miss is
+        // reported only after every candidate is probed, so a lazy fetch
+        // always wins and the retry sees the non-lazy miss.
+        let mut first_unmapped: Option<u64> = None;
         for &cand in addrs {
             let start_page = Address::new(cand).page_num();
             let end_page = end_page_inclusive(cand, size as u64)?;
-            let mut all_mapped = true;
             for page_num in start_page..=end_page {
                 if !self.pages.contains_key(&page_num) {
                     if self.is_in_lazy_region(page_num) {
@@ -746,25 +746,26 @@ impl SymbolicMemory {
                             page_addr: PageIndex::from_raw(page_num).base_addr(),
                         });
                     }
-                    all_mapped = false;
+                    first_unmapped.get_or_insert(cand);
                     break;
                 }
             }
-            if all_mapped {
-                ready.push(cand);
-            }
         }
 
-        if ready.is_empty() {
-            // No candidate page is currently mapped and none are lazy.
-            // SILENT(cat-b): the whole symbolic-address store is dropped, but
-            // every candidate was already filtered as unreachable by the loop
-            // above (non-lazy unmapped page => the address could not validly
-            // resolve there), so there is no reachable cell left to write.
-            return Ok(());
+        // A candidate on a page neither mapped nor lazy is a cell the path
+        // can still reach (the concretizer's set is not pruned to it), so
+        // installing over the others would lose the write there
+        // (angr-vmi2l.181). The interpreter maps fresh pages before calling
+        // in (`map_fresh_pages_for_candidates`); a page still missing here
+        // is one it declined to map, and the store falls back to Python.
+        if let Some(addr) = first_unmapped {
+            return Err(MemoryError::Unmapped {
+                addr,
+                size: size as u64,
+            });
         }
 
-        self.install_multi_for_candidates(addr_expr, value, &ready)
+        self.install_multi_for_candidates(addr_expr, value, addrs)
     }
 
     /// angr-62li: hoist `Or(addr == a0, ..., addr == aK)` to the top-level
