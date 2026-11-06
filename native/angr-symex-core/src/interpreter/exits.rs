@@ -403,10 +403,12 @@ impl<'a> VEXInterpreter<'a> {
         if after_svc & 1 == 0 {
             let bytes = self.native_lift_source_bytes(after_svc.wrapping_sub(4))?;
             let word: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
-            let insn = if self.registers.arch().is_little_endian() {
-                u32::from_le_bytes(word)
-            } else {
+            // Python reads the word through `state.mem`, i.e. in the target's
+            // memory byte order (angr-vmi2l.213).
+            let insn = if self.registers.is_big_endian() {
                 u32::from_be_bytes(word)
+            } else {
+                u32::from_le_bytes(word)
             };
             if insn & 0x0F00_0000 != 0x0F00_0000 {
                 return None;

@@ -189,19 +189,12 @@ pub trait Arch: Send + Sync {
         None
     }
 
-    /// Check if the architecture is little-endian.
-    ///
-    /// **Not authoritative for byte order.** Every impl hardcodes `true`,
-    /// including the two either-endian families (ARM, MIPS) where the choice
-    /// is a per-binary build flag rather than a property of the arch. The real
-    /// per-state byte order is `RustSimState::is_little_endian`, seeded from
-    /// the `little_endian` override in `with_solver_endian`; read that instead
-    /// when the answer has to be correct for a big-endian target.
-    ///
-    /// There is deliberately no `CallingConvention::endness` duplicate of this
-    /// hardcoded answer: a dead accessor that returns `Little` unconditionally
-    /// hands its first real caller a wrong answer on exactly those two families.
-    fn is_little_endian(&self) -> bool;
+    // There is deliberately no byte-order accessor (nor a
+    // `CallingConvention::endness`): ARM and MIPS are either-endian, so an
+    // arch-level answer is a hardcoded guess that silently misreads a
+    // big-endian target (angr-vmi2l.213). The per-state order is
+    // `RustSimState::is_little_endian` / `RegisterFile::is_big_endian`, seeded
+    // from the `little_endian` override in `with_solver_endian`.
 }
 
 /// Register table entry: `(name, byte offset, size in bytes)`.

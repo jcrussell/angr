@@ -336,6 +336,47 @@ fn get_syscall_num_returns_none_for_symbolic_rax() {
     assert_eq!(interp.get_syscall_num(), None);
 }
 
+/// ARM-mode interpreter of the given byte order with `svc_word` stored, in
+/// that order, at 0x10000, `self.pc` just past it and r7 = 1 (angr-vmi2l.213).
+fn arm_interp_after_svc(ctx: &SymContext, is_le: bool, svc_word: u32) -> VEXInterpreter<'_> {
+    let mut interp = VEXInterpreter::with_config_endian(
+        VexArch::ARM,
+        ctx,
+        crate::interpreter::ExecutionConfig::default(),
+        is_le,
+    );
+    let bytes = if is_le {
+        svc_word.to_le_bytes()
+    } else {
+        svc_word.to_be_bytes()
+    };
+    interp.add_concrete_memory(0x10000, bytes.to_vec());
+    interp.pc = 0x10004;
+    interp
+        .registers
+        .put(crate::arch::arm::offsets::R7, RustBV::concrete(1, 32));
+    interp
+}
+
+#[test]
+fn arm_oabi_svc_decodes_in_the_targets_byte_order() {
+    let ctx = SymContext::new_mock();
+    for is_le in [true, false] {
+        // svc #0x90000f: OABI chmod (15), not r7.
+        let interp = arm_interp_after_svc(&ctx, is_le, 0xef90_000f);
+        assert_eq!(interp.get_syscall_num(), Some(15), "is_le={is_le}");
+    }
+}
+
+#[test]
+fn arm_eabi_svc_on_a_big_endian_target_reads_r7() {
+    // Byte-reversed, `svc #0` (ef000000) fails the svc test and the call
+    // would decline to Python instead of dispatching on r7.
+    let ctx = SymContext::new_mock();
+    let interp = arm_interp_after_svc(&ctx, false, 0xef00_0000);
+    assert_eq!(interp.get_syscall_num(), Some(1));
+}
+
 /// Interpreter whose `rust_memory` holds concrete code at 0x9000, outside the
 /// 0x1000 image region (angr-vmi2l.158).
 fn interp_with_state_code(ctx: &SymContext) -> VEXInterpreter<'_> {

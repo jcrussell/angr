@@ -538,10 +538,6 @@ impl Arch for AMD64 {
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::RAX)
     }
-
-    fn is_little_endian(&self) -> bool {
-        true
-    }
 }
 
 test_submod!("amd64_tests.rs" => tests);

@@ -238,10 +238,6 @@ impl Arch for X86 {
     fn syscall_num_offset(&self) -> Option<u32> {
         Some(offsets::EAX)
     }
-
-    fn is_little_endian(&self) -> bool {
-        true
-    }
 }
 
 test_submod!("x86_tests.rs" => tests);

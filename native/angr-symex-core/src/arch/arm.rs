@@ -283,10 +283,6 @@ impl Arch for ARM {
         // decodes that (`oabi_syscall_num`).
         Some(offsets::R7)
     }
-
-    fn is_little_endian(&self) -> bool {
-        true // ARM can be big or little endian, but little is more common
-    }
 }
 
 /// The syscall number an ARM-mode `svc` word encodes under the OABI, or

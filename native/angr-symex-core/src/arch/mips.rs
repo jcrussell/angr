@@ -673,10 +673,6 @@ impl Arch for MIPS32 {
         // O32 Linux puts the syscall number in v0 ($2)
         Some(offsets32::R2)
     }
-
-    fn is_little_endian(&self) -> bool {
-        true // MIPS can be either, default to little
-    }
 }
 
 impl Arch for MIPS64 {
@@ -717,10 +713,6 @@ impl Arch for MIPS64 {
     fn syscall_num_offset(&self) -> Option<u32> {
         // N64 Linux puts the syscall number in v0 ($2)
         Some(offsets64::R2)
-    }
-
-    fn is_little_endian(&self) -> bool {
-        true
     }
 }
 

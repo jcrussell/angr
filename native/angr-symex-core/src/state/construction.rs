@@ -74,7 +74,9 @@ impl RustSimState {
         let arch = arch_from_name(arch_name)
             .ok_or_else(|| format!("unknown architecture: {arch_name}"))?;
         let vex_arch = arch.vex_arch();
-        let is_le = little_endian.unwrap_or_else(|| arch.is_little_endian());
+        // An unspecified byte order is little-endian, the only order a
+        // fixed-endian family supports; a big-endian target must say so.
+        let is_le = little_endian.unwrap_or(true);
         let endness = if is_le { Endness::Little } else { Endness::Big };
 
         Ok(RustSimState {

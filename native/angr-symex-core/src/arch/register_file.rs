@@ -58,6 +58,14 @@ impl RegisterFile {
         }
     }
 
+    /// Whether this file was built for a big-endian target, the `is_le`
+    /// [`Self::new_with_endian`] was given (and the snapshot round-trips as
+    /// `register_be`). The authority for code that decodes target bytes
+    /// without a [`RustSimState`](crate::state::RustSimState) at hand.
+    pub fn is_big_endian(&self) -> bool {
+        self.containment.is_some()
+    }
+
     /// Map a VEX register offset into this file's little-endian storage,
     /// mirroring it inside its containing register on a big-endian target.
     ///

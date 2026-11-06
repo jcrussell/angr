@@ -378,10 +378,6 @@ impl Arch for ARM64 {
         // Linux AArch64 syscall convention puts the syscall number in X8
         Some(offsets::X8)
     }
-
-    fn is_little_endian(&self) -> bool {
-        true
-    }
 }
 
 test_submod!("arm64_tests.rs" => tests);

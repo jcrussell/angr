@@ -106,13 +106,11 @@ fn test_every_vex_arch_is_classified() {
 /// `x86_tests.rs`, `arm_tests.rs`, `arm64_tests.rs` and `mips_tests.rs`
 /// (angr-9ke6b.215). Coverage of a minority arch used to depend on someone
 /// remembering to hand-author the same assertion a sixth time, and it showed:
-/// the two MIPS `*_basics` copies had silently dropped the `is_little_endian`
-/// check and MIPS had no `test_special_registers` at all. Adding an assertion
+/// MIPS had no `test_special_registers` at all. Adding an assertion
 /// or an architecture now buys the whole matrix.
 struct ArchExpect {
     name: &'static str,
     bits: u32,
-    little_endian: bool,
     ip_offset: u32,
     sp_offset: u32,
     bp_offset: Option<u32>,
@@ -143,7 +141,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "X86",
         bits: 32,
-        little_endian: true,
         ip_offset: 68,
         sp_offset: 24,
         bp_offset: Some(28),
@@ -161,7 +158,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "AMD64",
         bits: 64,
-        little_endian: true,
         ip_offset: 184,
         sp_offset: 48,
         bp_offset: Some(56),
@@ -179,7 +175,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "ARM",
         bits: 32,
-        little_endian: true,
         ip_offset: 68,       // PC (R15T)
         sp_offset: 60,       // R13
         bp_offset: Some(52), // R11/FP
@@ -190,7 +185,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "ARM64",
         bits: 64,
-        little_endian: true,
         ip_offset: 272,       // PC
         sp_offset: 264,       // XSP
         bp_offset: Some(248), // X29/FP
@@ -204,7 +198,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
         // MIPS is bi-endian; the Rust singleton defaults to little-endian and
         // callers select BE per state. This assertion is new — the hand-written
         // MIPS `*_basics` tests omitted it.
-        little_endian: true,
         ip_offset: 136,       // PC
         sp_offset: 124,       // R29
         bp_offset: Some(128), // R30 (fp/s8)
@@ -223,7 +216,6 @@ const ARCH_EXPECTATIONS: &[ArchExpect] = &[
     ArchExpect {
         name: "MIPS64",
         bits: 64,
-        little_endian: true,
         ip_offset: 272,       // PC
         sp_offset: 248,       // R29
         bp_offset: Some(256), // R30 (fp/s8)
@@ -268,7 +260,7 @@ fn test_arch_expectations_cover_all_arches() {
 }
 
 #[test]
-fn test_all_arches_report_expected_bits_name_and_endianness() {
+fn test_all_arches_report_expected_bits_and_name() {
     for desc in ALL_ARCHES {
         let arch = (desc.make_arch)();
         let expect = arch_expect(desc.name);
@@ -276,11 +268,6 @@ fn test_all_arches_report_expected_bits_name_and_endianness() {
         assert_eq!(arch.name(), name, "{name}: Arch::name()");
         assert_eq!(arch.bits(), expect.bits, "{name}: bits");
         assert_eq!(arch.bytes(), expect.bits / 8, "{name}: bytes");
-        assert_eq!(
-            arch.is_little_endian(),
-            expect.little_endian,
-            "{name}: is_little_endian",
-        );
     }
 }
 

@@ -1609,6 +1609,16 @@ class RustCallbackDispatchMixin:
 
         # Run the syscall
         try:
+            # Linux's syscall CC returns to the ``ip_at_syscall`` register,
+            # which VEX sets on the syscall exit. Rust builds the callback
+            # state directly (pc already points past the syscall) and never
+            # populates it, so ``cc.teardown_callsite`` would hand back a
+            # return address of 0 (angr-89w70). It is set before resolution:
+            # ``SimCCARMLinuxSyscall.syscall_num`` reads the ``svc`` word just
+            # below it (angr-vmi2l.213).
+            if "ip_at_syscall" in state.arch.registers:
+                state.regs.ip_at_syscall = state.addr
+
             # Resolve the syscall handler so the BP attrs match Python's
             # engine (procedure.py:34 passes `procedure.display_name`).
             # If resolution fails, fall back to the numeric ID so the BP
@@ -1652,14 +1662,6 @@ class RustCallbackDispatchMixin:
                     except KeyError:
                         cc = None
                 sc_proc = angr.SIM_PROCEDURES["stubs"]["syscall"](cc=cc)
-
-            # Linux's syscall CC returns to the ``ip_at_syscall`` register,
-            # which VEX sets on the syscall exit. Rust builds the callback
-            # state directly (pc already points past the syscall) and never
-            # populates it, so ``cc.teardown_callsite`` would hand back a
-            # return address of 0 (angr-89w70).
-            if "ip_at_syscall" in state.arch.registers:
-                state.regs.ip_at_syscall = state.addr
 
             # state.inspect syscall BEFORE (angr-xmfj).
             self._cb_inspect_syscall(state_id, "before", sc_name, None)

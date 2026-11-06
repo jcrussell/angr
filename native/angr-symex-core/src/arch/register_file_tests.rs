@@ -680,9 +680,6 @@ impl Arch for ShortTailArch {
     fn sync_registers(&self) -> &'static [&'static str] {
         AMD64.sync_registers()
     }
-    fn is_little_endian(&self) -> bool {
-        true
-    }
 }
 
 /// A guest state that is not a multiple of the 8-byte chunk
