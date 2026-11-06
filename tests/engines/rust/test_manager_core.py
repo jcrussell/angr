@@ -3037,3 +3037,38 @@ class TestStochasticSearchRestarts:
         # fauxware's main runs straight-line blocks here: a stale mirror
         # repeats the first one.
         assert len(set(seen)) == 3, [hex(a) for a in seen]
+
+
+class TestManagerDrop:
+    """``drop(filter_func=)`` discards the matched states, as ``SimulationManager.drop`` does (angr-vmi2l.236)."""
+
+    @staticmethod
+    def _forked(project, rust):
+        state = project.factory.entry_state()
+        m = RustExplorationManager(project, [state]) if rust else angr.SimulationManager(project, active_states=[state])
+        m.run(until=lambda sm: len(sm.active) > 1)
+        return m
+
+    @staticmethod
+    def _counts(m):
+        return {name: len(getattr(m, name)) for name in ("active", "deadended")}
+
+    @pytest.mark.parametrize("stash", ["active", "deadended"])
+    def test_always_true_filter_empties_the_stash_like_python(self, fauxware_project, stash):
+        managers = [self._forked(fauxware_project, rust) for rust in (False, True)]
+        for m in managers:
+            if stash == "deadended":
+                m.run()
+            assert len(getattr(m, stash)) > 0
+            m.drop(filter_func=lambda s: True, stash=stash)
+        assert self._counts(managers[1]) == self._counts(managers[0])
+        assert self._counts(managers[1])[stash] == 0
+
+    def test_positional_filter_drops_only_the_matched_states(self, fauxware_project):
+        managers = [self._forked(fauxware_project, rust) for rust in (False, True)]
+        for m in managers:
+            drop_addr = min(s.addr for s in m.active)
+            m.drop(lambda s, a=drop_addr: s.addr == a)
+            assert drop_addr not in [s.addr for s in m.active]
+        py, rust = managers
+        assert self._counts(rust) == self._counts(py) == {"active": 1, "deadended": 0}

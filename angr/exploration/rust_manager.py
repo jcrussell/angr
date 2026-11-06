@@ -7101,15 +7101,16 @@ class RustExplorationManager(
                 self._rust_mgr.move_state(state_id, from_stash, to_stash)
         return self
 
-    def drop(self, stash: str = "active", filter_func=None) -> RustExplorationManager:
-        """Drop states from a stash.
+    def drop(self, filter_func=None, stash: str = "active") -> RustExplorationManager:
+        """Drop states from a stash, with ``SimulationManager.drop``'s signature and contract.
 
-        States matching the predicate (or all if no predicate) are removed.
+        States matching the predicate (or all if no predicate) are discarded, as upstream's
+        ``move(stash, DROP, filter_func)`` does; they do not land in another stash (angr-vmi2l.236).
 
         Args:
-            stash: The stash to drop from. Defaults to 'active'.
             filter_func: Optional callable predicate. If provided, only states
                         matching the predicate are dropped.
+            stash: The stash to drop from. Defaults to 'active'.
 
         Returns:
             Self, for chaining.
@@ -7128,10 +7129,9 @@ class RustExplorationManager(
         else:
             # Drop states matching predicate; unmatched/errored stay in place.
             drop_ids, _keep_ids, _errored_ids = self._evaluate_predicate_on_stash(stash, filter_func)
+            self._preserve_exports(drop_ids)
             for state_id in drop_ids:
-                # cat-(a) EXPECTED CONTROL FLOW: state may already have moved.
-                with contextlib.suppress(RuntimeError, KeyError):
-                    self._rust_mgr.move_state(state_id, stash, "deadended")
+                self._rust_mgr.drop_state_from_stash(state_id, stash)
 
         return self
 
