@@ -35,6 +35,7 @@ use super::arch_word;
 use super::format_common::read_format_string;
 use super::scanf_spec::{ScanfSpec, parse_scanf_format};
 use super::scanf_spell::{max_digits, numeric_spelling};
+use super::sprintf::MAX_VARARGS;
 use super::stdin_common::{
     bounce_if_fd0_dup2d, bounce_if_seed_ends_before, mint_stdin_bytes,
     stdin_seed_has_concrete_stop, stdin_seed_unconsumed,
@@ -126,6 +127,16 @@ fn do_scanf(
         bounce_if_seed_ends_before(state, need, "scanf")?;
     }
 
+    // Python's `va_arg` reads every pointer the format needs, but a native
+    // proc fetches a fixed `num_args()`. A format assigning more conversions
+    // than that defers whole, before any store (angr-vmi2l.112).
+    if specs.iter().filter(|s| !s.suppress).count() > ptr_args.len() {
+        return Err(ProcedureError::Other(format!(
+            "scanf: format assigns more than {} pointer arguments",
+            ptr_args.len()
+        )));
+    }
+
     let scan_id = symbol_counter("scanf");
     let mut arg_idx: usize = 0;
     let mut conversions: u64 = 0;
@@ -155,11 +166,10 @@ fn do_scanf(
         let ptr = if spec.suppress {
             None
         } else {
-            if arg_idx >= ptr_args.len() {
-                // Ran out of pointer arguments — return what we have
-                break;
-            }
-            let ptr = extract_concrete_arg(&ptr_args[arg_idx], &format!("scanf arg {arg_idx}"))?;
+            let arg = ptr_args.get(arg_idx).ok_or_else(|| {
+                ProcedureError::Other(format!("scanf: no pointer argument {arg_idx}"))
+            })?;
+            let ptr = extract_concrete_arg(arg, &format!("scanf arg {arg_idx}"))?;
             arg_idx += 1;
             Some(ptr)
         };
@@ -341,7 +351,7 @@ impl NativeSimProcedure for NativeScanf {
     }
 
     fn num_args(&self) -> usize {
-        7 // format + up to 6 pointer args
+        1 + MAX_VARARGS // format + pointer args
     }
 
     fn call(
@@ -379,7 +389,7 @@ impl NativeSimProcedure for NativeSscanf {
     }
 
     fn num_args(&self) -> usize {
-        8 // str + format + up to 6 pointer args
+        2 + MAX_VARARGS // str + format + pointer args
     }
 
     fn call(
@@ -473,7 +483,7 @@ impl NativeSimProcedure for NativeFscanf {
     }
 
     fn num_args(&self) -> usize {
-        8 // stream + format + up to 6 pointer args
+        2 + MAX_VARARGS // stream + format + pointer args
     }
 
     fn call(

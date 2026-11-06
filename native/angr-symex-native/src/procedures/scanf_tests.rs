@@ -783,6 +783,33 @@ fn test_isoc99_fscanf_basic() {
 }
 
 #[test]
+fn test_scanf_more_conversions_than_pointer_args_falls_back() {
+    // Seven assigning conversions need seven pointers; the native proc fetches
+    // `MAX_VARARGS`. It must defer whole, not stop after six and return 6
+    // (angr-vmi2l.112). Suppressed conversions take no pointer, so a format
+    // with six assigning conversions plus `%*d` stays native.
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"%d%d%d%d%d%d%d\x00", Permission::RWX);
+    state.map_memory_data(0x1100, b"%d%d%d%*d%d%d%d\x00", Permission::RWX);
+    let ptrs = (0..MAX_VARARGS as u128).map(|i| RustBV::concrete(0x2000 + 8 * i, 64));
+    let args = |fmt: u128| {
+        std::iter::once(RustBV::concrete(fmt, 64))
+            .chain(ptrs.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(args(0x1000).len(), NativeScanf.num_args());
+
+    assert!(scanf_off_stdin(&mut state, &args(0x1000)).is_err());
+    assert!(
+        state.memory_load(0x2000, 4).unwrap().as_u64().is_some(),
+        "the fallback must leave the first variable unwritten"
+    );
+
+    let result = scanf_off_stdin(&mut state, &args(0x1100)).unwrap();
+    assert_eq!(result.unwrap().as_u64(), Some(MAX_VARARGS as u64));
+}
+
+#[test]
 fn test_scanf_scanset_falls_back() {
     // %[...] / %[^...] must defer the whole call to Python (Err), NOT mint a
     // symbolic string natively. Python's ScanfFormatParser.basic_spec has no

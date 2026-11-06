@@ -43,7 +43,7 @@ pub(super) const MAX_OUTPUT_LEN: usize = 4096;
 /// these base procs, so they must request the same count — they import this
 /// constant rather than redeclaring it, since a wrapper asking for fewer would
 /// silently truncate the forwarded list with no compiler or test signal
-/// (angr-6cp06.10).
+/// (angr-6cp06.10). The scanf family sizes its pointer list from it too.
 pub(crate) const MAX_VARARGS: usize = 6;
 
 /// Format arguments according to a printf-style format string.
