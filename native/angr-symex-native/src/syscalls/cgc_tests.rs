@@ -1040,3 +1040,114 @@ fn receive_under_length_options_falls_back() {
         assert!(matches!(err, SyscallError::Other(_)), "{opt}");
     }
 }
+
+fn buf_args(fd: u128, buf: u128, count: u128) -> [RustBV; 4] {
+    [
+        RustBV::concrete(fd, 32),
+        RustBV::concrete(buf, 32),
+        RustBV::concrete(count, 32),
+        RustBV::concrete(0x2800, 32),
+    ]
+}
+
+/// A buffer whose 32-bit end passes 0xC0000000 or wraps, and one on a page
+/// without the needed permission, as `[buf, count]` pairs for an x86 state
+/// whose 0x5000 page lacks the access under test.
+fn faulting_buffers() -> [(u128, u128); 3] {
+    [(0xBFFF_FFFE, 4), (0xFFFF_FFFE, 4), (0x5000, 4)]
+}
+
+/// Python's receive returns EFAULT for a buffer past 0xC0000000, a wrapping
+/// one, or one on a non-writable page, before it reads stdin or stores
+/// `rx_bytes`; a zero count still faults (angr-vmi2l.138).
+#[test]
+fn receive_bad_buffer_returns_efault_without_consuming_stdin() {
+    let read_only = Permission {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    for (buf, count) in faulting_buffers().into_iter().chain([(0x5000, 0)]) {
+        let h = NativeReceiveSyscall;
+        let mut state = x86_state_with_buf();
+        state.map_memory(0x5000, 0x1000, read_only);
+        let outcome = h
+            .call(&mut state, &buf_args(0, buf, count))
+            .expect("efault is native");
+        assert!(
+            matches!(outcome, SyscallOutcome::Continue { ret: CGC_EFAULT }),
+            "buf={buf:#x} count={count}"
+        );
+        assert!(state.stdin_symbols().is_empty(), "buf={buf:#x}");
+        assert_eq!(state.memory_load(0x2800, 4).unwrap().as_u64(), Some(0));
+    }
+}
+
+/// Python's transmit returns EFAULT for the same bad buffers (a non-readable
+/// page here) before it writes the fd, but only for a non-zero count
+/// (angr-vmi2l.138).
+#[test]
+fn transmit_bad_buffer_returns_efault_without_writing() {
+    let write_only = Permission {
+        read: false,
+        write: true,
+        execute: false,
+    };
+    for (buf, count) in faulting_buffers() {
+        let h = NativeTransmitSyscall;
+        let mut state = x86_state_with_buf();
+        state.map_memory(0x5000, 0x1000, write_only);
+        let outcome = h
+            .call(&mut state, &buf_args(1, buf, count))
+            .expect("efault is native");
+        assert!(
+            matches!(outcome, SyscallOutcome::Continue { ret: CGC_EFAULT }),
+            "buf={buf:#x}"
+        );
+        assert!(state.stdout_buffer().is_empty(), "buf={buf:#x}");
+        assert_eq!(state.memory_load(0x2800, 4).unwrap().as_u64(), Some(0));
+    }
+    let mut state = x86_state_with_buf();
+    let outcome = NativeTransmitSyscall
+        .call(&mut state, &buf_args(1, 0xFFFF_FFFE, 0))
+        .expect("zero count is not checked");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: 0 }));
+}
+
+/// A buffer page Rust memory does not hold may still be mapped by Python's
+/// backer, so receive and transmit defer its permission check
+/// (angr-vmi2l.138).
+#[test]
+fn unmapped_buffer_page_falls_back() {
+    let mut state = x86_state_with_buf();
+    let err = NativeReceiveSyscall
+        .call(&mut state, &buf_args(0, 0x9000, 4))
+        .expect_err("receive defers");
+    assert!(matches!(err, SyscallError::Other(_)));
+    assert!(state.stdin_symbols().is_empty());
+    let err = NativeTransmitSyscall
+        .call(&mut state, &buf_args(1, 0x9000, 4))
+        .expect_err("transmit defers");
+    assert!(matches!(err, SyscallError::Other(_)));
+}
+
+/// Python's random returns EFAULT for a null `buf` but still stores the bytes
+/// and the count; the native handler defers it, even for a zero count
+/// (angr-vmi2l.138).
+#[test]
+fn random_null_buf_falls_back() {
+    for count in [0, 4] {
+        let mut state = x86_state_with_buf();
+        let err = NativeRandomSyscall
+            .call(
+                &mut state,
+                &[
+                    RustBV::concrete(0, 32),
+                    RustBV::concrete(count, 32),
+                    RustBV::concrete(0x2800, 32),
+                ],
+            )
+            .expect_err("null buf defers");
+        assert!(matches!(err, SyscallError::Other(_)), "count={count}");
+    }
+}

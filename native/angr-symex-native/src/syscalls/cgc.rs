@@ -24,7 +24,8 @@
 //!   on success. Falls back to Python for symbolic args, other fds,
 //!   large counts, or under `CGC_NO_SYMBOLIC_RECEIVE_LENGTH` / `SHORT_READS`.
 //!   `CGC_ENFORCE_FD` maps any fd to 0 (to 1 for `transmit`). Mirrors the Python `receive` SimProcedure's
-//!   stdin-only happy path.
+//!   stdin-only happy path. Both return EFAULT (2) before any side effect
+//!   when the buffer fails Python's bound or page-permission check.
 //! * `4 fdwait(nfds, readfds, writefds, timeout, readyfds)` — stub that
 //!   models the `CGC_NON_BLOCKING_FDS` mode: every fd is "ready", and
 //!   the readfds/writefds bitmasks are filled with concrete 1-bits up
@@ -34,7 +35,8 @@
 //!   unconstrained, which the stub cannot express).
 //! * `7 random(buf, count, rnd_bytes)` — writes `count` fresh symbolic
 //!   bytes into `[buf, ...)` (no fd) and stores `count` at `*rnd_bytes`.
-//!   Returns 0. Mirrors `random` SimProcedure for non-fastpath mode.
+//!   Returns 0. Mirrors `random` SimProcedure for non-fastpath mode; a
+//!   null `buf` (EFAULT) falls back to Python.
 //!
 //! * `5 allocate(length, is_x, addr)` — simple bump allocator that
 //!   mirrors `procedures/cgc/allocate.py`. Uses the state's
@@ -53,7 +55,7 @@ use super::{
     MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
     extract_concrete_arg, fresh_byte_names, gather_concrete_bytes, mint_symbolic_bytes,
 };
-use crate::memory::{PAGE_MASK, PAGE_SIZE, Permission};
+use crate::memory::{PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
 use crate::procedures::stdin_common::{mint_stdin_bytes, stdin_seed_ends_before};
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::RustSimState;
@@ -92,6 +94,46 @@ pub(crate) use exit::NativeExitSyscall as NativeTerminateSyscall;
 /// because it only reads concrete bytes out — it never mints symbolic names.
 const RECEIVE_COUNTER: &str = "syscall:cgc_receive";
 const RANDOM_COUNTER: &str = "syscall:cgc_random";
+
+/// Highest end address a CGC transmit / receive buffer may reach; past it the
+/// Python procedures return EFAULT (`procedures/cgc/receive.py`).
+const CGC_BUFFER_END_MAX: u64 = 0xC000_0000;
+
+/// Which page permission [`buffer_faults`] requires of `buf`'s page.
+#[derive(Clone, Copy)]
+enum BufferAccess {
+    Read,
+    Write,
+}
+
+/// Whether `[buf, buf+count)` fails `procedures/cgc/{receive,transmit}.py`'s
+/// EFAULT preconditions: the 32-bit `buf+count` passes 0xC0000000 or wraps,
+/// or `buf`'s page lacks the needed permission. As in Python only `buf`'s
+/// own page is checked. A page Rust memory does not hold (unmapped, or a
+/// lazy region not yet faulted in) falls back, because Python may still
+/// map it from its backer (angr-vmi2l.138).
+fn buffer_faults(
+    state: &RustSimState,
+    buf: u64,
+    count: u64,
+    access: BufferAccess,
+    what: &str,
+) -> Result<bool, SyscallError> {
+    // overflow-ok: Python's `buf + count` is a 32-bit BV that wraps.
+    let end = (buf.wrapping_add(count)) & 0xFFFF_FFFF;
+    if end > CGC_BUFFER_END_MAX || end < buf {
+        return Ok(true);
+    }
+    let Some(perm) = state.memory().page_permissions(PageIndex::of(buf).get()) else {
+        return Err(SyscallError::Other(format!(
+            "{what} buf {buf:#x} is not in Rust memory; Python checks its permissions"
+        )));
+    };
+    Ok(match access {
+        BufferAccess::Read => !perm.read,
+        BufferAccess::Write => !perm.write,
+    })
+}
 
 /// Store a 32-bit value at `addr` in little-endian, leaving memory at
 /// `[addr, addr+4)` holding `value`. Returns Ok(()) on success.
@@ -160,6 +202,10 @@ impl NativeSyscall for NativeTransmitSyscall {
             return Err(SyscallError::Other(format!(
                 "transmit fd={fd} falls back to Python"
             )));
+        }
+        // Python validates the buffer only for a non-zero count.
+        if count != 0 && buffer_faults(state, buf, count, BufferAccess::Read, "transmit")? {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EFAULT });
         }
 
         // Read the bytes — symbolic bytes fall back to Python where the
@@ -233,6 +279,11 @@ impl NativeSyscall for NativeReceiveSyscall {
             return Err(SyscallError::Other(format!(
                 "receive fd={fd} falls back to Python"
             )));
+        }
+        // Python validates the buffer before it looks at `count` or the
+        // length options, so a zero-count receive can still fault.
+        if buffer_faults(state, buf, count, BufferAccess::Write, "receive")? {
+            return Ok(SyscallOutcome::Continue { ret: CGC_EFAULT });
         }
 
         // Under `CGC_NO_SYMBOLIC_RECEIVE_LENGTH` Python clamps `count` to
@@ -402,6 +453,16 @@ impl NativeSyscall for NativeRandomSyscall {
             return Err(SyscallError::Other(format!(
                 "random count {count} exceeds limit"
             )));
+        }
+        // `procedures/cgc/random.py` returns EFAULT for a null `buf` but still
+        // stores the bytes there and the count at `rnd_bytes`; leave that to
+        // Python (angr-vmi2l.138). Its `rnd_bytes` arm cannot fire on a
+        // concrete pointer.
+        if buf == 0 {
+            return Err(SyscallError::Other(
+                "random into a null buf returns EFAULT after its stores; falls back to Python"
+                    .to_string(),
+            ));
         }
         if count == 0 {
             if rnd_bytes != 0 {
