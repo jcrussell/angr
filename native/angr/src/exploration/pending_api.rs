@@ -494,31 +494,47 @@ impl RustExplorationManager {
 
     pub(crate) fn _get_pending_ancestry(&self, state_id: u64) -> PyResult<Vec<u64>> {
         self.with_pending(state_id, |pending| {
-            let self_id = pending.state.state_id();
-            let mut ancestry = vec![self_id];
-
-            // Walk the parent chain transitively rather than a single hop, so a
-            // >=3-level fork chain does not drop its intermediate ancestors (the
-            // Python cache walks in rust_callback_dispatch.py / rust_state_sync.py
-            // key on exactly these ids). Best-effort: the walk stops at the first
-            // ancestor the manager no longer holds.
-            let mut next = pending.state.parent_id();
-            while let Some(pid) = next {
-                if ancestry.contains(&pid) || ancestry.len() >= Self::MAX_ANCESTRY_DEPTH {
-                    break;
-                }
-                ancestry.push(pid);
-                next = self._parent_of(pid);
-            }
-
-            if let Some(&root_id) = self.sm.roots().get(&self_id)
-                && !ancestry.contains(&root_id)
-            {
-                ancestry.push(root_id);
-            }
-
-            Ok(ancestry)
+            Ok(self.ancestry_from(pending.state.state_id(), pending.state.parent_id()))
         })
+    }
+
+    /// `[state_id, parent, grandparent, ..., root]` for a state the manager
+    /// holds in a stash, a pending callback or a parked bounce; empty for an
+    /// unknown id. See `_get_pending_ancestry` for the walk.
+    pub(crate) fn _get_state_ancestry(&self, state_id: u64) -> Vec<u64> {
+        match self.find_state(state_id) {
+            Some(state) => self.ancestry_from(state_id, state.parent_id()),
+            None => Vec::new(),
+        }
+    }
+
+    /// The ancestry walk shared by `_get_pending_ancestry` and
+    /// `_get_state_ancestry`, starting at `self_id` whose parent is
+    /// `first_parent`.
+    fn ancestry_from(&self, self_id: u64, first_parent: Option<u64>) -> Vec<u64> {
+        let mut ancestry = vec![self_id];
+
+        // Walk the parent chain transitively rather than a single hop, so a
+        // >=3-level fork chain does not drop its intermediate ancestors (the
+        // Python cache walks in rust_callback_dispatch.py / rust_state_sync.py
+        // key on exactly these ids). Best-effort: the walk stops at the first
+        // ancestor the manager no longer holds.
+        let mut next = first_parent;
+        while let Some(pid) = next {
+            if ancestry.contains(&pid) || ancestry.len() >= Self::MAX_ANCESTRY_DEPTH {
+                break;
+            }
+            ancestry.push(pid);
+            next = self._parent_of(pid);
+        }
+
+        if let Some(&root_id) = self.sm.roots().get(&self_id)
+            && !ancestry.contains(&root_id)
+        {
+            ancestry.push(root_id);
+        }
+
+        ancestry
     }
 
     pub(crate) fn _export_callback_bundle<'py>(

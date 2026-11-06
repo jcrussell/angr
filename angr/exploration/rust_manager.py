@@ -172,6 +172,11 @@ _DBG = l.isEnabledFor(logging.DEBUG)  # Module-level guard for hot-path debug ca
 _NATIVE_SIMOPTIONS = frozenset({"SHORT_READS", "SYMBOLIC_INITIAL_VALUES"})
 
 
+def _options_on(state) -> set:
+    """The names of the boolean SimOptions switched on in ``state.options``."""
+    return {name for name, value in state.options._options.items() if value is True}
+
+
 def _is_rust_memory_proxy(plugin) -> bool:
     """True when ``plugin`` is a ``RustMemoryProxy`` (the callback state's memory).
 
@@ -5749,59 +5754,142 @@ class RustExplorationManager(
         """Return the Python-side options set for a Rust state.
 
         The Rust engine doesn't honor SimOptions (only LAZY_SOLVES /
-        STRICT_PAGE_ACCESS are mirrored onto the Rust state separately), so
-        this set lives Python-side. On first access for a forked state, copy
-        from the root state's options so children inherit a snapshot.
+        STRICT_PAGE_ACCESS and ``_NATIVE_SIMOPTIONS`` are mirrored onto the
+        Rust state, at seed time), so this set lives Python-side and is
+        advisory to native code. It is the state's one options store: every
+        export of the state carries it (:meth:`_apply_state_metadata`). A
+        fork's first access copies the nearest ancestor's set.
 
         Returns a live set — mutations propagate to subsequent accesses.
         """
-        opts = self._py_state_options.get(state_id)
-        if opts is not None:
-            return opts
-        try:
-            root_id = self._rust_mgr.get_state_root(state_id)
-        except MemoryError:
-            raise
-        except Exception:
-            # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
-            # treat as no parent and start from a fresh empty options set.
-            root_id = None
-        if root_id is not None and root_id != state_id:
-            parent_opts = self._py_state_options.get(root_id)
-            if parent_opts is not None:
-                opts = set(parent_opts)
-                self._py_state_options[state_id] = opts
-                return opts
-        opts = set()
-        self._py_state_options[state_id] = opts
-        return opts
+        return self._state_metadata_entry(self._py_state_options, state_id, set)
 
     def get_state_globals_py(self, state_id: int) -> dict:
         """Return the Python-side globals dict for a Rust state.
 
-        Children inherit a shallow copy of the root state's globals on first
-        access. Returns a live dict — mutations propagate.
+        The state's one globals store, as :meth:`get_state_options_py` is its
+        options store. Returns a live dict — mutations propagate.
         """
-        glb = self._py_state_globals.get(state_id)
-        if glb is not None:
-            return glb
+        return self._state_metadata_entry(self._py_state_globals, state_id, dict)
+
+    def _state_metadata_entry(self, store: dict, state_id: int, copy, *, create: bool = True):
+        """``store[state_id]``, first seeded with a ``copy`` of the nearest ancestor's entry.
+
+        Nearest, not the lineage root: a value a technique wrote on an
+        intermediate state is what its forks start from, as a
+        ``SimState.copy`` would carry it (angr-vmi2l.265). With no entry on
+        the state or any ancestor, an empty one, or ``None`` without
+        ``create``.
+        """
+        entry = store.get(state_id)
+        if entry is not None:
+            return entry
+        for ancestor in self._state_ancestry(state_id)[1:]:
+            src = store.get(ancestor)
+            if src is not None:
+                entry = copy(src)
+                break
+        else:
+            if not create:
+                return None
+            entry = copy()
+        store[state_id] = entry
+        return entry
+
+    def _state_ancestry(self, state_id: int) -> list[int]:
+        """``[state_id, parent, ..., root]`` as Rust still holds them (``get_state_ancestry``)."""
         try:
-            root_id = self._rust_mgr.get_state_root(state_id)
+            return list(self._rust_mgr.get_state_ancestry(state_id))
         except MemoryError:
             raise
         except Exception:
-            # cat-(b) FALLBACK WITH LOSS: get_state_root lookup failed;
-            # treat as no parent and start from a fresh empty globals dict.
-            root_id = None
-        if root_id is not None and root_id != state_id:
-            parent_glb = self._py_state_globals.get(root_id)
-            if parent_glb is not None:
-                glb = dict(parent_glb)
-                self._py_state_globals[state_id] = glb
-                return glb
-        glb = {}
-        self._py_state_globals[state_id] = glb
-        return glb
+            # cat-(b) FALLBACK WITH LOSS: the ancestry lookup failed; treat the
+            # state as having no ancestors, so its metadata starts empty.
+            return [state_id]
+
+    def _inherit_state_metadata(self, state_ids=None) -> None:
+        """Give each of ``state_ids`` (default: the active stash) its own options/globals entry now.
+
+        A fork copies its ancestor's entry on first access, and the walk to
+        that ancestor ends where Rust no longer holds a state, so the copy is
+        taken here too: when Python hands control back to Rust and before a
+        cache cleanup prunes the entries of states gone from every stash.
+        Skipped while every entry is a lineage root's: the lazy lookup then
+        reads the same entry.
+        """
+        keys = self._py_state_options.keys() | self._py_state_globals.keys()
+        if not keys or keys <= set(self._state_roots.values()):
+            return
+        if state_ids is None:
+            state_ids = self._rust_mgr.get_state_ids("active")
+        for sid in state_ids:
+            if sid not in self._py_state_options:
+                self.get_state_options_py(sid)
+            if sid not in self._py_state_globals:
+                self.get_state_globals_py(sid)
+
+    def _apply_state_metadata(self, state, state_id: int, *, mirror: bool = False) -> None:
+        """Give the SimState ``state`` (an export or callback frame of ``state_id``) its options and globals store.
+
+        A ``mirror`` (the stash mirror ``mgr.active[i]``) is a view of the
+        store: its globals plugin backs onto the store's dict, and the options
+        it gains or loses are taken back when Python hands control to Rust
+        (:meth:`_reconcile_mirror_options`). Anything else gets copies, and a
+        callback frame's edits come back through :meth:`_record_state_metadata`.
+        A state of no recorded lineage keeps what it has.
+        """
+        from angr.state_plugins.globals import SimStateGlobals
+
+        options = self._state_metadata_entry(self._py_state_options, state_id, set, create=False)
+        if options is not None:
+            on = _options_on(state)
+            for name in on - options:
+                state.options.discard(name)
+            for name in options - on:
+                try:
+                    state.options.add(name)
+                except MemoryError:
+                    raise
+                except Exception as e:
+                    # cat-(b) FALLBACK WITH LOSS: a name the proxy accepted that
+                    # SimStateOptions does not know; the export goes without it.
+                    l.debug("export of state %d: cannot add option %r: %s", state_id, name, e)
+            if mirror:
+                state.scratch.rust_applied_options = frozenset(_options_on(state))
+        glb = self._state_metadata_entry(self._py_state_globals, state_id, dict, create=False)
+        if glb is not None:
+            state.register_plugin("globals", SimStateGlobals(glb if mirror else dict(glb)))
+
+    def _record_state_metadata(self, state_id: int, state) -> None:
+        """Take a callback frame's options and globals back as ``state_id``'s store.
+
+        A SimProcedure's ``state.globals`` / ``state.options`` edits land on
+        the frame; the proxies and later exports read the store. In place, so
+        a mirror backed onto the store keeps seeing it.
+        """
+        if isinstance(getattr(getattr(state, "options", None), "_options", None), dict):
+            options = self.get_state_options_py(state_id)
+            options.clear()
+            options.update(_options_on(state))
+        if "globals" in state.plugins:
+            glb = self.get_state_globals_py(state_id)
+            frame = dict(state.globals)
+            glb.clear()
+            glb.update(frame)
+
+    def _reconcile_mirror_options(self) -> None:
+        """Take the options a stash mirror gained or lost since its export into its store."""
+        for sid, state in self._state_cache.items():
+            scratch = getattr(state, "scratch", None)
+            applied = getattr(scratch, "rust_applied_options", None)
+            if applied is None or getattr(scratch, "rust_mirror_id", None) != sid:
+                continue
+            on = _options_on(state)
+            if on != applied:
+                options = self.get_state_options_py(sid)
+                options.difference_update(applied - on)
+                options.update(on - applied)
+                scratch.rust_applied_options = frozenset(on)
 
     @functools.cached_property
     def _copy_stash_fork_owner(self):
@@ -6013,7 +6101,8 @@ class RustExplorationManager(
         for sid in list(self._state_cache.keys()):
             if sid not in live:
                 del self._state_cache[sid]
-        self._prune_state_metadata(live)
+        self._inherit_state_metadata(active_set | found_set)
+        self._prune_state_metadata(live | any_stash)
 
         # Prune _state_roots: drop entries whose key state no longer exists in
         # any Rust stash. The root state's own self-entry survives only while

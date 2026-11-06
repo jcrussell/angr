@@ -1447,7 +1447,14 @@ The Python-side option set lives in
 ``RustExplorationManager._py_state_options`` (per-state-id dict, see
 ``get_state_options_py``); writing to ``state.options.add(X)`` through
 the proxy stores the value but does not change Rust behavior unless
-this matrix shows otherwise.
+this matrix shows otherwise. Options Rust mirrors (``_NATIVE_SIMOPTIONS``,
+``STRICT_PAGE_ACCESS``, ``LAZY_SOLVES``, …) are read from the seed state
+once, so a later proxy or export write to one of them is advisory too.
+That set and the ``globals`` dict beside it (``_py_state_globals``) are
+the state's one store: a proxy, the stash mirror ``mgr.active[i]``, every
+other export and a Python callback frame all read and write it, and a
+fork starts from a copy of its nearest ancestor's
+(``_state_metadata_entry``, ``_apply_state_metadata``).
 
 Honored options
 ~~~~~~~~~~~~~~~

@@ -176,3 +176,24 @@ fn live_lineage_roots_outlives_the_root_state() {
         assert!(mgr.live_lineage_roots().is_empty());
     });
 }
+
+/// `get_state_ancestry` walks to the nearest held ancestors, so a grandchild
+/// lists its parent ahead of the root, and stops at an ancestor that left
+/// every stash (angr-vmi2l.265).
+#[test]
+fn get_state_ancestry_lists_the_parent_before_the_root() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+        let root = mgr.create_state("active").expect("create state");
+        let child = mgr.fork_state_to_stash(root, "active").expect("fork child");
+        let grandchild = mgr.fork_state_to_stash(child, "active").expect("fork grandchild");
+
+        assert_eq!(mgr.get_state_ancestry(grandchild), vec![grandchild, child, root]);
+        assert_eq!(mgr.get_state_ancestry(root), vec![root]);
+        assert!(mgr.get_state_ancestry(u64::MAX).is_empty());
+
+        assert!(mgr.drop_state_from_stash(child, "active"));
+        assert_eq!(mgr.get_state_ancestry(grandchild), vec![grandchild, child, root]);
+    });
+}

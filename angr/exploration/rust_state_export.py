@@ -893,9 +893,12 @@ class RustStateExportMixin:
         caller that does not hand control to Rust next (the Rust states were
         already replaced, or only states were added).
         """
+        # Ahead of the detach, which re-syncs the mirrors from the store.
+        self._reconcile_mirror_options()
         if detach_held:
             self._detach_held_entries(list(self._lazy_state_refs))
         self._copy_stash_fork_owner.detach_views()
+        self._inherit_state_metadata()
         for state in self._state_cache.values():
             scratch = getattr(state, "scratch", None)
             if scratch is not None and getattr(scratch, "rust_fully_synced", False):
@@ -1027,6 +1030,8 @@ class RustStateExportMixin:
             scratch.rust_mirror_id = state_id
             scratch.rust_user_owned = False
         self._state_cache[state_id] = state
+        # A SimProcedure's options / globals edits on the frame (angr-vmi2l.265).
+        self._record_state_metadata(state_id, state)
 
     def _get_stash_states(self, stash: str) -> list:
         """Return lazy SimState references for the given stash.
@@ -1845,6 +1850,7 @@ class RustStateExportMixin:
             state,
             snapshot.state_id,
             snapshot_parent_id=snapshot.parent_id,
+            mirror=mirror,
         )
         # The posix streams the Rust state read and wrote: without them a
         # caller that steps or solves this state sees an empty stdin, so
@@ -2470,6 +2476,8 @@ class RustStateExportMixin:
         state: angr.SimState,
         state_id: int,
         snapshot_parent_id: int | None = None,
+        *,
+        mirror: bool = True,
     ):
         """Restore plugins to an exported state from the closest cached ancestor.
 
@@ -2484,11 +2492,14 @@ class RustStateExportMixin:
             snapshot_parent_id: Optional immediate parent ID from a state
                 snapshot, used to prefer a same-branch ancestor over the
                 generic root template.
+            mirror: Whether ``state`` is the stash mirror of ``state_id``
+                (see ``_apply_state_metadata``).
         """
         template = self._find_plugin_template_state(state_id, snapshot_parent_id)
 
         if template is None:
             l.debug("No template state found for plugin restoration (state %d)", state_id)
+            self._apply_state_metadata(state, state_id, mirror=mirror)
             _install_rust_history_warning(state)
             return
 
@@ -2523,6 +2534,10 @@ class RustStateExportMixin:
                 # plugin; downstream code that accesses it will fall
                 # through to angr's default plugin instantiation.
                 l.debug(f"Could not restore {plugin_name} plugin: {e}")
+
+        # The state's options and globals store, which the proxies write
+        # (angr-vmi2l.265).
+        self._apply_state_metadata(state, state_id, mirror=mirror)
 
         # Fix nested plugin state references for posix (stdin/stdout/stderr).
         # These nested SimPacketsStream objects hold weakrefs to the state that

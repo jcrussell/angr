@@ -204,6 +204,13 @@ impl RustExplorationManager {
         self.sm.roots().get(&state_id).copied()
     }
 
+    /// `[state_id, parent, grandparent, ..., root]`: the ancestors the
+    /// manager still holds, nearest first, then the lineage root; empty for
+    /// an unknown id. See `pending_api::_get_state_ancestry` for the body.
+    pub fn get_state_ancestry(&self, state_id: u64) -> Vec<u64> {
+        self._get_state_ancestry(state_id)
+    }
+
     /// The lineage roots of every state the stash manager still tracks (a
     /// stashed state, a `_copies` fork, a parked callback): a state's root
     /// entry is dropped with the state, so a root id that has left every stash

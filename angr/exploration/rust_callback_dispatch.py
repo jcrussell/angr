@@ -2345,6 +2345,8 @@ class RustCallbackDispatchMixin:
             # angr-op0dn.14.1.3: seed Rust's break pointers into the heap plugin
             # the first time the bounced proc touches it.
             if event.callback_state_id is not None:
+                # The options and globals proxies wrote (angr-vmi2l.265).
+                self._apply_state_metadata(state, event.callback_state_id)
                 self._install_lazy_heap_sync(state, event.callback_state_id)
                 # angr-op0dn.14.1.4: a bounced proc that reads its own stdout
                 # (or appends to it) must see the native output that preceded
