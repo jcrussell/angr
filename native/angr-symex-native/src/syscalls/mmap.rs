@@ -26,8 +26,10 @@
 //! Native subset:
 //! 1. All six args are concrete; flags are valid (exactly one of
 //!    `MAP_SHARED`/`MAP_PRIVATE`).
-//! 2. fd == (u32)-1 (anonymous mapping). Non-anonymous (file-backed)
-//!    requires sim_fd plumbing — out of scope, falls back.
+//! 2. fd == (u32)-1 (anonymous mapping) with the arch's MAP_ANONYMOUS
+//!    bit (0x800 on MIPS, 0x20 elsewhere; see `map_anonymous_for_arch`).
+//!    Non-anonymous (file-backed) requires sim_fd plumbing — out of
+//!    scope, falls back.
 //! 3. addr == 0: pick from `mmap_base` and bump (matches
 //!    `mmap.allocate_memory`). If the candidate range collides with
 //!    already-mapped pages, fall back so Python's loop runs.
@@ -77,7 +79,20 @@ const MAP_PRIVATE: u64 = 0x02;
 /// Linux MAP_FIXED. When set, the request must be honored at exactly
 /// `addr`; any colliding pages are atomically discarded and remapped.
 const MAP_FIXED: u64 = 0x10;
+/// Generic Linux MAP_ANONYMOUS (x86, amd64, ARM, AArch64).
 const MAP_ANONYMOUS: u64 = 0x20;
+/// MIPS MAP_ANONYMOUS (`arch/mips/include/uapi/asm/mman.h`); 0x20 is
+/// MAP_RENAME there (angr-vmi2l.148).
+const MAP_ANONYMOUS_MIPS: u64 = 0x800;
+
+/// The state's arch's MAP_ANONYMOUS bit. MAP_SHARED, MAP_PRIVATE and
+/// MAP_FIXED share one value across every registered arch.
+fn map_anonymous_for_arch(arch_name: &str) -> u64 {
+    match arch_name {
+        "MIPS32" | "MIPS64" => MAP_ANONYMOUS_MIPS,
+        _ => MAP_ANONYMOUS,
+    }
+}
 
 /// Returns true if any page in `[addr, addr+size)` is already mapped.
 /// `addr` and `size` may be unaligned; the check covers every page
@@ -127,14 +142,16 @@ fn do_mmap(
 
     // File-backed mappings need sim_fd. Python compares `fd[31:0] == -1`
     // — i.e. only the low 32 bits matter. Anonymous: fd == 0xFFFFFFFF.
-    // Python keys "anonymous" on fd alone and reads `MAP_ANONYMOUS` (the
-    // generic 0x20) only as `init_zero`; without it the pages get the
-    // unconstrained fill, which is zero under ZERO_FILL_UNCONSTRAINED_MEMORY,
-    // the same bytes this zeroed map gives. MIPS spells MAP_ANONYMOUS 0x800,
-    // so requiring the bit declined every MIPS anonymous map, and the bounced
-    // Python mmap cannot map outside the heap region (angr-mx00p.132.74).
+    // Python keys "anonymous" on fd alone and reads the generic 0x20 as
+    // `init_zero` on every arch; without it the pages get the unconstrained
+    // fill, which is zero under ZERO_FILL_UNCONSTRAINED_MEMORY, the same bytes
+    // this zeroed map gives. The bit tested here is the arch's own
+    // MAP_ANONYMOUS, so a MIPS anonymous map (0x800) is zero-filled as Linux
+    // does rather than bounced to a Python mmap that cannot map outside the
+    // heap region (angr-mx00p.132.74, angr-vmi2l.148).
     let fd_low32 = fd_full & 0xFFFF_FFFF;
-    let zero_init = (flags & MAP_ANONYMOUS) != 0 || state.memory().zero_fill_unconstrained();
+    let anonymous = flags & map_anonymous_for_arch(state.arch().name()) != 0;
+    let zero_init = anonymous || state.memory().zero_fill_unconstrained();
     if !zero_init || fd_low32 != 0xFFFF_FFFF {
         return Err(SyscallError::Other(
             "mmap: file-backed (fd != -1) — fall back".into(),

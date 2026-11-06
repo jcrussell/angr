@@ -178,11 +178,11 @@ fn file_backed_falls_back() {
 
 #[test]
 fn fd_minus_one_without_the_generic_anonymous_bit_needs_zero_fill() {
-    // angr-mx00p.132.74: MIPS spells MAP_ANONYMOUS 0x800. Python treats
+    // angr-mx00p.132.74: 0x800 is not MAP_ANONYMOUS on amd64. Python treats
     // fd == -1 as anonymous and fills the pages unconstrained, which is zero
     // only under ZERO_FILL_UNCONSTRAINED_MEMORY, so only then does the zeroed
     // native map give the same bytes.
-    const MIPS_ANON_PRIVATE: u64 = 0x800 | MAP_PRIVATE;
+    const MIPS_ANON_PRIVATE: u64 = MAP_ANONYMOUS_MIPS | MAP_PRIVATE;
     let h = NativeMmapSyscall;
     let mut state = fresh_state();
     let err = h
@@ -203,6 +203,62 @@ fn fd_minus_one_without_the_generic_anonymous_bit_needs_zero_fill() {
         state.memory().page_permissions(DEFAULT_MMAP_BASE >> 12),
         Some(Permission::RW),
     );
+}
+
+/// Runs `flags` through the registry's `name` handler for `abi` on a fresh
+/// `arch` state at addr 0, fd -1, and returns the outcome and the state.
+fn mips_anon_call(
+    arch: &str,
+    abi: crate::syscalls::SyscallAbi,
+    name: &str,
+    flags: u64,
+) -> (Result<SyscallOutcome, SyscallError>, RustSimState) {
+    let mut state = RustSimState::new(arch).expect("mips state");
+    let h = crate::syscalls::NativeSyscallRegistry::handler_for(abi, name).expect("mmap row");
+    let outcome = h.call(&mut state, &args(0, 0x2000, 0x3, flags, ANON_FD, 0));
+    (outcome, state)
+}
+
+#[test]
+fn mips_anonymous_maps_use_the_mips_map_anonymous_bit() {
+    // angr-vmi2l.148: MIPS MAP_ANONYMOUS is 0x800, so MAP_PRIVATE|MAP_ANONYMOUS
+    // is 0x802 there and must map zero-filled pages natively, without
+    // ZERO_FILL_UNCONSTRAINED_MEMORY.
+    use crate::syscalls::SyscallAbi;
+    for (arch, abi, name) in [
+        ("mips32", SyscallAbi::MipsO32, "mmap2"),
+        ("mips64", SyscallAbi::MipsN64, "mmap"),
+    ] {
+        let (outcome, state) = mips_anon_call(arch, abi, name, 0x802);
+        match outcome.expect("MIPS anonymous mmap is native") {
+            SyscallOutcome::Continue { ret } => assert_eq!(ret, DEFAULT_MMAP_BASE, "{arch}"),
+            _ => panic!("expected Continue on {arch}"),
+        }
+        for page in [DEFAULT_MMAP_BASE, DEFAULT_MMAP_BASE + 0x1000] {
+            assert_eq!(
+                state.memory().page_permissions(page >> 12),
+                Some(Permission::RW),
+                "{arch} {page:#x}",
+            );
+            let word = state.memory_load(page + 0x10, 4).expect("mapped load");
+            assert_eq!(word.as_u64(), Some(0), "{arch} {page:#x} is zero-filled");
+        }
+        assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE + 0x2000, "{arch}");
+    }
+}
+
+#[test]
+fn mips_generic_anonymous_bit_is_map_rename_and_needs_zero_fill() {
+    // 0x20 is MAP_RENAME on MIPS, not MAP_ANONYMOUS: without the 0x800 bit a
+    // fd -1 request is not anonymous there, so it stays Python's.
+    let (outcome, state) = mips_anon_call(
+        "mips32",
+        crate::syscalls::SyscallAbi::MipsO32,
+        "mmap2",
+        MAP_ANONYMOUS | MAP_PRIVATE,
+    );
+    assert!(matches!(outcome, Err(SyscallError::Other(_))));
+    assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
 }
 
 #[test]
