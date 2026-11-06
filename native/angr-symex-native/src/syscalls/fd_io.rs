@@ -230,9 +230,7 @@ impl NativeSyscall for NativeReadvSyscall {
         }
 
         if fd == 0 {
-            // stdin: fill every segment with fresh symbolic bytes, mirroring
-            // `read`'s stdin path. Returns the requested total.
-            return scatter_symbolic(state, &segments, "sys_readv");
+            return readv_stdin(state, &segments);
         }
 
         // User fd: serve concrete content from the FileSystem, advancing the
@@ -307,9 +305,36 @@ impl NativeSyscall for NativeReadvSyscall {
     }
 }
 
+/// `readv(0, ..)`: mint each segment through `stdin_common::mint_stdin_bytes`
+/// in read order, as `read::read_stdin` does, so a harness seed binds the
+/// bytes and unseeded ones reach `posix.dumps(0)` (angr-vmi2l.134). Returns
+/// the requested total; a seed that ends first defers to Python's EOF model.
+fn readv_stdin(
+    state: &mut RustSimState,
+    segments: &[(u64, u64)],
+) -> Result<SyscallOutcome, SyscallError> {
+    crate::syscalls::refuse_short_read(state, "readv(0)")?;
+    let total = segments
+        .iter()
+        .try_fold(0u64, |acc, &(_, len)| acc.checked_add(len));
+    let total = total
+        .ok_or_else(|| SyscallError::Other("readv(0): iov_len total overflows".to_string()))?;
+    if crate::procedures::stdin_common::stdin_seed_ends_before(state, total as usize) {
+        return Err(SyscallError::Other(
+            "readv(0): the harness stdin seed ends before the read; Python models the EOF"
+                .to_string(),
+        ));
+    }
+    for &(base, len) in segments {
+        let names = crate::syscalls::fresh_byte_names("sys_readv", SYS_READV_COUNTER, len);
+        let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
+        write_bv_bytes(state, base, sym_bytes)?;
+    }
+    Ok(SyscallOutcome::Continue { ret: total })
+}
+
 /// Scatter fresh symbolic bytes across the iovec `segments`, mirroring
-/// `read::read_symbolic`. Shared by `readv`'s stdin path (fd 0) and
-/// symbolic-stream fds (`FileSystem::is_symbolic`). Each segment mints `len`
+/// `read::read_symbolic`, for symbolic-stream fds (`FileSystem::is_symbolic`). Each segment mints `len`
 /// uniquely-named bytes (`<prefix>_<id>_<i>`); returns the requested total in
 /// rax (a symbolic stream never hits EOF).
 fn scatter_symbolic(

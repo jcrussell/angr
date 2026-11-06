@@ -264,6 +264,52 @@ fn readv_stdin_writes_symbolic() {
     }
 }
 
+/// `readv(0)` records each unseeded byte for `posix.dumps(0)` and binds a
+/// harness seed across segments in read order, as `read(0)` does
+/// (angr-vmi2l.134).
+#[test]
+fn readv_stdin_records_and_binds_the_seed() {
+    let readv = |state: &mut RustSimState| {
+        NativeReadvSyscall.call(
+            state,
+            &[
+                RustBV::concrete(0, 64),
+                RustBV::concrete(0x2000, 64),
+                RustBV::concrete(2, 64),
+            ],
+        )
+    };
+
+    let mut state = fresh_state();
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 2), (0x3010, 3)]);
+    assert!(matches!(readv(&mut state), Ok(SyscallOutcome::Continue { ret: 5 })));
+    assert_eq!(state.stdin_symbols().len(), 5, "every unseeded byte reaches dumps(0)");
+
+    let mut state = fresh_state();
+    let seed: Vec<RustBV> = b"hello".iter().map(|b| RustBV::concrete(u128::from(*b), 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 2), (0x3010, 3)]);
+    assert!(matches!(readv(&mut state), Ok(SyscallOutcome::Continue { ret: 5 })));
+    let he = state.memory_load(0x3000, 2).expect("loaded");
+    let llo = state.memory_load(0x3010, 3).expect("loaded");
+    let ctx = state.solver().clone();
+    let ctx = ctx.borrow();
+    for (got, want) in [(he, b"he".as_slice()), (llo, b"llo".as_slice())] {
+        let want = want.iter().rev().fold(0u128, |acc, b| (acc << 8) | u128::from(*b));
+        let probe = ctx.fork();
+        probe.assume_true(&got.eq(&RustBV::concrete(want, got.width())).not());
+        assert!(!probe.is_sat(), "segment not bound to its slice of the seed");
+    }
+    drop(ctx);
+
+    let mut state = fresh_state();
+    let seed: Vec<RustBV> = b"hi".iter().map(|b| RustBV::concrete(u128::from(*b), 8)).collect();
+    state.file_system().set_fd_content_sym(0, seed);
+    state.file_system().set_fd_content_has_end(0, true);
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 2), (0x3010, 3)]);
+    assert!(readv(&mut state).is_err(), "a seed that ends first defers to Python");
+}
+
 #[test]
 fn readv_symbolic_fd_scatters_symbolic_bytes_natively() {
     // A symbolic-stream fd (empty content, flagged symbolic via open_symbolic)
