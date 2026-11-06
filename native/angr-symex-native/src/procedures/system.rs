@@ -15,10 +15,15 @@
 //! taken as a raw `bv` and discarded (parity holds for concrete and symbolic
 //! pointers alike — Python never inspects it, so there is no reason to force
 //! concretization and fall back), and the return is a fresh 8-bit symbolic BV
-//! zero-extended to the 32-bit C int width (matching rand.rs, which likewise
-//! zero-extends an int-returning symbolic result to 32 bits).
+//! zero-extended to the 32-bit C int width.
+//!
+//! `Unconstrained` is not `BVS`: it returns `BVV(0)` unless
+//! `SYMBOLIC_INITIAL_VALUES` is set, so without the option the native return
+//! is a concrete 0, as in stub.rs (angr-vmi2l.127). rand.py calls `BVS`, so
+//! rand.rs stays symbolic whatever the options.
 
 use super::fresh_zero_extended_symbol;
+use crate::symbolic::RustBV;
 
 crate::declare_proc! {
     /// ```c
@@ -28,9 +33,11 @@ crate::declare_proc! {
     name = "system",
     struct = NativeSystem,
     args = [_command: bv],
-    call |_state| {
-        // 8-bit unconstrained return code, zero-extended to the 32-bit C int
-        // width (sizeof(int) == 32 on all supported arches; matches rand.rs).
+    call |state| {
+        // sizeof(int) == 32 on all supported arches.
+        if !state.has_option(crate::state::SYMBOLIC_INITIAL_VALUES) {
+            return Ok(Some(RustBV::concrete(0, 32)));
+        }
         Ok(Some(fresh_zero_extended_symbol(
             "system_returncode",
             8,

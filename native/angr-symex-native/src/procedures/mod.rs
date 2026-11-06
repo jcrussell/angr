@@ -230,12 +230,11 @@ pub(crate) fn arch_signed_word(state: &RustSimState, raw: u64) -> i64 {
 /// Mint a fresh symbolic bitvector of `src_bits` and zero-extend it to
 /// `ext_bits`, naming it `<prefix>_<counter>` via [`symbol_counter`].
 ///
-/// Models the "unconstrained value narrower than the C return type" shape that
-/// several libc procs share with their Python SimProcedures: `rand` mints 31
-/// bits and zero-extends to `sizeof(int)`, `system` mints 8. Both spelled the
-/// same five lines out by hand — counter, name, borrow the solver, mint,
-/// zero-extend — differing only in the prefix and `src_bits`, so the two could
-/// drift on the extension width with nothing to catch it (angr-6cp06.13).
+/// Models the "symbol narrower than the C return type" shape: `rand` mints 31
+/// bits and `system` 8, each zero-extended to `sizeof(int)` (angr-6cp06.13).
+/// The helper always mints; a caller whose Python proc goes through
+/// `Unconstrained` (`system`) applies the `SYMBOLIC_INITIAL_VALUES` gate
+/// itself, as stub.rs does.
 ///
 /// `ext_bits` is the **total** target width, matching
 /// [`RustBV::zero_extend`], not a count of added bits (claripy's

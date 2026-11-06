@@ -8,7 +8,7 @@ use crate::symbolic::RustBV;
 #[test]
 fn test_system_returns_symbolic_int() {
     // Python models system() as an unconstrained 8-bit code zero-extended to
-    // the 32-bit C int width — symbolic, never concrete.
+    // the 32-bit C int width; symbolic under the default SYMBOLIC_INITIAL_VALUES.
     let mut state = RustSimState::new("amd64").unwrap();
     let cmd = RustBV::concrete(0x1000, 64);
     let result = NativeSystem
@@ -21,7 +21,7 @@ fn test_system_returns_symbolic_int() {
 
 #[test]
 fn test_system_width_is_int_on_32bit_arch() {
-    // sizeof(int) == 32 regardless of arch word size (matches rand.rs).
+    // sizeof(int) == 32 regardless of arch word size.
     let mut state = RustSimState::new("x86").unwrap();
     let cmd = RustBV::concrete(0x1000, 32);
     let result = NativeSystem
@@ -71,4 +71,25 @@ fn test_system_metadata() {
     assert_eq!(NativeSystem.name(), "system");
     assert_eq!(NativeSystem.num_args(), 1);
     assert!(!NativeSystem.no_return());
+}
+
+#[test]
+fn test_system_returns_zero_without_symbolic_initial_values() {
+    // Python's `Unconstrained` is `BVV(0)` unless SYMBOLIC_INITIAL_VALUES is
+    // set (angr-vmi2l.127); with it, the return stays symbolic.
+    let mut state = RustSimState::new("amd64").unwrap();
+    let cmd = RustBV::concrete(0x1000, 64);
+    state.set_option(crate::state::SYMBOLIC_INITIAL_VALUES, false);
+    let result = NativeSystem
+        .call(&mut state, std::slice::from_ref(&cmd))
+        .unwrap()
+        .unwrap();
+    assert_eq!(result.as_u64(), Some(0));
+    assert_eq!(result.width(), 32);
+    state.set_option(crate::state::SYMBOLIC_INITIAL_VALUES, true);
+    let result = NativeSystem
+        .call(&mut state, std::slice::from_ref(&cmd))
+        .unwrap()
+        .unwrap();
+    assert!(result.as_u64().is_none());
 }
