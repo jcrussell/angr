@@ -1285,6 +1285,29 @@ impl RustExplorationManager {
         runs.push(run(done, leaves.len()));
         Some(runs)
     }
+
+    /// `eval_stdin_seed`: fd 0's seeded content (`_seed_stdin_content`), the
+    /// whole of it whatever the read position, one byte per element,
+    /// evaluated under the state's constraints (`0` for a byte that does not
+    /// evaluate). The stream prefix the stdin leaves follow, since
+    /// `mint_stdin_bytes` records only bytes read past it. Empty when nothing
+    /// was seeded; `None` for an unknown state.
+    pub(crate) fn _eval_stdin_seed(&self, state_id: u64) -> Option<Vec<u8>> {
+        let state = self.find_state(state_id)?;
+        let Some(seed) = state.file_system_ref().fd_content_sym(0) else {
+            return Some(Vec::new());
+        };
+        let ctx = state.solver().borrow();
+        Some(
+            seed.iter()
+                .map(|byte| {
+                    ctx.eval_wide(byte)
+                        .and_then(|bytes| bytes.last().copied())
+                        .unwrap_or(0)
+                })
+                .collect(),
+        )
+    }
 }
 
 /// Every `(name, width)` stdin leaf `state` recorded, in read order. A

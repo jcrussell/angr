@@ -708,6 +708,14 @@ impl RustExplorationManager {
         self._eval_stdin_leaf_runs(state_id, &cuts)
     }
 
+    /// fd 0's seeded content evaluated to bytes, the prefix of the stream
+    /// the stdin leaves follow, so a proxy's `posix.dumps(0)` lays stdin out
+    /// as an export does (angr-vmi2l.267). Empty when nothing was seeded;
+    /// `None` for an unknown state.
+    pub fn eval_stdin_seed(&self, state_id: u64) -> Option<Vec<u8>> {
+        self._eval_stdin_seed(state_id)
+    }
+
     /// Evaluate a stdin symbol of any width to its big-endian bytes, as
     /// `eval_stdin_symbol` does for one of at most 64 bits. Used for a
     /// packet's data symbol (`get_state_stdin_host_packets`).

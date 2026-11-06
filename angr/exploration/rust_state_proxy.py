@@ -3049,16 +3049,18 @@ class RustPosixProxy:
             _release_owned_ctx(owned_ctx, threading.get_ident())
 
     def _eval_rust_stdin(self):
-        """``dumps(0)`` from the stdin symbols native reads created in Rust.
+        """``dumps(0)`` from the seeded stdin and the symbols native reads created in Rust.
 
-        Same evaluation ``_inject_rust_stdin_inner`` uses for a materialized
-        state: each symbol at its recorded width, little-endian, so the proxy
-        does not return ``b""`` without ``stdin_vars`` (angr-hc1yj).
+        Same layout an export has: the harness's seeded content first, as on
+        the stream ``_seed_stdin_to_rust`` pushed (angr-vmi2l.267), then each
+        symbol at its recorded width, little-endian, as
+        ``_inject_rust_stdin_inner`` appends them, so the proxy does not return
+        ``b""`` without ``stdin_vars`` (angr-hc1yj).
         """
         try:
+            out = bytearray(self._mgr.eval_stdin_seed(self._state_id) or b"")
             if not self._mgr.has_state_stdin_symbols(self._state_id):
-                return b""
-            out = bytearray()
+                return bytes(out)
             for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
                 nbytes = max(1, bits // 8)
                 val = self._mgr.eval_stdin_symbol(self._state_id, name, bits)
