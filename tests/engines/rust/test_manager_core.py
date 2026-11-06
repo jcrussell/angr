@@ -1243,6 +1243,19 @@ class TestRustExplorationPython:
         assert strict_ids, "expected an active state to be added"
         assert strict_mgr._rust_mgr.state_enforce_permissions(strict_ids[0]) is True
 
+    def test_strict_page_access_blank_state_constructs_and_steps(self, fauxware_project):
+        """A STRICT_PAGE_ACCESS blank_state leaves its stack page unmapped,
+        so the constructor must not do an unprivileged load of the SP page
+        (angr-vmi2l.296). Python's ``sm.step()`` gives one active state."""
+        from angr import sim_options as o
+
+        main = fauxware_project.loader.find_symbol("main").rebased_addr
+        state = fauxware_project.factory.blank_state(addr=main, add_options={o.STRICT_PAGE_ACCESS})
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.step()
+        assert len(mgr.active) == 1
+        assert not mgr.errored
+
     def test_set_ip_register_syncs_state_pc(self, fauxware_project):
         """Writing the IP register via set_state_register_symbolic_ast must
         keep the state's pc field in sync (angr-4rq7).
