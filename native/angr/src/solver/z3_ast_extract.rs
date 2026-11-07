@@ -14,7 +14,7 @@ use clarirs_core::prelude::AstRef;
 
 use crate::claripy::ast::base::Base;
 
-use crate::claripy_bridge::claripy_to_rustbv;
+use crate::claripy_bridge::{BridgeError, claripy_to_rustbv};
 use crate::symbolic::{RustBV, SymContext};
 
 use super::RustSolverContext;
@@ -69,6 +69,28 @@ impl RustSolverContext {
                 return None;
             }
             node_to_eval_bv(&node).ok()
+        }
+    }
+
+    /// Lower a claripy AST for `min` / `max` / `solution`. Unlike
+    /// [`ast_to_bv_for_eval`](Self::ast_to_bv_for_eval), a conversion error
+    /// propagates (a refused width must not reach Z3 through the node:
+    /// `TestClaripyBridgeWidthBounds`). The one exception is the import's
+    /// depth limit, which says nothing about the AST's validity: a too-deep BV
+    /// is taken whole, as `eval` would (angr-vmi2l.254).
+    pub(crate) fn ast_to_bv_strict(
+        &self,
+        py: Python<'_>,
+        ast: &Bound<'_, PyAny>,
+        ctx: &SymContext,
+    ) -> PyResult<RustBV> {
+        match claripy_to_rustbv(py, ast, ctx) {
+            Ok(bv) => Ok(bv),
+            Err(err @ BridgeError::RecursionLimit(_)) => claripy_node(ast)
+                .filter(|node| node.ast_type().is_bitvec())
+                .and_then(|node| node_to_eval_bv(&node).ok())
+                .ok_or_else(|| err.into()),
+            Err(err) => Err(err.into()),
         }
     }
 

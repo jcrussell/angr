@@ -46,8 +46,8 @@ pub trait ToZ3 {
     /// # Panics (debug builds)
     ///
     /// The 1-bit precondition is enforced here rather than left to callers:
-    /// a wider BV must be narrowed first (`bv.ne(&zero)`, as
-    /// `assume_true_ast` and `add_constraint_from_ast` do). See
+    /// a wider BV must be narrowed first (`bv.ne(&zero)`, as the shell's
+    /// `bool_constraint_bv` does). See
     /// `to_z3_bool_cached` for why a multi-bit input would be silently
     /// mis-converted instead of rejected.
     fn to_z3_bool(&self) -> Result<z3::ast::Bool, LowerError>;

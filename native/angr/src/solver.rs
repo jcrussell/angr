@@ -494,6 +494,10 @@ impl RustSolverContext {
     }
 
     /// Get the minimum value of a claripy AST.
+    ///
+    /// `None` when unsat. Converts through
+    /// [`ast_to_bv_strict`](Self::ast_to_bv_strict), so a refused width
+    /// raises instead of reaching Z3.
     #[pyo3(signature = (ast, signed=false))]
     pub fn min(
         &self,
@@ -506,11 +510,11 @@ impl RustSolverContext {
             return Ok(Some(value));
         }
         let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
         Ok(ctx.min(&bv, signed))
     }
 
-    /// Get the maximum value of a claripy AST.
+    /// Get the maximum value of a claripy AST; converts as [`min`](Self::min).
     #[pyo3(signature = (ast, signed=false))]
     pub fn max(
         &self,
@@ -523,14 +527,15 @@ impl RustSolverContext {
             return Ok(Some(value));
         }
         let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
         Ok(ctx.max(&bv, signed))
     }
 
-    /// Check if a specific value is a valid solution for an AST.
+    /// Check if a specific value is a valid solution for an AST; converts as
+    /// [`min`](Self::min).
     pub fn solution(&self, py: Python<'_>, ast: &Bound<'_, PyAny>, value: u128) -> PyResult<bool> {
         let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
         Ok(ctx.solution(&bv, value))
     }
 
@@ -602,60 +607,6 @@ impl RustSolverContext {
         self.inner.is_none()
     }
 
-    /// Pop solver state multiple times.
-    ///
-    /// This is used for deferred fork processing to restore solver state
-    /// to before specific branch constraints were added.
-    pub fn pop_to_level(&self, target_level: u32, current_level: u32) -> PyResult<()> {
-        let pops = current_level.saturating_sub(target_level);
-        let ctx = self.i().ctx();
-        for _ in 0..pops {
-            if !ctx.try_pop() {
-                return Err(PyValueError::new_err(format!(
-                    "pop_to_level({target_level}, {current_level}) exceeds the \
-                     solver scope depth — no matching push()",
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// Add a constraint that a 1-bit value is true.
-    ///
-    /// Used for applying branch constraints during fork processing.
-    pub fn assume_true_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
-        let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
-        if bv.width() != 1 {
-            return Err(PyRuntimeError::new_err(format!(
-                "constraint must be a 1-bit value, got {} bits",
-                bv.width()
-            )));
-        }
-        {
-            ctx.assume_true(&bv);
-        }
-        Ok(())
-    }
-
-    /// Add a constraint that a 1-bit value is false.
-    ///
-    /// Used for applying negated branch constraints during fork processing.
-    pub fn assume_false_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
-        let ctx = self.i().ctx();
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
-        if bv.width() != 1 {
-            return Err(PyRuntimeError::new_err(format!(
-                "constraint must be a 1-bit value, got {} bits",
-                bv.width()
-            )));
-        }
-        {
-            ctx.assume_false(&bv);
-        }
-        Ok(())
-    }
-
     /// Get the number of constraints.
     pub fn num_constraints(&self) -> usize {
         self.i().ctx().num_constraints()
@@ -689,60 +640,6 @@ impl RustSolverContext {
     /// Useful for debugging and for verifying constraint sync between Rust and Python.
     pub fn get_all_constraints_str(&self) -> Vec<String> {
         self.i().ctx().get_all_constraints_str()
-    }
-
-    /// Get the number of assertions in the Z3 solver.
-    ///
-    /// Returns the total count of active constraints.
-    pub fn z3_assertion_count(&self) -> usize {
-        self.i().ctx().z3_assertion_count()
-    }
-
-    /// Debug/REPL-only: list the solver's constraints as
-    /// `(description, is_trackable)` tuples.
-    ///
-    /// **Not part of the constraint-sync path** and has no in-tree caller
-    /// (angr-c7xno.96): Rust->Python constraint flow goes through
-    /// `add_constraints_to_pending`, and `get_all_constraints_str` is the
-    /// string view that tooling actually uses. This wrapper exists so an
-    /// interactive session can see the same list with the trackability flag
-    /// attached; the flag is currently always `true`, since every constraint
-    /// the solver holds was added through a tracked handle.
-    pub fn export_constraint_info(&self) -> Vec<(String, bool)> {
-        self.i()
-            .ctx()
-            .get_all_constraints_str()
-            .into_iter()
-            .map(|s| (s, true)) // All Z3 constraints are trackable
-            .collect()
-    }
-
-    /// Debug/REPL-only: constraints added since `baseline`, saturating at 0
-    /// when the baseline is already ahead of the live count.
-    ///
-    /// Has no in-tree caller (angr-c7xno.96) — Python code that wants to see
-    /// constraint growth around a callback calls `num_constraints` directly
-    /// and subtracts (see `rust_callback_dispatch.py`). Kept as a convenience
-    /// for interactive use.
-    pub fn constraint_delta(&self, baseline: usize) -> usize {
-        let current = self.i().ctx().num_constraints();
-        current.saturating_sub(baseline)
-    }
-
-    // =========================================================================
-    // Solver Profiling Stats
-    // =========================================================================
-
-    /// Get global Z3 solver profiling stats as a dict.
-    #[staticmethod]
-    pub fn get_solver_stats() -> std::collections::HashMap<String, u64> {
-        crate::symbolic::get_solver_stats()
-    }
-
-    /// Reset global Z3 solver profiling stats to zero.
-    #[staticmethod]
-    pub fn reset_solver_stats() {
-        crate::symbolic::reset_solver_stats()
     }
 }
 

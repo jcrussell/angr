@@ -66,20 +66,6 @@ class TestSolverOperations:
         with pytest.raises(ValueError):
             ctx.pop()
 
-    def test_pop_to_level_beyond_depth_raises(self):
-        """pop_to_level past the actual scope depth raises ValueError.
-
-        Regression test (angr-ph300.48): ``pop_to_level(0, 5)`` after only two
-        pushes must refuse the surplus pops cleanly.
-        """
-        from angr.rustylib.vex_engine import RustSolverContext
-
-        ctx = RustSolverContext()
-        ctx.push()
-        ctx.push()
-        with pytest.raises(ValueError):
-            ctx.pop_to_level(0, 5)
-
     def test_solver_unsatisfiable(self):
         """Contradictory constraints make solver UNSAT."""
         from angr import claripy
@@ -483,6 +469,31 @@ class TestSolverOperations:
         assert ctx2.satisfiable()
         assert ctx2.eval(eq) == 1
         assert 1 in ctx2.eval_upto(eq, 5)
+
+    def test_min_max_solution_take_a_too_deep_bv_whole(self):
+        """min/max/solution take a BV too deep for the operand-wise import
+        whole, as eval does; any other bridge error still propagates
+        (TestClaripyBridgeWidthBounds).
+
+        Regression test (angr-vmi2l.254): all three raised RecursionError on
+        a chain past ``MAX_IMPORT_RECURSION_DEPTH`` that eval answers.
+        """
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        x = claripy.BVS("x", 32)
+        e, want = x, 5
+        for i in range(5000):
+            e = (e ^ claripy.BVV(i, 32)) + 1
+            want = ((want ^ i) + 1) & 0xFFFFFFFF
+
+        ctx = RustSolverContext()
+        ctx.add_constraint_ast(x == 5)
+        assert ctx.eval(e) == want
+        assert ctx.min(e) == want
+        assert ctx.max(e) == want
+        assert ctx.solution(e, want)
+        assert not ctx.solution(e, (want + 1) & 0xFFFFFFFF)
 
     def test_fork_constraint_bidirectional_isolation(self):
         """Bidirectional fork isolation: parent and sibling constraints

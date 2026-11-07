@@ -192,9 +192,9 @@ Symmetry rules:
 
 * Every ``push()`` MUST be balanced by exactly one ``pop()``. In the
   None branch z3-rs panics on under-pop, so the Python-facing
-  ``RustSolverContext::pop()`` / ``::pop_to_level()`` route through
-  ``try_pop()``, which refuses the pop (returning ``false``, which
-  those methods turn into a Python exception) when
+  ``RustSolverContext::pop()`` routes through ``try_pop()``, which
+  refuses the pop (returning ``false``, which ``pop()`` turns into a
+  Python exception) when
   ``bare_z3_push_depth == 0`` (``angr-ph300.48``). In the Some branch
   the ``scope_savepoints`` vector silently no-ops on an empty pop.
 * ``fork()`` gives the child a *fresh* scope state — empty

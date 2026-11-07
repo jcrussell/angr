@@ -99,47 +99,16 @@ fn test_pop_without_push_is_a_value_error() {
     assert!(ctx.pop().is_err());
 }
 
-/// `pop_to_level` pops exactly `current - target` times, refuses to pop past
-/// the bottom of the stack, and is a no-op when the target is not below the
-/// current level (the `saturating_sub` case).
-#[test]
-fn test_pop_to_level_pops_the_difference_and_refuses_to_overshoot() {
-    let ctx = RustSolverContext::new();
-    for _ in 0..3 {
-        ctx.push();
-    }
-    // 3 -> 1 pops twice, leaving one scope on the stack.
-    ctx.pop_to_level(1, 3).expect("two pops available");
-    ctx.pop().expect("one scope still open");
-    assert!(ctx.pop().is_err(), "stack must be empty now");
-
-    // target >= current pops nothing, so it succeeds on an empty stack.
-    ctx.pop_to_level(4, 4).expect("no-op");
-    ctx.pop_to_level(5, 2).expect("saturating: no-op");
-
-    // Asking for more pops than there are scopes reports the overshoot
-    // instead of panicking partway through.
-    ctx.push();
-    let err = ctx.pop_to_level(0, 3).expect_err("only one scope open");
-    assert!(
-        err.to_string().contains("exceeds the solver scope depth"),
-        "{err}"
-    );
-}
-
 // =============================================================================
 // Constraint bookkeeping (angr-sqfj8.125)
 // =============================================================================
 
 /// `num_constraints` is what the Python side polls to report constraint growth
-/// (`rust_callback_dispatch.py`); `constraint_delta` is the debug-only
-/// convenience over it, and must saturate rather than underflow when the
-/// baseline is already ahead.
+/// (`rust_callback_dispatch.py`).
 #[test]
-fn test_num_constraints_and_delta_track_adds() {
+fn test_num_constraints_tracks_adds() {
     let ctx = RustSolverContext::new();
     let base = ctx.num_constraints();
-    assert_eq!(ctx.constraint_delta(base), 0);
 
     {
         let sc = ctx.i().ctx();
@@ -148,16 +117,12 @@ fn test_num_constraints_and_delta_track_adds() {
     }
 
     assert_eq!(ctx.num_constraints(), base + 1);
-    assert_eq!(ctx.constraint_delta(base), 1);
-    // Baseline ahead of the live count: saturate to 0, never underflow.
-    assert_eq!(ctx.constraint_delta(base + 99), 0);
 }
 
-/// `get_all_constraints_str` / `export_constraint_info` / `z3_assertion_count`
-/// are three debugging views of the same assertion list; they must agree with
-/// each other.
+/// `get_all_constraints_str` is the debugging view of the assertion list; it
+/// must name the asserted symbol.
 #[test]
-fn test_constraint_export_views_agree() {
+fn test_constraint_strings_name_the_symbol() {
     let ctx = RustSolverContext::new();
     {
         let sc = ctx.i().ctx();
@@ -166,15 +131,9 @@ fn test_constraint_export_views_agree() {
     }
 
     let strs = ctx.get_all_constraints_str();
-    assert!(!strs.is_empty());
-    assert_eq!(ctx.z3_assertion_count(), strs.len());
-
-    let info = ctx.export_constraint_info();
-    assert_eq!(info.len(), strs.len());
-    assert!(info.iter().all(|(_, trackable)| *trackable));
     assert!(
-        info.iter().any(|(s, _)| s.contains("solver_export_x")),
-        "the exported strings must name the symbol: {info:?}"
+        strs.iter().any(|s| s.contains("solver_export_x")),
+        "the constraint strings must name the symbol: {strs:?}"
     );
 }
 
