@@ -42,9 +42,10 @@
 //!   mirrors `procedures/cgc/allocate.py`. Uses the state's
 //!   `cgc_allocation_base` high-water and `cgc_sinkholes` freelist;
 //!   error codes match the Python plugin (EINVAL=3, EFAULT=2). Falls
-//!   back to Python on symbolic args or when the bump would collide
-//!   with the loader/flag-page region (Rust syscall has no access to
-//!   `project.loader`, so the safe path is to defer).
+//!   back to Python on symbolic args, or when the bump would touch the
+//!   flag page or any mapped or lazy-region page. Loaded objects are
+//!   lazy regions, so the second check covers the loader overlap
+//!   (Rust has no `project.loader` bounds).
 //! * `6 deallocate(addr, length)` — page-aligned unmap with sinkhole
 //!   bookkeeping, mirroring `procedures/cgc/deallocate.py`. Walks
 //!   consecutive mapped pages, unmaps them, and adds the run to the
@@ -493,11 +494,20 @@ impl NativeSyscall for NativeRandomSyscall {
 //
 // Returns 0 on success. Returns EINVAL (3) for length == 0 or
 // length > max_allocation. Returns EFAULT (2) when `addr` is null.
-// Falls back to Python when the bump would touch the loader-owned
-// region (Rust has no access to `project.loader.max_addr` here) or the
-// CGC flag page — the Python procedure has the proper overlap-handling
-// path for both cases.
+// Falls back to Python when the bump would touch the CGC flag page, or
+// any page that is already mapped or inside a lazy region. The second
+// check stands in for `allocate.py`'s `loader.max_addr` overlap branch:
+// Rust has no loader bounds, but every loaded object's pages are lazy
+// regions. The Python procedure has the overlap handling for both cases.
 pub(crate) struct NativeAllocateSyscall;
+
+/// Whether any page of `[start, start + len)` is mapped or inside a lazy
+/// region of `state`'s memory.
+fn region_touches_existing_memory(state: &RustSimState, start: u64, len: u64) -> bool {
+    let memory = state.memory();
+    PageIndex::range_covering(start, len)
+        .any(|page| memory.is_mapped(page.base_addr()) || memory.is_in_lazy_region(page.get()))
+}
 
 impl NativeSyscall for NativeAllocateSyscall {
     fn name(&self) -> &'static str {
@@ -553,6 +563,20 @@ impl NativeSyscall for NativeAllocateSyscall {
             if region_start < CGC_FLAG_PAGE_END && region_end > CGC_FLAG_PAGE_START {
                 return Err(SyscallError::Other(
                     "allocate region overlaps CGC flag page; falling back to Python".into(),
+                ));
+            }
+            // Defer to Python if the bump would land on memory that is
+            // already mapped or backed by a lazy region. Python sinkholes the
+            // range and allocates below `loader.min_addr` when
+            // `chosen <= loader.max_addr < allocation_base`. Rust has no
+            // loader bounds, but the state import registers every loaded
+            // object's page range as a lazy region, so the page holding
+            // `loader.max_addr` is lazy and this check covers that case
+            // (angr-vmi2l.142).
+            if region_touches_existing_memory(state, region_start, aligned_length) {
+                return Err(SyscallError::Other(
+                    "allocate region overlaps mapped or loader memory; falling back to Python"
+                        .into(),
                 ));
             }
             state.set_cgc_allocation_base(next_base);

@@ -783,6 +783,59 @@ fn allocate_symbolic_length_falls_back() {
     assert!(matches!(err, SyscallError::SymbolicArgument(_)));
 }
 
+/// `allocate.py` sinkholes the range and allocates below `loader.min_addr`
+/// when `chosen <= loader.max_addr < allocation_base`. A loaded object's
+/// pages are lazy regions on the Rust state, so a bump onto one must defer
+/// instead of mapping over the image (angr-vmi2l.142).
+#[test]
+fn allocate_bump_onto_lazy_region_falls_back() {
+    let h = NativeAllocateSyscall;
+    let mut state = x86_state_with_buf();
+    let image = 0x0804_8000u64;
+    state.memory_mut().add_lazy_region(image, 0x2000);
+    // The image's last page sits just below the allocation base, so a
+    // two-page bump covers it.
+    let base = image + 0x2000;
+    state.set_cgc_allocation_base(base);
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x2000, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect_err("a bump onto loader memory must fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    assert_eq!(state.cgc_allocation_base(), base, "base untouched on fallback");
+    assert!(!state.memory().is_mapped(image), "no page mapped on fallback");
+    let stored = state.memory_load(0x2000, 4).expect("load").as_u64();
+    assert_eq!(stored, Some(0), "*addr untouched on fallback");
+}
+
+/// A bump onto an already-mapped page defers too: Python decides whether
+/// that page is loader memory.
+#[test]
+fn allocate_bump_onto_mapped_page_falls_back() {
+    let h = NativeAllocateSyscall;
+    let mut state = x86_state_with_buf();
+    let base = state.cgc_allocation_base();
+    state.map_memory(base - 0x1000, 0x1000, Permission::RWX);
+    let err = h
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(0x1000, 32),
+                RustBV::concrete(0, 32),
+                RustBV::concrete(0x2000, 32),
+            ],
+        )
+        .expect_err("a bump onto mapped memory must fall back");
+    assert!(matches!(err, SyscallError::Other(_)));
+    assert_eq!(state.cgc_allocation_base(), base);
+}
+
 #[test]
 fn deallocate_unaligned_addr_returns_einval() {
     let h = NativeDeallocateSyscall;
