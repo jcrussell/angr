@@ -1,22 +1,30 @@
 //! amd64 time (201), gettimeofday (96), and clock_gettime (228) syscall handlers.
 //!
-//! Mirror `procedures/posix/sim_time.py`. Each writes a fresh symbolic
-//! `struct timeval` / `struct timespec` to the user-supplied pointer:
+//! The handlers model Linux, not Python. Python's Linux syscall library has
+//! a prototype but no procedure for `gettimeofday` or `clock_gettime`, so
+//! both reach the generic `stubs/syscall_stub.py`, which writes nothing and
+//! returns an unconstrained value. `procedures/posix/sim_time.py` is the libc
+//! SimProcedure, not the syscall. The divergence from the stub is on purpose
+//! (`native_coverage_matrix.rst`, "Documented divergences"). Each handler
+//! writes a fresh symbolic `struct timeval` / `struct timespec` to the
+//! user-supplied pointer:
 //!
 //! * `gettimeofday(tv, tz)`:
-//!   - `tv == 0` → return -1.
+//!   - `tv == 0` → return 0 (Linux skips the copy-out for a NULL `tv`).
 //!   - else write `tv_sec` (8B) + `tv_usec` (8B) at `*tv`, return 0.
-//!   - `tz` is intentionally ignored (matches the Python procedure).
+//!   - `tz` is ignored: Linux fills an obsolete `struct timezone` that
+//!     glibc callers pass as NULL.
 //!
 //! * `clock_gettime(which_clock, ts)`:
-//!   - `which_clock != 0` (CLOCK_REALTIME) → fall back to Python (its
-//!     procedure raises `SimProcedureError`).
-//!   - `ts == 0` → return -1.
+//!   - `which_clock != 0` (CLOCK_REALTIME) → fall back to Python, i.e. the
+//!     stub. So CLOCK_MONOTONIC gets an unconstrained return and no write
+//!     where CLOCK_REALTIME gets a symbolic timespec and 0.
+//!   - `ts == 0` → return `-EFAULT` (Linux copies out unconditionally).
 //!   - else write `tv_sec` (8B) + `tv_nsec` (8B) at `*ts`, return 0.
 //!
 //! Notes:
-//! * Python uses `state.solver.BVS(name, bits, key=("api", ...))`. The
-//!   `key` enables Python's fresh-bvs deduplication when called from the
+//! * The libc procedure uses `state.solver.BVS(name, bits, key=("api", ...))`.
+//!   The `key` enables Python's fresh-bvs deduplication when called from the
 //!   *same* SimProcedure instance — angr generates a fresh symbol per
 //!   call site otherwise. Native handlers don't have that machinery, so
 //!   we always create a fresh `RustBV::symbol(...)` per invocation.
@@ -33,15 +41,15 @@
 //!   rather than silently exploring a symbolic-time path (angr-0y0v).
 //! * Symbolic args (`tv`, `ts`, `which_clock`) fall back to Python.
 //! * Unmapped destination pages cause `state.memory_store` to error,
-//!   which we propagate as `SyscallError::Other` so Python (which
-//!   auto-faults pages via the default plugin) can handle the store.
+//!   which we propagate as `SyscallError::Other`, so Python's stub serves
+//!   the call.
 
 use super::require_syscall_args;
 use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-use super::errno::NEG_ONE;
+use super::errno::NEG_EFAULT;
 
 const CLOCK_REALTIME: u64 = 0;
 
@@ -66,7 +74,7 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         // tz is intentionally not extracted; Python ignores it too.
 
         if tv == 0 {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+            return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
         let bits = state.arch().bits();
@@ -175,15 +183,14 @@ impl NativeSyscall for NativeClockGettimeSyscall {
         require_syscall_args!(self, args);
         let which_clock = extract_concrete_arg(&args[0], "clock_gettime which_clock")?;
         if which_clock != CLOCK_REALTIME {
-            // Python raises SimProcedureError for non-REALTIME clocks; let
-            // it run so the same diagnostic path fires.
+            // Python's syscall stub serves the other clocks (module doc).
             return Err(SyscallError::Other(format!(
                 "clock_gettime: unsupported clock {which_clock}"
             )));
         }
         let ts = extract_concrete_arg(&args[1], "clock_gettime ts")?;
         if ts == 0 {
-            return Ok(SyscallOutcome::Continue { ret: NEG_ONE });
+            return Ok(SyscallOutcome::Continue { ret: NEG_EFAULT });
         }
 
         let bits = state.arch().bits();

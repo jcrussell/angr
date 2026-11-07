@@ -705,6 +705,21 @@ A newly-observed fallback name must land in **one** of the two places —
 a parity scenario or a row above — or
 ``test_fallback_parity.py::TestCensusCoverage`` fails.
 
+Native syscalls that model Linux on purpose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Some native syscalls have no Python syscall to match: angr's Linux
+syscall library has a prototype but no procedure for the name, so the
+Python engine runs the generic ``stubs/syscall_stub.py``, which returns
+an unconstrained value and writes nothing. These handlers model the kernel instead:
+
+* ``gettimeofday`` and ``clock_gettime`` (CLOCK_REALTIME) write a fresh
+  symbolic ``timeval`` / ``timespec`` and return 0. A NULL ``tv``
+  returns 0 and a NULL ``ts`` returns ``-EFAULT``, as Linux does. Any
+  other clock falls back to the stub, so CLOCK_MONOTONIC gets an
+  unconstrained return and no write. The module doc of
+  ``native/angr-symex-native/src/syscalls/sim_time.rs`` is authoritative.
+
 See also
 --------
 

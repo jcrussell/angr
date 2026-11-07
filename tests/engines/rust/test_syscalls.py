@@ -277,19 +277,21 @@ class TestNativeSimTimeSyscalls:
     — see ``_REJECTED_OPTION_NAMES``). Rust unit tests pin the per-handler
     semantics; this is the cross-FFI dispatch check (each takes the Rust
     fast path with no Python fallback). Args are 0 so each hits its
-    no-write early return (``tv``/``ts`` null → -1; ``time`` ptr null →
-    symbolic rax; ``clock_gettime`` ``which_clock``=0 is CLOCK_REALTIME).
+    no-write early return, which returns what Linux does (``gettimeofday``
+    with a null ``tv`` → 0, ``clock_gettime`` with a null ``ts`` →
+    ``-EFAULT``; ``time`` ptr null → symbolic rax; ``clock_gettime``
+    ``which_clock``=0 is CLOCK_REALTIME).
     """
 
     @pytest.mark.parametrize(
-        "syscall_num,label",
+        "syscall_num,label,want_rax",
         [
-            (96, "gettimeofday"),
-            (201, "time"),
-            (228, "clock_gettime"),
+            (96, "gettimeofday", 0),
+            (201, "time", None),
+            (228, "clock_gettime", -14 & 0xFFFFFFFFFFFFFFFF),  # -EFAULT
         ],
     )
-    def test_sim_time_syscall_dispatches_natively(self, syscall_num, label):
+    def test_sim_time_syscall_dispatches_natively(self, syscall_num, label, want_rax):
 
         shellcode = b"\x0f\x05" + b"\x90" * 0x100  # syscall; nop pad
         proj = angr.load_shellcode(shellcode, arch="AMD64", simos="linux", load_address=0x1000)
@@ -306,6 +308,9 @@ class TestNativeSimTimeSyscalls:
             f"native {label}({syscall_num}) must take the Rust fast path "
             f"(got fallback={stats['syscall_python_fallback_count']})"
         )
+        if want_rax is not None:
+            (succ,) = list(mgr.active) + list(mgr.deadended)
+            assert succ.solver.eval(succ.regs.rax) == want_rax, f"{label} with a null pointer"
 
 
 class TestNativeDirectorySyscalls:

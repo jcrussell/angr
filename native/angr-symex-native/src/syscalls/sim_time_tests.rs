@@ -13,7 +13,7 @@ fn fresh_state() -> RustSimState {
 // ---- gettimeofday ------------------------------------------------
 
 #[test]
-fn gettimeofday_null_tv_returns_neg_one() {
+fn gettimeofday_null_tv_returns_zero() {
     let h = NativeGettimeofdaySyscall;
     let mut state = fresh_state();
     let outcome = h
@@ -23,7 +23,7 @@ fn gettimeofday_null_tv_returns_neg_one() {
         )
         .expect("ok");
     match outcome {
-        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, 0),
         _ => panic!("expected Continue"),
     }
 }
@@ -92,7 +92,7 @@ fn gettimeofday_unmapped_dest_falls_back() {
 // ---- clock_gettime ----------------------------------------------
 
 #[test]
-fn clock_gettime_null_ts_returns_neg_one() {
+fn clock_gettime_null_ts_returns_neg_efault() {
     let h = NativeClockGettimeSyscall;
     let mut state = fresh_state();
     let outcome = h
@@ -105,7 +105,7 @@ fn clock_gettime_null_ts_returns_neg_one() {
         )
         .expect("ok");
     match outcome {
-        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_ONE),
+        SyscallOutcome::Continue { ret } => assert_eq!(ret, NEG_EFAULT),
         _ => panic!("expected Continue"),
     }
 }
@@ -399,7 +399,8 @@ fn gettimeofday_and_clock_gettime_tv_boundary_sweep_never_panics_and_wraps_corre
 
             match outcome {
                 Ok(SyscallOutcome::Continue { ret }) if tv == 0 => {
-                    assert_eq!(ret, NEG_ONE, "{handler}: tv=0 must return -1");
+                    let want = if handler == "gettimeofday" { 0 } else { NEG_EFAULT };
+                    assert_eq!(ret, want, "{handler}: a NULL pointer returns what Linux does");
                 }
                 Ok(SyscallOutcome::Continue { ret }) => {
                     assert_eq!(ret, 0, "{handler}: tv={tv:#x} must succeed");
