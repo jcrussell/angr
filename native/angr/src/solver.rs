@@ -189,16 +189,13 @@ impl RustSolverContext {
 
     /// Add a constraint from a claripy AST.
     ///
-    /// Uses fast path when Z3 context is shared: extracts the raw Z3_ast
-    /// from claripy's z3 backend and asserts it directly, preserving the
-    /// original Z3 AST structure. Falls back to RustBV conversion otherwise.
+    /// A Bool node is lowered straight to Z3 (`lower_claripy_bool`) and
+    /// asserted as is; anything else is imported to a RustBV and asserted
+    /// as its `!= 0` test.
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
         let ctx = self.i().ctx();
 
-        // Fast path: try to extract raw Z3 AST from claripy's z3 backend.
-        // This preserves the original AST structure (Python's claripy creates
-        // different Z3 trees than our build_z3_ast_cached), avoiding the structural
-        // divergence that makes Z3 solving several times slower.
+        // Fast path: lower the clarirs Bool node to Z3 directly.
         {
             // angr-58ks: `add_constraint_raw` takes a `Bool`, so only a
             // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
@@ -225,7 +222,7 @@ impl RustSolverContext {
             }
         }
 
-        // Slow path: convert claripy AST to RustBV, then build Z3 AST
+        // Slow path: import to a RustBV and assert its truthiness test.
         let bv = claripy_to_rustbv(py, ast, &ctx)?;
 
         {
@@ -237,8 +234,8 @@ impl RustSolverContext {
 
     /// Add multiple constraints from claripy ASTs.
     ///
-    /// Fast path: when every AST resolves to a raw Z3 AST pointer via the
-    /// claripy z3 backend (the same fast path used by `add_constraint_ast`),
+    /// Fast path: when every AST lowers to a Z3 Bool (the same fast path
+    /// `add_constraint_ast` takes),
     /// dispatch through `SymContext::add_constraints_raw_batch` so the whole
     /// batch shares one `local_constraints` lock, one `solver()` guard, and
     /// one model invalidation pass.

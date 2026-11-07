@@ -1571,13 +1571,13 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
 
         ``get_state_register`` returns ``None`` when the register holds a
         symbolic ``RustBV``. Previously we minted a fresh, orphan ``claripy.BVS``
-        here — but the orphan symbol has no identity link to Rust's internal
-        Z3 AST, so ``state.solver.add(state.regs.<reg> == K)`` constrained a
+        here — but the orphan symbol is not the register's clarirs term, so
+        ``state.solver.add(state.regs.<reg> == K)`` constrained a
         ghost symbol and never affected the actual register value.
 
         Now we ask the manager for the register's claripy AST via
         ``get_state_register_ast`` (which round-trips through
-        ``rustbv_to_claripy`` and preserves the underlying Z3 AST), so
+        ``rustbv_to_claripy`` and returns the register's own clarirs node), so
         downstream solver operations land on the correct symbol. Only when
         the manager genuinely has no value for the register (a name
         ``_unmodelled_register_slice`` cannot screen because the arch has no
@@ -1747,7 +1747,7 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         """Coerce a Python int / bytes / claripy AST to a claripy AST.
 
         The FFI shim wants a claripy AST so it can route through
-        ``claripy_to_rustbv`` and register the symbol in the shared cache.
+        ``claripy_to_rustbv``, which keeps a symbol as its clarirs node.
         Plain ints and bytes are wrapped in a ``BVV`` at the requested
         width — same convention as ``state.regs.<name> = 0x41`` on a
         regular SimState.
@@ -2626,8 +2626,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
                     self._python_mgr._stats_proxy_mem_concrete_writes += 1
                 self._store_concrete(addr, payload)
                 return
-            # Symbolic AST — route through the AST FFI so the symbol is
-            # registered in the shared cache. Rust holds the little-endian
+            # Symbolic AST — route through the AST FFI so the symbol stays
+            # the user's clarirs node. Rust holds the little-endian
             # value, so a BE store is byte-reversed first, same as
             # ``_data_to_ast`` and the inverse of ``load`` (angr-c8mda).
             if self._python_mgr is not None:

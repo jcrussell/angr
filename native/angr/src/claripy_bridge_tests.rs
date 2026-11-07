@@ -1,4 +1,4 @@
-// Unit tests for claripy_bridge.rs (claripy AST <-> RustBV/RustFloat bridge).
+// Unit tests for claripy_bridge.rs (claripy AST <-> RustBV bridge).
 // Split from the parent module per rust-module-root-split-recipe.
 
 
@@ -158,8 +158,8 @@ fn test_export_symbolic_clz_and_fp_identity_stable() {
 /// angr-ph300.2: round-trip `import(export(bv))` must be semantically identical
 /// to `bv` for every node kind the bridge supports. Proven with a Z3
 /// universality check — `bv != roundtrip` must be unsatisfiable — plus a width
-/// guard so a silent width drift (the class of bug the AST_CACHE width check
-/// defends against) is caught even when it happens to stay satisfiable-clean.
+/// guard so a silent width drift is caught even when it happens to stay
+/// satisfiable-clean.
 #[test]
 fn test_roundtrip_import_export_preserves_semantics() {
     pyo3::Python::initialize();
@@ -404,11 +404,10 @@ fn test_claripy_to_rustbv_long_chain_hits_depth_guard() {
 /// explicit name must import to DISTINCT rust ids and export back to their own
 /// claripy AST.
 ///
-/// The symbol registry keys `name_to_info` by name+width; a `BoolS` leaf
-/// imports with a hardcoded width of 1, so before the `SymbolKind` tag was
-/// added to the key the second import resolved to the first's id and export
-/// answered both with whichever AST registered first — a `BVS` where the
-/// caller had a `Bool`, or vice versa.
+/// A leaf imports as its own clarirs node, and `BVS(name, 1)` and
+/// `BoolS(name)` are distinct nodes, so neither import may resolve to the
+/// other: export would then answer a `BVS` where the caller had a `Bool`, or
+/// vice versa.
 #[test]
 fn test_bvs_width1_and_bools_same_name_do_not_alias() {
     pyo3::Python::initialize();
@@ -447,17 +446,14 @@ fn test_bvs_width1_and_bools_same_name_do_not_alias() {
 }
 
 /// angr-9ke6b.222: a purely Rust-minted leaf must export under its Rust name
-/// verbatim, so that losing its registry entry is a *fidelity* loss (object
-/// identity, annotations) rather than a soundness one.
+/// verbatim.
 ///
 /// `claripy.BVS(name, w)` without `explicit_name` renames to
-/// `name_<counter>_<w>`. Re-importing such an AST after a registry miss mints a
-/// Rust leaf named `name_<counter>_<w>`, and because `RustBV::symbol`
-/// derives the Z3 constant from the NAME, that leaf is a brand-new variable no
-/// existing constraint binds — silently wrong (angr-izov2). The
-/// assertions below pin both halves: the exported claripy name is the Rust name,
-/// and a leaf re-minted from that name denotes the same Z3 constant despite
-/// carrying a different `rust_id`.
+/// `name_<counter>_<w>`, and because `RustBV::symbol` derives the Z3 constant
+/// from the NAME, re-importing such an AST would give a brand-new variable no
+/// existing constraint binds — silently wrong (angr-izov2). The assertions
+/// below pin both halves: the exported claripy name is the Rust name, and a
+/// leaf re-minted from that name denotes the same Z3 constant.
 #[test]
 fn test_rust_minted_leaf_exports_under_its_rust_name() {
     pyo3::Python::initialize();
@@ -491,7 +487,7 @@ fn test_rust_minted_leaf_exports_under_its_rust_name() {
         assert_eq!(
             minted.to_z3_ast().unwrap(),
             reminted.to_z3_ast().unwrap(),
-            "a registry miss must not change which Z3 variable the leaf denotes"
+            "re-minting a leaf from its name must not change which Z3 variable it denotes"
         );
     });
 }

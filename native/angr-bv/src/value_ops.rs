@@ -1397,9 +1397,8 @@ impl SymBV {
 
 /// Number of leading zero bits of `value` read as a `width`-bit bitvector.
 ///
-/// Shared by `SymBV::clz_into` and the concrete-operand fold for `BVOp::Clz`
-/// in `claripy_bridge::export::rustbv_to_claripy_memo`, which used to carry
-/// its own copy spelled `value.leading_zeros() - (128 - width)` — unguarded
+/// Used by `SymBV::clz_into`. The former claripy export's concrete-operand
+/// fold for `BVOp::Clz` carried its own copy spelled `value.leading_zeros() - (128 - width)` — unguarded
 /// `u32` arithmetic that underflows for `width > 128` (a panic under
 /// `release-checked`, a wrapped near-`u32::MAX` count folded into the exported
 /// `claripy.BVV` in the shipped release profile) (angr-0jh0j.9).

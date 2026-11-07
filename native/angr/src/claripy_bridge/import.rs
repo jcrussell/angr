@@ -140,50 +140,24 @@ pub(crate) fn claripy_to_rustbv(
 /// Maximum recursion depth for [`import_clarirs_node`]'s self-recursion
 /// (angr-2a3i9).
 ///
-/// This function is called directly from the main Python thread (via
-/// `solver.eval()`, constraint export, etc.), which runs on CPython's
-/// default OS stack — 8 MiB (`RLIMIT_STACK`), not covered by the 16 MiB
-/// worker-thread stack from the sibling fix (angr-h92bx) that only applies to `std::thread`-spawned parallel workers.
+/// The walk runs on the main Python thread (via `solver.eval()`, constraint
+/// export, etc.), on CPython's default 8 MiB OS stack (`RLIMIT_STACK`), not
+/// the 16 MiB stack of `std::thread`-spawned parallel workers (angr-h92bx).
 /// Every recursion level here is a plain native Rust stack frame with no
 /// depth counter to catch, so an unbounded-depth AST (e.g. a long
 /// non-shared `Concat`/`Add` chain that gets zero benefit from the
 /// per-call memo) overflows the guard page as a raw SIGSEGV instead of a
 /// catchable Python exception.
 ///
-/// Per-frame budget, from measured (`std::mem::size_of`, release build)
-/// sizes of the types actually live in each stack frame:
-/// `size_of::<RustBV>() == 64 B`, `size_of::<Result<RustBV, BridgeError>>()
-/// == 64 B`, `size_of::<String>() == 24 B`, `size_of::<Bound<PyAny>>() ==
-/// 8 B`, `size_of::<Vec<Bound<PyAny>>>() == 24 B`. A typical match arm
-/// (e.g. the binary-op arms) holds `op: String` (24 B), `args_list:
-/// Vec<Bound<PyAny>>` (24 B), the `ast`/`args` `Bound<PyAny>` handles
-/// (8 B each), up to three intermediate `RustBV` locals for the widest
-/// arms — `Concat`/`And`/`Or`'s `result` accumulator or `If`'s
-/// `cond`/`then_val`/`else_val` (64 B each, 192 B worst case) — plus the
-/// function's own `Result<RustBV, BridgeError>` return slot (64 B).
-/// Summing the worst case: 24 + 24 + 8 + 8 + 192 + 64 = 320 B of live
-/// locals. Doubling that for return address, saved registers, and
-/// alignment padding that `size_of` does not capture gives a conservative
-/// **640 B/frame** — rounded up to **1024 B/frame** for headroom against
-/// compiler/platform variance (debug builds, non-x86_64 targets, etc.).
-///
-/// Targeting well inside the 8 MiB main-thread stack — not the full 8 MiB,
-/// since the interpreter/solver call chain that reaches this function
-/// carries its own (non-recursive) frames below it, and per the sibling
-/// worker-thread fix's own margin philosophy (16 MiB "to clear the main
-/// thread by 2x rather than fall short of it") (angr-h92bx) — a **4096**-deep
-/// limit costs at most
-/// `4096 * 1024 B = 4 MiB`, leaving >2x headroom under the 8 MiB budget
-/// even at the padded per-frame estimate. 4096 is also far beyond any real
-/// (non-adversarial) claripy AST depth: the sym-write benchmark's
-/// symbolic-store ITE chains — the deepest known real-world case, a 142k-node
-/// tree without dedup — collapse to ~25 shared subtrees via the per-call memo
-/// (see `rustbv_to_claripy`'s doc comment), so real trees bottom out at a
-/// few dozen levels, not thousands.
+/// 4096 frames of `import_clarirs_memo` + `import_clarirs_node` stay well
+/// inside the 8 MiB main-thread stack, leaving room for the
+/// interpreter/solver frames below the walk. Real trees are far shallower:
+/// the per-call memo visits a shared subterm once, so even sym-write's
+/// symbolic-store ITE chains bottom out at a few dozen levels.
 ///
 /// Export has no twin bound: it is a single `Base::from_ast` with no
 /// recursion.
-pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
+const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
 
 /// [`claripy_to_rustbv`] over a clarirs `AstRef`. The value keeps the
 /// clarirs nodes it is built from, so it exports as those nodes, annotations

@@ -3390,9 +3390,13 @@ BV inputs
 
 Claripy AST inputs (``add_constraint_ast``, ``eval``,
 ``import_symbolic_memory``, etc.) flow through ``claripy_to_rustbv``
-(``claripy_bridge/import.rs``). Any leaf type the bridge doesn't recognize
-raises ``BridgeError`` → ``PyRuntimeError``. No malformed-AST input
-reaches the Z3 layer un-converted.
+(``claripy_bridge/import.rs``). The bridge accepts a clarirs ``Base`` or a
+``SimActionObject`` wrapping one; it rebuilds the BV ops it models and
+takes any other node (FP, string, an annotated node) whole, so an
+unfamiliar op is not an error. A refusal is a ``BridgeError``, which
+``impl From<BridgeError> for PyErr`` (``solver.rs``) maps to ``TypeError``
+for a non-AST input, ``ValueError`` for an invalid width or argument, and
+``RecursionError`` past the import depth guard.
 
 Raw Z3 pointer fast path
 ~~~~~~~~~~~~~~~~~~~~~~~~

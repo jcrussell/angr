@@ -1,7 +1,7 @@
 //! Unit tests for the shared `Clz`/`Ctz` concrete-fold helpers.
 //!
 //! The regression these exist for (angr-0jh0j.9): the copy of the `Clz`
-//! adjustment in `claripy_bridge::export::rustbv_to_claripy_memo` computed
+//! adjustment in the former claripy export's concrete fold computed
 //! `leading_zeros() - (128 - width)`, which underflows for `width > 128`.
 //! Widths above 128 are ordinary here — a page-sized memory chunk or the
 //! 1024-bit BVs the solver round-trip tests build both exceed it — and

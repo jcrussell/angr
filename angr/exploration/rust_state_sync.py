@@ -338,9 +338,8 @@ class RustStateSyncMixin:
                     try:
                         # Layer 2 (angr-21vi5): route the full claripy AST
                         # through claripy_to_rustbv so leaf symbols (e.g. the
-                        # ecx in `state.regs.ecx = BVS('ecx')`) intern into the
-                        # shared symbol cache and round-trip back to the user's
-                        # symbol on export.
+                        # ecx in `state.regs.ecx = BVS('ecx')`) stay the
+                        # user's clarirs node and export back as that symbol.
                         rust_state.set_register_symbolic_ast(reg_name, reg_val)
                     except MemoryError:
                         raise

@@ -57,7 +57,7 @@ fn non_byte_aligned_over_64_uses_pyint() {
 fn byte_aligned_over_128_uses_pyint_not_bytes() {
     // Regression (angr-ph300.52): width = 192 is byte-aligned but > 128, so
     // its 24 bytes cannot come from the u128's 16 bytes; a 24-byte `bytes`
-    // value is what the un-guarded Constrained arm once produced.
+    // value is what the encoding once produced without the width guard.
     assert_eq!(
         ConcreteBvvEncoding::for_width(192),
         ConcreteBvvEncoding::PyIntWide
