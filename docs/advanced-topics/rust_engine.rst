@@ -2320,9 +2320,12 @@ in ``rust_manager.py``) and the registration-time rejection in
 ``RustExplorationManager.set_callbacks`` iterates over it.
 
 To wire a new event, add a row to ``_INSPECT_EVENT_SPECS`` and follow
-the 5-touchpoint pattern documented next to the table (Rust callbacks
-slot + setter + dispatch helper, instrumentation site, manager-side
-``_cb_inspect_<name>`` method). The
+the recipe documented next to the table (the ``InspectBit`` row, the
+Rust callbacks slot, the ``inspect_dispatch!`` entry, the ``EngineHost``
+method and its gated interpreter site, and the manager-side
+``_cb_inspect_<name>`` method). The gate at the interpreter site and the
+dispatch call after it are paired by hand: ``InspectBit`` fixes the bit
+number, not which call the gate precedes. The
 ``TestRustInspectAllowlistConsistency`` test class enforces that no
 event ends up in the table without a working dispatch, and that every
 event in ``angr.state_plugins.inspect.event_types`` either dispatches

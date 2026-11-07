@@ -87,7 +87,9 @@ impl PythonCallbacks {
     ///
     /// Takes an [`InspectBit`] rather than a bare bit number so a dispatch
     /// site names the event it gates; the bit assignment lives in the single
-    /// `inspect_events!` table (angr-12jjk.21).
+    /// `inspect_events!` table (angr-12jjk.21). The caller still pairs the
+    /// gate with its `call_inspect_<event>` by hand; the `InspectBit` module
+    /// doc says why the gate is not derived here.
     #[inline(always)]
     pub(crate) fn inspect_event_enabled(&self, event: InspectBit) -> bool {
         self.inspect_bit_enabled(event.bit())

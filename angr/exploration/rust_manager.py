@@ -1863,7 +1863,7 @@ class RustExplorationManager(
         # manager owns. RustInspectProxy is the user-facing facade.
         # Initialized from the single source of truth in rust_state_proxy
         # (`_INSPECT_EVENT_SPECS`); to wire a new event, edit that table
-        # and follow the 5-touchpoint pattern documented there.
+        # and follow the recipe documented there.
         # See docs/advanced-topics/rust_engine.rst for the MVP scope.
         from angr.exploration.rust_state_proxy import (
             _RUST_INSPECT_EVENT_BITS,

@@ -1,9 +1,10 @@
 //! Tests for the [`InspectBit`] event table.
 //!
-//! The table is the compile-time tie between an inspect bit and the callback
-//! it gates; these tests cover the two ways the table itself can go wrong —
-//! a duplicated/skipped bit, and drift away from the two other places the
-//! same numbering lives (`crate::state::InspectEvent` for bits 0..=5, and the
+//! The table ties each inspect bit number to its event name at compile time
+//! (which dispatch call a gate precedes is a convention, see the
+//! `inspect_bits` module doc); these tests cover the two ways the table
+//! itself can go wrong — a duplicated/skipped bit, and drift away from the
+//! two other places the same numbering lives (`crate::state::InspectEvent` for bits 0..=5, and the
 //! Python `_INSPECT_EVENT_SPECS` table that builds the enabled-mask).
 
 use super::InspectBit;

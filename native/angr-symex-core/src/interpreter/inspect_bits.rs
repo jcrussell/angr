@@ -15,12 +15,23 @@
 //! to [`EngineHost`], because the interpreter is what gates on it; the PyO3
 //! shell's `PythonCallbacks` holds the mask (angr-mx00p.75).
 //!
+//! What the type closes is the bit *number*. It does not tie the gate to the
+//! dispatch call that follows it: `inspect_event_enabled(InspectBit::TmpRead)`
+//! in front of `inspect_tmp_write(..)` still compiles, and that pairing is
+//! held by convention only (angr-vmi2l.207). Each `dispatch_*_inspect` helper
+//! puts its gate at the top and makes the one matching `EngineHost` call, so a
+//! mismatch is visible within the helper. The gate stays at the site rather
+//! than moving into the shell's `call_inspect_<event>` (where
+//! `inspect_dispatch!` could derive it from the event ident) because it runs
+//! before the site's argument work (`as_u64`, the endness string, the
+//! `vex_lift` byte slice) and the host's AST export, which the no-breakpoint
+//! case must skip; a gate in the dispatch body would sit after that work.
+//!
 //! The bit numbers mirror the Python-side `_INSPECT_EVENT_SPECS` table in
 //! `angr/exploration/rust_state_proxy.py`, which is what actually builds the
 //! enabled-mask Python hands to `py_set_inspect_enabled`. That table stays
 //! authoritative for the wire format; adding an event means adding a row in
-//! both places (the 5-touchpoint recipe documented above
-//! `_INSPECT_EVENT_SPECS`). The first six bits additionally coincide with
+//! both places (the recipe documented above `_INSPECT_EVENT_SPECS`). The first six bits additionally coincide with
 //! `crate::state::InspectEvent`, which `inspect_bits_tests` asserts.
 //!
 //! [`EngineHost`]: super::EngineHost
