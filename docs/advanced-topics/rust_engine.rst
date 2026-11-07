@@ -692,9 +692,14 @@ rather than nested in ``MemoryPage``. Any new address-keyed sidecar map
 now fails to compile until it declares how ``merge`` treats it.
 
 The remaining ``delegate`` field, ``solver``, is deliberately *not*
-derived: ``SymContext`` sits behind an ``Rc<RefCell<...>>`` and is a
-single shared context both merge arms already point at, so
-``RustSimState::merge`` reuses it rather than combining it per-field.
+derived. Each forked state owns its own ``SymContext``, and
+``RustSimState::merge`` calls the hand-written ``SymContext::merge``,
+which fresh-constructs the merged context and reconciles the
+per-context settings across every arm (bd memory
+``invariant-merge-reconciles-per-context-settings``). It ends in an
+exhaustive ``SymContext { .. }`` literal with no ``..`` rest, as
+``SymContext::fork`` does, so a new field fails to compile in both until
+its merge rule is decided.
 
 Memory stores under the callback-memory proxy
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

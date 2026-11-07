@@ -38,8 +38,10 @@
 //!   label marks exactly where the compile-time guarantee *ends*, which is
 //!   where the bug class recurs, so every delegate target with its own
 //!   hand-written merge (`SymbolicMemory`, `RegisterFile`, `HeapMetadata`)
-//!   carries the derive too; the one exception is `solver`, a single shared
-//!   `SymContext` both merge arms already point at. Expect a first-time
+//!   carries the derive too; the one exception is `solver`, whose
+//!   hand-written `SymContext::merge` fresh-constructs the merged context and
+//!   ends in an exhaustive struct literal instead (bd memory
+//!   `invariant-merge-reconciles-per-context-settings`). Expect a first-time
 //!   derive application to find real bugs, not just add annotations.
 //! - `callback_setters!`, `inspect_test_entries!`, `inspect_dispatch!`
 //!   (function-like, over `callbacks/`): generate the `set_<slot>` PyO3

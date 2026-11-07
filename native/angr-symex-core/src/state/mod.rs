@@ -378,9 +378,10 @@ pub struct RustSimState {
     /// Symbolic memory with O(1) CoW forking.
     #[merge_policy = "delegate"]
     memory: SymbolicMemory,
-    /// Shared solver context for constraints.
-    /// Using Rc<RefCell<>> to allow mutation during stepping
-    /// while maintaining shared ownership for forking.
+    /// Solver context for constraints, behind `Rc<RefCell<>>` so stepping
+    /// can mutate it. A fork gets its own context (`SymContext::fork`), and
+    /// a merge builds a fresh one (`SymContext::merge`); only a same-id copy
+    /// shares the `Rc`.
     #[merge_policy = "delegate"]
     solver: Rc<RefCell<SymContext>>,
     /// Program counter.

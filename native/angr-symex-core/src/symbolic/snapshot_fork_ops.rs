@@ -769,7 +769,10 @@ impl SymContext {
     /// * `merge_conditions` - One condition per context (`self` first, then `others`)
     ///
     /// # Returns
-    /// A new SymContext containing the merged constraints.
+    /// A new SymContext containing the merged constraints. It is
+    /// fresh-constructed, not a context the arms share: every arm owns its
+    /// own context after [`fork`](Self::fork), and the result ends in an
+    /// exhaustive struct literal so each field's merge rule is decided here.
     pub fn merge(&self, others: &[&SymContext], merge_conditions: &[RustBV]) -> Self {
         assert_eq!(
             others.len() + 1,
@@ -978,35 +981,89 @@ impl SymContext {
         #[cfg(test)]
         super::context::merge_instrument::note_guarded();
 
-        // angr-t3l5o Phase 1: a merged context's `assumed` pairs are
-        // export-only — the solver holds the guarded `Or`s above, not the
-        // unconditional pairs. Mark it non-reconstructible so `to_snapshot`
-        // dumps the full solver and restore does NOT re-assert the pairs.
-        merged
-            .assume_class_reconstructible
-            .store(false, Ordering::Relaxed);
-
-        // angr-ph300.46: `with_timeout` hardcodes both per-lineage flags to
-        // false, but `fork` inherits them so a whole diamond stays in one
-        // witness-selection mode. A sibling merge must preserve that invariant:
-        // OR the inputs so a merged state whose any arm was deterministic keeps
-        // returning the unsigned-minimum witness (otherwise
-        // RustExplorationManager(deterministic=True) silently loses determinism
-        // exactly at the merge point). Same for the shared-lineage opt-in.
-        merged.deterministic.store(
-            all_contexts
-                .iter()
-                .any(|ctx| ctx.deterministic.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
-        merged.use_shared_lineage_solver.store(
-            all_contexts
-                .iter()
-                .any(|ctx| ctx.use_shared_lineage_solver.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
-
-        merged
+        // `merged` started from `with_timeout`, whose per-context settings are
+        // defaults, so the merge is not tied to the field list the way
+        // `fork`'s literal is. Rebuild it as an exhaustive literal: a new field
+        // is then a compile error here too, and its reconciliation rule
+        // (`invariant-merge-reconciles-per-context-settings`) is decided below.
+        let SymContext {
+            bare_local_savepoints,
+            branch_scope_depth,
+            constraint_count,
+            symbol_table,
+            assumed_constraints_shared,
+            z3_assertions_shared,
+            non_bv_assertions_shared,
+            assume_class_reconstructible: _,
+            local_constraints,
+            solver,
+            solver_incremental,
+            sat_cache,
+            model_cache,
+            alt_model_cache,
+            constraint_trackers,
+            timeout_ms,
+            deterministic: _,
+            lineage,
+            scope_path,
+            scope_savepoints,
+            bare_z3_push_depth,
+            use_shared_lineage_solver: _,
+        } = merged;
+        let any_deterministic = all_contexts
+            .iter()
+            .any(|ctx| ctx.deterministic.load(Ordering::Relaxed));
+        let any_shared_lineage = all_contexts
+            .iter()
+            .any(|ctx| ctx.use_shared_lineage_solver.load(Ordering::Relaxed));
+        SymContext {
+            // Empty, as after `fork`: no savepoint or branch scope is open on
+            // the merged context.
+            bare_local_savepoints,
+            branch_scope_depth,
+            // Counted by the `add_constraint` calls above.
+            constraint_count,
+            // The union built above.
+            symbol_table,
+            // Empty: every merged constraint lives in `local_constraints`.
+            assumed_constraints_shared,
+            z3_assertions_shared,
+            non_bv_assertions_shared,
+            // angr-t3l5o Phase 1: a merged context's `assumed` pairs are
+            // export-only — the solver holds the guarded `Or`s above, not the
+            // unconditional pairs. Mark it non-reconstructible so `to_snapshot`
+            // dumps the full solver and restore does NOT re-assert the pairs.
+            assume_class_reconstructible: AtomicBool::new(false),
+            // The guarded constraints and export pairs built above.
+            local_constraints,
+            // Holds every guarded `Or` asserted above.
+            solver,
+            // Caches over that solver, left as `add_constraint` left them.
+            solver_incremental,
+            sat_cache,
+            model_cache,
+            alt_model_cache,
+            // Empty: the guarded `Or`s are asserted untracked.
+            constraint_trackers,
+            // The minimum across arms, reconciled at the top of this function.
+            timeout_ms,
+            // angr-ph300.46: `fork` inherits both per-lineage flags so a whole
+            // diamond stays in one witness-selection mode. A sibling merge
+            // preserves that by ORing the arms: a merged state whose any arm
+            // was deterministic keeps returning the unsigned-minimum witness
+            // (otherwise RustExplorationManager(deterministic=True) silently
+            // loses determinism exactly at the merge point). Same for the
+            // shared-lineage opt-in.
+            deterministic: AtomicBool::new(any_deterministic),
+            // None: the merged context owns a fresh per-context solver, so it
+            // joins no arm's lineage and has no scope path into one.
+            lineage,
+            scope_path,
+            scope_savepoints,
+            // 0: `add_constraint` never pushes a bare scope.
+            bare_z3_push_depth,
+            use_shared_lineage_solver: AtomicBool::new(any_shared_lineage),
+        }
     }
 }
 
