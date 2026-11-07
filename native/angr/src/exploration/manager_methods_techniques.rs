@@ -23,7 +23,7 @@ impl RustExplorationManager {
     #[angr_symex_macros::steady_guarded]
     pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
         self.constraint_tracker.uniqueness_registers = register_names;
-        self.constraint_tracker.uniqueness_set.clear();
+        self.constraint_tracker.clear_uniqueness_seen();
         // Ensure not_unique stash exists
         self.sm.declare_stash("not_unique");
     }
@@ -32,7 +32,7 @@ impl RustExplorationManager {
     #[angr_symex_macros::steady_guarded]
     pub fn disable_uniqueness_filter(&mut self) {
         self.constraint_tracker.uniqueness_registers.clear();
-        self.constraint_tracker.uniqueness_set.clear();
+        self.constraint_tracker.clear_uniqueness_seen();
     }
 
     /// Check if native uniqueness filter is enabled.

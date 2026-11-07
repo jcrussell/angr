@@ -531,63 +531,49 @@ impl RustExplorationManager {
 
     /// Apply the native uniqueness filter to the active stash.
     ///
-    /// Moves states with duplicate register tuples to 'not_unique'.
-    /// Called after each step in the run() loop.
+    /// Moves each state that newly entered active with an already-seen
+    /// register tuple to 'not_unique' (or drops it under
+    /// `drop_terminal_states`). Called after each step in the run loops. A
+    /// state the filter admitted earlier and that has not been stepped since
+    /// is skipped (`ConstraintTracker::uniqueness_admitted`), as Python's
+    /// CheckUniqueness filters each successor once (angr-vmi2l.43).
     pub(crate) fn apply_uniqueness_filter(&mut self) {
         if self.constraint_tracker.uniqueness_registers.is_empty() {
             return;
         }
+        let Some(active) = self.sm.get(STASH_ACTIVE) else {
+            return;
+        };
 
-        // First pass: compute hashes and find duplicates (immutable borrow of active)
-        let to_remove = {
-            let active = match self.sm.get(STASH_ACTIVE) {
-                Some(s) => s,
-                None => return,
-            };
-
-            let mut remove_indices = Vec::new();
-            for (i, state) in active.iter().enumerate() {
+        let mut admitted = HashMap::with_capacity(active.len());
+        let mut duplicates = Vec::new();
+        for state in active {
+            let (sid, blocks) = (state.state_id(), state.block_count());
+            let unstepped = self.constraint_tracker.uniqueness_admitted.get(&sid) == Some(&blocks);
+            if !unstepped {
                 let hash = self.compute_register_tuple_hash(state);
                 if !self.constraint_tracker.uniqueness_set.insert(hash) {
-                    remove_indices.push(i);
+                    duplicates.push(sid);
+                    continue;
                 }
             }
-            remove_indices
-        };
+            admitted.insert(sid, blocks);
+        }
+        // Rebuilt from the surviving frontier, so ids that left active never
+        // accumulate.
+        self.constraint_tracker.uniqueness_admitted = admitted;
 
-        if to_remove.is_empty() {
-            return;
+        for sid in duplicates {
+            let Some(state) = self.sm.take_state_from(sid, STASH_ACTIVE) else {
+                continue;
+            };
+            // The state leaves STASH_ACTIVE outside `policy.select` — notify so
+            // a memoizing policy (LoopHeadRoundRobin's key_cache) doesn't leak
+            // a memo entry for a state it will never select again
+            // (angr-myzjx.25).
+            self.policy.on_state_removed(sid);
+            self.push_or_drop_terminal("not_unique", state);
         }
-
-        // Second pass: remove duplicates (mutable borrow of stashes)
-        let active = match self.sm.get_mut(STASH_ACTIVE) {
-            Some(s) => s,
-            None => return,
-        };
-        let mut removed_states = Vec::new();
-        for &idx in to_remove.iter().rev() {
-            if let Some(state) = active.remove(idx) {
-                removed_states.push(state);
-            }
-        }
-        // These states leave STASH_ACTIVE outside `policy.select` — notify so a
-        // memoizing policy (LoopHeadRoundRobin's key_cache) doesn't leak a memo
-        // entry for a state it will never select again (angr-myzjx.25).
-        for state in &removed_states {
-            self.policy.on_state_removed(state.state_id());
-        }
-
-        if !self.sm.drop_terminal_states() {
-            let not_unique = self
-                .sm
-                .stashes_mut()
-                .entry("not_unique".to_string())
-                .or_default();
-            for state in removed_states {
-                not_unique.push_back(state);
-            }
-        }
-        // else dropped states are simply discarded
     }
 
     /// Push a state to a terminal stash (avoid/pruned/deadended/unconstrained),

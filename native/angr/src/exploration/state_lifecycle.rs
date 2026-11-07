@@ -556,7 +556,7 @@ impl RustExplorationManager {
         // are keyed by the monotonic `StateId`, never reused across the
         // dropped states, so a stale entry can only match an id that no longer
         // exists.
-        self.constraint_tracker.uniqueness_set.clear();
+        self.constraint_tracker.clear_uniqueness_seen();
 
         Ok(found_state_id)
     }

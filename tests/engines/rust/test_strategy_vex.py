@@ -236,6 +236,32 @@ class TestExplorationStrategy:
         assert mgr.uniqueness_filter_enabled() is False
         assert mgr.uniqueness_set_size() == 0
 
+    def test_uniqueness_filter_keeps_unstepped_states(self, fauxware_project):
+        """The uniqueness filter does not drop an unstepped state as its own duplicate.
+
+        After fauxware's first fork the serial loop steps one of the two
+        states; the other used to be re-hashed, collide with its own earlier
+        hash and go to ``not_unique`` without ever being stepped
+        (angr-vmi2l.43). No two fauxware states share the full register
+        tuple, so nothing may be filtered.
+        """
+        import angr.sim_options as o
+
+        state = fauxware_project.factory.entry_state(
+            add_options={o.ZERO_FILL_UNCONSTRAINED_MEMORY, o.ZERO_FILL_UNCONSTRAINED_REGISTERS}
+        )
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr.register_uniqueness_filter(["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip"])
+        max_active = 0
+        for _ in range(60):
+            active = mgr._rust_mgr.get_state_ids("active")
+            if not active:
+                break
+            max_active = max(max_active, len(active))
+            mgr.run(max_steps=1)
+        assert max_active >= 2, "the walk must reach fauxware's fork"
+        assert mgr._rust_mgr.get_state_ids("not_unique") == []
+
     def test_dfs_technique_auto_detection(self, fauxware_project):
         """Test that angr DFS technique is auto-detected."""
 

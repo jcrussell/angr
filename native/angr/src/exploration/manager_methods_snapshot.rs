@@ -122,7 +122,7 @@ impl RustExplorationManager {
         // while it was live, so keeping the set would send the entire restored
         // frontier straight to `not_unique` (or drop it under
         // `drop_terminal_states`) on the first step after the load.
-        self.constraint_tracker.uniqueness_set.clear();
+        self.constraint_tracker.clear_uniqueness_seen();
         self.constraint_tracker.skip_find_predicate_states.clear();
         self.constraint_tracker.skip_avoid_predicate_states.clear();
         Ok(())

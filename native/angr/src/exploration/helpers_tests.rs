@@ -337,6 +337,72 @@ fn apply_uniqueness_filter_drops_duplicate_when_drop_terminal() {
     );
 }
 
+/// A state the filter admitted and that has not been stepped since is not
+/// re-hashed: two distinct states survive a second call (angr-vmi2l.43). Before,
+/// each one's own hash from the first call sent it to `not_unique`.
+#[test]
+fn apply_uniqueness_filter_twice_keeps_unstepped_distinct_states() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.constraint_tracker.uniqueness_registers = vec!["rax".to_string()];
+
+    for v in [0x10u128, 0x20] {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(v, 64));
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+
+    mgr.apply_uniqueness_filter();
+    mgr.apply_uniqueness_filter();
+
+    assert_eq!(mgr.sm.count(STASH_ACTIVE), 2, "both distinct states stay active");
+    assert_eq!(mgr.sm.count("not_unique"), 0);
+}
+
+/// A stepped state (same id, higher block count) is hashed again, so a step
+/// that lands on an already-seen register tuple is still filtered, as
+/// Python's CheckUniqueness filters every successor.
+#[test]
+fn apply_uniqueness_filter_rehashes_a_stepped_state() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.constraint_tracker.uniqueness_registers = vec!["rax".to_string()];
+
+    let mut s = RustSimState::new("amd64").expect("state");
+    s.set_register("rax", RustBV::concrete(0x10, 64));
+    let sid = s.state_id();
+    mgr.sm.push(STASH_ACTIVE, s);
+    mgr.apply_uniqueness_filter();
+
+    mgr.sm.find_state_mut(sid).expect("active").count_blocks(1);
+    mgr.apply_uniqueness_filter();
+
+    assert_eq!(mgr.sm.count(STASH_ACTIVE), 0);
+    assert_eq!(mgr.sm.stash_of(sid), Some("not_unique"), "state_index follows the move");
+}
+
+/// A dropped duplicate leaves neither a `state_index` nor a `state_roots`
+/// entry behind (angr-vmi2l.43).
+#[test]
+fn apply_uniqueness_filter_drop_clears_index_and_root() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.constraint_tracker.uniqueness_registers = vec!["rax".to_string()];
+    mgr.sm.set_drop_terminal_states(true);
+
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let mut s = RustSimState::new("amd64").expect("state");
+        s.set_register("rax", RustBV::concrete(0x10, 64));
+        ids.push(s.state_id());
+        mgr.sm.set_root(s.state_id(), ids[0]);
+        mgr.sm.push(STASH_ACTIVE, s);
+    }
+
+    mgr.apply_uniqueness_filter();
+
+    assert_eq!(mgr.sm.stash_of(ids[0]), Some(STASH_ACTIVE));
+    assert_eq!(mgr.sm.stash_of(ids[1]), None, "dropped state unindexed");
+    assert_eq!(mgr.sm.get_root(ids[1]), None, "dropped state's root removed");
+}
+
 // --- _resume_after_error (resume.rs) -------------------------------------
 // test_error_stash.py only fills the errored stash via a native NX violation;
 // the callback-error recovery path here is never driven (szg45.3 high gap).

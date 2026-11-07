@@ -25,7 +25,7 @@
 //! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::symbolic::DEFAULT_SOLVER_TIMEOUT_MS;
 
@@ -346,11 +346,26 @@ pub(crate) struct ConstraintTracker {
     pub(crate) uniqueness_registers: Vec<String>,
     /// Set of seen register tuple hashes for uniqueness checking.
     pub(crate) uniqueness_set: HashSet<u64>,
+    /// `state_id → block_count` of every active state the filter already
+    /// admitted. A state still at that block count is unstepped and its hash
+    /// is already in `uniqueness_set`, so hashing it again would drop it as
+    /// its own duplicate (angr-vmi2l.43). The block count, not the id alone,
+    /// is the key because a step without a fork keeps the state's id.
+    pub(crate) uniqueness_admitted: HashMap<u64, u64>,
     /// State IDs to skip the find predicate check for on next pop.
     /// Set after `resume_find_predicate(false)` to prevent infinite loops.
     pub(crate) skip_find_predicate_states: HashSet<u64>,
     /// State IDs to skip the avoid predicate check for on next pop.
     pub(crate) skip_avoid_predicate_states: HashSet<u64>,
+}
+
+impl ConstraintTracker {
+    /// Forget every hash and admission the uniqueness filter recorded, so the
+    /// next `apply_uniqueness_filter` treats the whole active stash as new.
+    pub(crate) fn clear_uniqueness_seen(&mut self) {
+        self.uniqueness_set.clear();
+        self.uniqueness_admitted.clear();
+    }
 }
 
 test_submod!("constraints_tests.rs" => tests);
