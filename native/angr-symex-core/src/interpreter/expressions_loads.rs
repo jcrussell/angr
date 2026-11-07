@@ -263,13 +263,35 @@ impl<'a> VEXInterpreter<'a> {
         self.load_from_callback(callbacks, addr_concrete, size)
     }
 
+    /// Whether a rung of `load_concrete_addr`'s ladder above the host holds
+    /// any byte of `[addr, addr + size)`: the pending or flushed symbolic and
+    /// concrete store buffers, or the concrete-memory cache. Each test is the
+    /// one its rung uses, so a `false` load would have reached
+    /// `load_from_callback`.
+    /// `build_ite_load_from_callbacks` batches only those to the host.
+    fn has_bytes_above_host(&self, addr: u64, size: usize) -> bool {
+        self.symbolic_store_load(&self.pending_symbolic_stores, addr, size)
+            .is_some()
+            || self.pending_stores.try_load_partial(addr, size).is_some()
+            || self
+                .symbolic_store_load(&self.all_flushed_symbolic_stores, addr, size)
+                .is_some()
+            || self
+                .all_flushed_stores
+                .get(&addr)
+                .is_some_and(|data| size <= data.len())
+            || self.try_read_concrete_memory(addr, size).is_some()
+    }
+
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
     ///
     /// Bottom rung of the load-resolution ladder, and its only caller is
     /// `load_concrete_addr_below_pending`: every load reaches it through
     /// `load_concrete_addr`, after the pending/flushed store buffers and the
-    /// concrete-memory cache, never in place of them. It lives in this file
+    /// concrete-memory cache, never in place of them. (The multi-candidate
+    /// `build_ite_load_from_callbacks` batches its host loads in one crossing,
+    /// but only for candidates `has_bytes_above_host` clears.) It lives in this file
     /// so nothing outside the ladder can call it (angr-vmi2l.173).
     /// `synthesize_unservable_load` (`mod.rs`) gets the last word before the
     /// GIL crossing.
@@ -452,17 +474,40 @@ impl<'a> VEXInterpreter<'a> {
             return self.load_concrete_addr(callbacks, addrs[0], size);
         }
 
-        let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();
-        let load_results = callbacks
-            .memory_load_batch(self.ctx, &load_requests)
-            .map_err(CbExecutionError::Callback)?;
+        // A candidate the store buffers or the concrete cache can answer, even
+        // in part, reads through `load_concrete_addr`; the batch to the host
+        // carries only the rest, whose ladder would end at the host anyway
+        // (angr-vmi2l.347).
+        let above_host: Vec<bool> = addrs
+            .iter()
+            .map(|&a| self.has_bytes_above_host(a, size))
+            .collect();
+        let load_requests: Vec<(u64, u32)> = addrs
+            .iter()
+            .zip(&above_host)
+            .filter(|&(_, &above)| !above)
+            .map(|(&a, _)| (a, size as u32))
+            .collect();
+        let load_results = if load_requests.is_empty() {
+            Vec::new()
+        } else {
+            callbacks
+                .memory_load_batch(self.ctx, &load_requests)
+                .map_err(CbExecutionError::Callback)?
+        };
 
         let mut pairs: Vec<(RustBV, RustBV)> = Vec::with_capacity(addrs.len());
+        let mut batched = 0;
 
-        for (i, addr) in addrs.iter().enumerate() {
-            let value = self.convert_load_result(&load_results, i, width, || {
-                format!("ite_load_{addr:x}_{size}")
-            });
+        for (addr, &above) in addrs.iter().zip(&above_host) {
+            let value = if above {
+                self.load_concrete_addr(callbacks, *addr, size)?
+            } else {
+                batched += 1;
+                self.convert_load_result(&load_results, batched - 1, width, || {
+                    format!("ite_load_{addr:x}_{size}")
+                })
+            };
 
             let addr_const = RustBV::concrete(*addr as u128, addr_width);
             let cond = addr_expr.eq(&addr_const);

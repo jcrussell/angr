@@ -773,6 +773,56 @@ fn single_candidate_symbolic_load_sees_pending_and_flushed_stores() {
     assert_eq!(got.as_u64(), Some(u64::from(stored)), "one-candidate ITE");
 }
 
+/// The multi-candidate ITE reads an arm the store buffers or the concrete
+/// cache hold through `load_concrete_addr` and batches only the rest to the
+/// host (angr-vmi2l.347). It used to batch every arm, so the 0x4010 arm held
+/// the host's zeros rather than the stored or cached value.
+#[test]
+fn multi_candidate_symbolic_load_sees_pending_flushed_and_cached_bytes() {
+    let callbacks = TestHost {
+        accept_stores: true,
+        serve_zero_loads: true,
+        ..TestHost::default()
+    };
+    let at: u64 = 0x4010;
+    let other: u64 = 0x4020;
+    let stored: u32 = 0x1234_5678;
+    // Each case builds the ITE in its own context and pins the address to
+    // one candidate, so both arms are checked without the pins colliding.
+    let arm = |setup: &dyn Fn(&mut VEXInterpreter<'_>), pick: u64| {
+        let ctx = SymContext::new_mock();
+        let mut interp = new_interp(&ctx);
+        assert!(!interp.use_rust_memory);
+        setup(&mut interp);
+        let addr = RustBV::symbol("ite_addr", 64);
+        let got = interp
+            .build_ite_load_from_callbacks(&callbacks, &[at, other], &addr, 4)
+            .unwrap();
+        ctx.assume_true(&addr.eq(&RustBV::concrete(u128::from(pick), 64)));
+        ctx.eval(&got).expect("pinned load has a model")
+    };
+    let pending = |interp: &mut VEXInterpreter<'_>| {
+        interp.pending_stores.push(at, stored.to_le_bytes().to_vec());
+    };
+    let flushed = |interp: &mut VEXInterpreter<'_>| {
+        pending(interp);
+        interp.flush_stores(&callbacks).unwrap();
+    };
+    let cached = |interp: &mut VEXInterpreter<'_>| {
+        interp.add_concrete_memory(at, vec![0xAA; 4]);
+    };
+
+    assert_eq!(arm(&pending, at), u128::from(stored), "pending store arm");
+    assert_eq!(arm(&flushed, at), u128::from(stored), "flushed store arm");
+    assert_eq!(arm(&cached, at), 0xAAAA_AAAA, "concrete cache arm");
+    assert_eq!(arm(&pending, other), 0, "batched arm keeps the host value");
+    assert!(
+        callbacks.loads.borrow().iter().all(|&(a, _)| a == other),
+        "only the uncovered candidate crosses to the host: {:?}",
+        callbacks.loads.borrow()
+    );
+}
+
 /// `try_rust_memory_load` has a second copy of the same short-circuit that
 /// returns before `SymbolicMemory::load_symbolic_unified` is called at all.
 ///
