@@ -1144,3 +1144,58 @@ fn test_add_constraints_raw_batch_all_dups_is_noop() {
     assert!(ctx.solution(&x, 5));
     assert!(!ctx.solution(&x, 10));
 }
+
+/// angr-na982: an assumption made in the branch scope holds for checks until
+/// the scope closes, and is gone after.
+#[test]
+fn test_branch_scope_assumptions_last_until_closed() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_branch_scope_until_closed_x", 8);
+    ctx.push_branch_scope();
+    ctx.assume_in_branch_scope(&x.eq(&RustBV::concrete(5, 8)), true);
+    assert!(ctx.branch_scope_open());
+    assert!(!ctx.solution(&x, 6));
+    ctx.close_branch_scope();
+    assert!(!ctx.branch_scope_open());
+    assert!(ctx.solution(&x, 6));
+    assert_eq!(ctx.assumed_local_len(), 0);
+}
+
+/// angr-vmi2l.161 / angr-na982: a permanent add while the branch scope is
+/// open pops the scope first, so the add survives and the scoped assumption
+/// does not.
+#[test]
+fn test_permanent_add_closes_the_branch_scope_and_survives() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_branch_scope_permanent_x", 8);
+    let y = RustBV::symbol("test_branch_scope_permanent_y", 8);
+    ctx.push_branch_scope();
+    ctx.assume_in_branch_scope(&x.eq(&RustBV::concrete(5, 8)), true);
+    ctx.assume_true(&y.eq(&RustBV::concrete(7, 8)));
+    assert!(!ctx.branch_scope_open());
+    assert!(ctx.solution(&x, 6));
+    assert!(!ctx.solution(&y, 8));
+    assert_eq!(ctx.assumed_local_len(), 1);
+    // Closing an already-closed scope is a no-op, not an under-pop.
+    ctx.close_branch_scope();
+    assert!(!ctx.solution(&y, 8));
+}
+
+/// angr-na982: an add inside a scope nested above the branch scope belongs to
+/// that scope's owner; the branch scope stays open under it.
+#[test]
+fn test_add_in_a_nested_scope_leaves_the_branch_scope_open() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_branch_scope_nested_x", 8);
+    let y = RustBV::symbol("test_branch_scope_nested_y", 8);
+    ctx.push_branch_scope();
+    ctx.assume_in_branch_scope(&x.eq(&RustBV::concrete(5, 8)), true);
+    ctx.push();
+    ctx.assume_true(&y.eq(&RustBV::concrete(7, 8)));
+    assert!(ctx.branch_scope_open());
+    ctx.pop();
+    assert!(ctx.solution(&y, 8));
+    assert!(!ctx.solution(&x, 6));
+    ctx.close_branch_scope();
+    assert!(ctx.solution(&x, 6));
+}

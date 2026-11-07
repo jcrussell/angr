@@ -235,6 +235,9 @@ pub struct VEXInterpreter<'a> {
     /// Limits to one deferred fork per run_until_event call to prevent
     /// solver corruption from under-constrained multi-block execution.
     deferred_fork_this_step: bool,
+    /// How many of `deferred_forks` the open `SymContext` branch scope
+    /// already assumes; meaningful only while `branch_scope_open()` holds.
+    block_forks_asserted: usize,
     /// Execution configuration.
     config: ExecutionConfig,
     /// Next condition ID for tracking branch conditions.
@@ -446,6 +449,7 @@ impl<'a> VEXInterpreter<'a> {
             block_cache: LruCache::new(BLOCK_CACHE_CAPACITY_NZ),
             deferred_forks: Vec::new(),
             deferred_fork_this_step: false,
+            block_forks_asserted: 0,
             config,
             next_condition_id: 0,
             concrete_memory: Arc::new(Vec::new()),
@@ -1043,6 +1047,7 @@ impl<'a> VEXInterpreter<'a> {
             block_cache: self.block_cache.clone(), // Share lifted blocks with parent (Arc values = cheap clone)
             deferred_forks: Vec::new(),            // Fresh deferred forks for fork
             deferred_fork_this_step: false,
+            block_forks_asserted: 0,
             config: self.config.clone(),
             next_condition_id: self.next_condition_id,
             concrete_memory: Arc::clone(&self.concrete_memory), // Share concrete memory (read-only)

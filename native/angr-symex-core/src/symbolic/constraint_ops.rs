@@ -274,6 +274,7 @@ impl SymContext {
     }
 
     fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, log_residual: bool) {
+        self.close_branch_scope_before_permanent_add();
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
         // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
@@ -348,6 +349,13 @@ impl SymContext {
         // mutex acquisition on constraint_trackers for every constraint.
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
+        self.close_branch_scope_before_permanent_add();
+        self.add_constraint_unscoped(constraint);
+    }
+
+    /// [`Self::add_constraint`] without closing the branch scope, for
+    /// [`Self::assume_unscoped`].
+    fn add_constraint_unscoped(&self, constraint: z3::ast::Bool) {
         self.install_constraint(&constraint, |s| s.assert(&constraint));
     }
 
@@ -400,6 +408,7 @@ impl SymContext {
         if entries.is_empty() {
             return;
         }
+        self.close_branch_scope_before_permanent_add();
         let (constraints, assumed): (Vec<z3::ast::Bool>, Vec<(RustBV, bool)>) = entries
             .into_iter()
             .map(|(ast, bv, is_true)| (ast, (bv, is_true)))
@@ -541,6 +550,7 @@ impl SymContext {
     ///   route through `with_z3_solver`'s closure form (it would land
     ///   the assert at scope 0 = the lineage base = sibling leak).
     pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
+        self.close_branch_scope_before_permanent_add();
         let idx = self.constraint_count.load(Ordering::SeqCst);
         let track_name = format!("__track_{idx}");
         let track_bool = z3::ast::Bool::new_const(track_name.as_str());
@@ -609,6 +619,7 @@ impl SymContext {
 
     /// Add a constraint that the bitvector equals a specific value.
     pub fn add_bv_constraint(&self, bv: &RustBV, value: u128) {
+        self.close_branch_scope_before_permanent_add();
         // Fast path: if bv is already concrete, the constraint is either
         // trivially true (skip) or trivially false (makes UNSAT).
         if let Some(v) = bv.as_u128()
@@ -641,12 +652,14 @@ impl SymContext {
 
     /// Add a constraint that the bitvector is true (non-zero for 1-bit).
     pub fn assume_true(&self, cond: &RustBV) {
-        self.assume(cond, true);
+        self.close_branch_scope_before_permanent_add();
+        self.assume_unscoped(cond, true);
     }
 
     /// Add a constraint that the bitvector is false (zero for 1-bit).
     pub fn assume_false(&self, cond: &RustBV) {
-        self.assume(cond, false);
+        self.close_branch_scope_before_permanent_add();
+        self.assume_unscoped(cond, false);
     }
 
     /// Shared body of `assume_true` / `assume_false` (angr-12jjk.11).
@@ -657,7 +670,7 @@ impl SymContext {
     /// counter split, the sampled simplify-skip probe, the dedup contract and
     /// the `add_constraint` handoff — is identical, so it lives here once
     /// rather than in two hand-synced copies.
-    fn assume(&self, cond: &RustBV, want_true: bool) {
+    pub(super) fn assume_unscoped(&self, cond: &RustBV, want_true: bool) {
         debug_assert_eq!(cond.width(), 1);
         // Fast path: the concrete value matching `want_true` is a tautology —
         // skip Z3 entirely (still record it for Python export).
@@ -712,7 +725,7 @@ impl SymContext {
             Z3_ASSUME_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        self.add_constraint(constraint);
+        self.add_constraint_unscoped(constraint);
     }
 }
 

@@ -835,6 +835,18 @@ impl<'a> VEXInterpreter<'a> {
         callbacks: &dyn EngineHost,
         irsb: &IRSB,
     ) -> Result<BlockResult, CbExecutionError> {
+        let result = self.execute_block_statements(callbacks, irsb);
+        // The branch scope `handle_exit_stmt` opens lives at most one block,
+        // on the error paths too (angr-na982).
+        self.ctx.close_branch_scope();
+        result
+    }
+
+    fn execute_block_statements(
+        &mut self,
+        callbacks: &dyn EngineHost,
+        irsb: &IRSB,
+    ) -> Result<BlockResult, CbExecutionError> {
         // Clear per-block concretization cache (constraints don't change within a block)
         self.concretize_cache.clear();
 

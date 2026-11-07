@@ -596,6 +596,7 @@ impl SymContext {
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
             bare_local_savepoints: Mutex::new(Vec::new()),
+            branch_scope_depth: Cell::new(None),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
             non_bv_assertions_shared: Mutex::new(frozen_non_bv),

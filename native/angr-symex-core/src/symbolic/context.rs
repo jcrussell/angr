@@ -121,6 +121,13 @@ pub struct SymContext {
     /// Pairs push↔pop exactly like `scope_savepoints`.
     pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
 
+    /// The `bare_local_savepoints` depth of the interpreter's open branch
+    /// scope, if one is open (`push_branch_scope`). A permanent constraint
+    /// added at that depth closes the scope first, so the scope can stay
+    /// open across a block's symbolic Exits without discarding a pin taken
+    /// between them (angr-vmi2l.161, angr-na982). Never inherited by a fork.
+    pub(super) branch_scope_depth: Cell<Option<usize>>,
+
     /// Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
     /// Arc<Vec<...>> for O(1) clone on fork; local additions live alongside
@@ -325,6 +332,7 @@ impl SymContext {
 
         SymContext {
             bare_local_savepoints: Mutex::new(Vec::new()),
+            branch_scope_depth: Cell::new(None),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
             assumed_constraints_shared: Mutex::new(crate::arc_shared(Vec::new())),
@@ -418,6 +426,7 @@ impl SymContext {
     /// Push an entry to assumed_constraints for export tracking.
     /// Used by the fast path that bypasses assume_true.
     pub fn assumed_constraints_push(&self, bv: RustBV, is_true: bool) {
+        self.close_branch_scope_before_permanent_add();
         self.local_constraints.lock().assumed.push((bv, is_true));
     }
 

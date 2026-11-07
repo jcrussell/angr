@@ -419,30 +419,29 @@ impl<'a> VEXInterpreter<'a> {
             (true, true)
         } else {
             // Prior forks' taken-path conditions are not yet permanent (fork
-            // processing applies them after the step), so assert them in a
-            // scope that brackets only this check. The scope must close
-            // before any later statement runs: a pin or other permanent
-            // constraint added inside it would be discarded by the pop while
-            // the access it pinned stays done (angr-vmi2l.161). The pop also
-            // truncates the scope's `assumed` export-log entries before the
-            // `BranchSnapshot` fork below (angr-ype54).
+            // processing applies them after the step), so they are assumed in
+            // a SymContext branch scope. It stays open across the block's
+            // later Exits, which assume only the forks added since
+            // (angr-na982), until a permanent add pops it: a pin taken
+            // between two Exits must outlive the scope (angr-vmi2l.161).
+            // Their `assumed` export-log entries are truncated at once, so
+            // the `BranchSnapshot` fork below does not carry them
+            // (angr-ype54).
             if !self.deferred_forks.is_empty() {
-                self.ctx.push();
-                for prev_fork in &self.deferred_forks {
+                if !self.ctx.branch_scope_open() {
+                    self.ctx.push_branch_scope();
+                    self.block_forks_asserted = 0;
+                }
+                let assumed_savepoint = self.ctx.assumed_local_len();
+                for prev_fork in self.deferred_forks.iter().skip(self.block_forks_asserted) {
                     if let Some(cond) = self.stored_conditions.get(&prev_fork.condition_id) {
-                        if prev_fork.path_taken {
-                            self.ctx.assume_true(cond);
-                        } else {
-                            self.ctx.assume_false(cond);
-                        }
+                        self.ctx.assume_in_branch_scope(cond, prev_fork.path_taken);
                     }
                 }
-                let feasibility = self.ctx.check_branch_feasibility(&guard_val);
-                self.ctx.pop();
-                feasibility
-            } else {
-                self.ctx.check_branch_feasibility(&guard_val)
+                self.block_forks_asserted = self.deferred_forks.len();
+                self.ctx.truncate_assumed_local(assumed_savepoint);
             }
+            self.ctx.check_branch_feasibility(&guard_val)
         };
         match GuardClass::from_feasibility(can_be_true, can_be_false) {
             GuardClass::Symbolic => {

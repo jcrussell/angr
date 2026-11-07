@@ -27,6 +27,7 @@
 //! `constraint_count`/`local_constraints`/`constraint_trackers` fields were
 //! already `pub(super)` (angr-a2br.2.4).
 
+use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
 
@@ -91,6 +92,61 @@ impl SymContext {
         self.sat_cache.set(None);
         *self.model_cache.borrow_mut() = None;
         *self.alt_model_cache.borrow_mut() = None;
+    }
+
+    /// Open the interpreter's branch scope: a [`push()`](Self::push) whose
+    /// assumptions ([`assume_in_branch_scope`](Self::assume_in_branch_scope))
+    /// hold only for branch-feasibility checks. Any permanent add made at
+    /// this scope's depth pops it first (`close_branch_scope_before_permanent_add`),
+    /// so the add survives. A scope therefore stays open across several checks
+    /// only while nothing permanent lands in between, and the caller reopens
+    /// it when [`branch_scope_open`](Self::branch_scope_open) turns false
+    /// (angr-vmi2l.161, angr-na982).
+    pub fn push_branch_scope(&self) {
+        debug_assert!(self.branch_scope_depth.get().is_none());
+        self.push();
+        let depth = self.bare_local_savepoints.lock().len();
+        self.branch_scope_depth.set(Some(depth));
+    }
+
+    /// Whether the scope [`push_branch_scope`](Self::push_branch_scope) opened
+    /// is still open.
+    pub fn branch_scope_open(&self) -> bool {
+        self.branch_scope_depth.get().is_some()
+    }
+
+    /// Assume `cond` (true or false per `want_true`) inside the open branch
+    /// scope, without closing it as a permanent add would.
+    pub fn assume_in_branch_scope(&self, cond: &RustBV, want_true: bool) {
+        debug_assert!(self.branch_scope_open());
+        self.assume_unscoped(cond, want_true);
+    }
+
+    /// Close the branch scope if it is open. A scope already closed by a
+    /// permanent add is a no-op.
+    pub fn close_branch_scope(&self) {
+        if let Some(depth) = self.branch_scope_depth.take() {
+            let open = self.bare_local_savepoints.lock().len();
+            debug_assert_eq!(
+                open, depth,
+                "a scope nested in the branch scope is still open"
+            );
+            if open == depth {
+                self.pop();
+            }
+        }
+    }
+
+    /// Pop the branch scope ahead of a permanent add at its depth. An add
+    /// inside a scope nested above it belongs to that scope's owner and
+    /// leaves the branch scope alone.
+    pub(super) fn close_branch_scope_before_permanent_add(&self) {
+        if let Some(depth) = self.branch_scope_depth.get()
+            && self.bare_local_savepoints.lock().len() == depth
+        {
+            self.branch_scope_depth.set(None);
+            self.pop();
+        }
     }
 
     /// Attempt a scope [`pop()`](Self::pop), refusing an unbalanced under-pop
