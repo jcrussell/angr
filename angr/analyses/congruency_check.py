@@ -285,6 +285,10 @@ class CongruencyCheck(Analysis):
         """
         Compares two states for similarity.
         """
+        # A state the Rust engine exported reads its plugins from a Rust state, and the diffs below walk
+        # Python memory pages, so compare a copy with plugins of its own (angr-mx00p.132.69).
+        sl = sl._plain_copy() or sl
+        sr = sr._plain_copy() or sr
         joint_solver = claripy.Solver()
 
         # make sure the canonicalized constraints are the same
