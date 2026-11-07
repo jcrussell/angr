@@ -353,6 +353,8 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
                 except MemoryError:
                     raise
                 except Exception as e:
+                    # cat-(c) WRONG-ANSWER RISK: that successor is lost from
+                    # ``target``.
                     l.warning("Failed to re-import step_state successor into %r: %s", target, e)
         # Drop the (still-present) source state now that it's been replaced.
         # cat-(a) EXPECTED CONTROL FLOW: source already consumed.
@@ -639,6 +641,8 @@ def use_technique(mgr: RustExplorationManager, technique, **kwargs):
     except MemoryError:
         raise
     except Exception as e:  # pragma: no cover - defensive
+        # cat-(b) FALLBACK WITH LOSS: a technique that reads
+        # ``self.project`` fails on its first dispatch instead.
         l.debug("Could not set project on technique %s: %s", tech_name, e)
 
     # Call setup if available

@@ -601,6 +601,8 @@ class RustCallbackDispatchMixin:
             except MemoryError:
                 raise
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: this fd's mirror SimFile keeps
+                # its old contents.
                 l.debug("get_state_fd_content(%d, %d) failed: %s", state_id, fd, e)
                 continue
             simfile = state.fs.get(path)
@@ -920,6 +922,8 @@ class RustCallbackDispatchMixin:
             except MemoryError:
                 raise
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the resume can hit the stale
+                # hook at addr again.
                 if _DBG:
                     l.debug(f"Could not set skip_hook_addr for stale hook 0x{addr:x}: {e}")
             self._rust_mgr.resume_after_simprocedure(
@@ -1633,7 +1637,8 @@ class RustCallbackDispatchMixin:
             except MemoryError:
                 raise
             except Exception as e:
-                # The SimOS could not resolve the syscall, e.g.
+                # cat-(a) EXPECTED CONTROL FLOW: the SimOS could not resolve
+                # the syscall, e.g.
                 # SimLinux.syscall_abi raises for an AMD64 syscall jumpkind it
                 # does not know (pyvex 10 lifts int 0x80 as Ijk_Sys_int). The
                 # Python engine stops there too, so the state is errored with
@@ -1717,7 +1722,8 @@ class RustCallbackDispatchMixin:
         except MemoryError:
             raise
         except Exception as e:
-            # The syscall procedure raised. The Python engine errors the state
+            # cat-(a) EXPECTED CONTROL FLOW: the syscall procedure raised.
+            # The Python engine errors the state
             # with that exception, as the resolve-error branch above does;
             # resuming past the syscall would run on with none of its effects
             # (angr-vmi2l.156). Counted so a run that hit this path is

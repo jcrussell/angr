@@ -1244,6 +1244,8 @@ def _unresolvable_syscall_jumpkinds(simos, arch) -> list[str]:
         except MemoryError:
             raise
         except Exception:  # pylint:disable=broad-exception-caught
+            # cat-(a) EXPECTED CONTROL FLOW: a jumpkind the probe cannot
+            # classify stays on the Python syscall path.
             l.debug("syscall_abi probe for %s failed; leaving it to the Python syscall path", jk, exc_info=True)
     return out
 
@@ -1680,6 +1682,11 @@ class RustExplorationManager(
         # recovers setup-time writes (e.g. flareon2015_5 ebp-relative pw
         # symbols) the callback memory proxy would otherwise miss.
         self._stats_proxy_mem_fallback_python_load = 0
+        # angr-vmi2l.270: cat-(c) losses that used to be silent. A
+        # SimProcedure store the automap path could not land, and a dirty page
+        # whose concrete bytes could not be fetched for the Python mirror.
+        self._stats_proxy_mem_automap_store_dropped = 0
+        self._stats_dirty_page_fetch_failed = 0
         self._stats_proxy_reg_writes = 0
         self._stats_proxy_solver_adds = 0
         # angr-4ref8: symbolic-file export observability. Every v1 scope-gate
@@ -3057,6 +3064,8 @@ class RustExplorationManager(
         except MemoryError:
             raise
         except Exception as e:
+            # cat-(c) WRONG-ANSWER RISK: the BP's effect (and any
+            # injected value) is lost and execution goes on without it.
             l.warning("inspect %s dispatch failed: %s: %s", event_type, type(e).__name__, e)
         return None
 
@@ -4668,7 +4677,8 @@ class RustExplorationManager(
         except MemoryError:
             raise
         except Exception as e:
-            # Non-fatal: a failed query just means the re-added state may
+            # cat-(b) FALLBACK WITH LOSS: a failed query just means the
+            # re-added state may
             # re-arm a native write-demotion (the documented, content-harmless
             # v1 limitation).
             l.debug("get_demoted_paths(%s) failed: %s: %s", source_sid, type(e).__name__, e)
@@ -4680,6 +4690,8 @@ class RustExplorationManager(
             except MemoryError:
                 raise
             except Exception as e:
+                # cat-(b) FALLBACK WITH LOSS: the state may re-arm a native
+                # write-demotion, the content-harmless v1 limitation.
                 l.debug("re-demote %r on state %s failed: %s: %s", path, target_sid, type(e).__name__, e)
 
     # Field descriptor types for table-driven serialization:
@@ -6739,6 +6751,8 @@ class RustExplorationManager(
         result["proxy_mem_ast_writes"] = self._stats_proxy_mem_ast_writes
         result["proxy_mem_symbolic_addr_fallback"] = self._stats_proxy_mem_symbolic_addr_fallback
         result["proxy_mem_fallback_python_load"] = self._stats_proxy_mem_fallback_python_load
+        result["proxy_mem_automap_store_dropped"] = self._stats_proxy_mem_automap_store_dropped
+        result["dirty_page_fetch_failed"] = self._stats_dirty_page_fetch_failed
         result["proxy_reg_writes"] = self._stats_proxy_reg_writes
         result["proxy_solver_adds"] = self._stats_proxy_solver_adds
         # angr-4ref8: symbolic-file export observability. `symfile_exports` is
@@ -7548,7 +7562,7 @@ class RustExplorationManager(
                     except MemoryError:
                         raise
                     except Exception as e:
-                        # Non-fatal: a missing demoted-path query just means the
+                        # cat-(b) FALLBACK WITH LOSS: a missing demoted-path query just means the
                         # merged state may re-arm a native write-demotion (the
                         # documented, content-harmless v1 limitation).
                         l.debug("get_demoted_paths(%d) failed: %s: %s", sid, type(e).__name__, e)
@@ -7641,6 +7655,7 @@ class RustExplorationManager(
                             except MemoryError:
                                 raise
                             except Exception as e:
+                                # cat-(b) FALLBACK WITH LOSS: as in _reapply_demoted_paths.
                                 l.debug(
                                     "re-demote %r on state %s failed: %s: %s",
                                     path,

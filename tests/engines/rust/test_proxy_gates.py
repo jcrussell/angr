@@ -1562,3 +1562,58 @@ class TestCallbackMemoryProxySymbolicStore:
         assert any(v.startswith("val") for v in loaded.variables)
         # Genuinely unconstrained (the low byte of eax), not a pinned witness.
         assert len(stepped.solver.eval_upto(loaded, 2)) == 2
+
+
+class _RaisingMgr:
+    """Delegates to a Rust manager, except that the named methods raise."""
+
+    def __init__(self, inner, raising):
+        self._inner = inner
+        self._raising = raising
+
+    def __getattr__(self, name):
+        if name in self._raising:
+
+            def boom(*_args, **_kwargs):
+                raise self._raising[name]("injected")
+
+            return boom
+        return getattr(self._inner, name)
+
+
+class TestCatCFallbacksCountAndWarn:
+    """angr-vmi2l.270: the cat-(c) losses that used to be silent warn and count."""
+
+    def test_dropped_automap_store_warns_and_counts(self, fauxware_project, caplog):
+        from angr import claripy
+
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        memory = mgr.proxy.active[0].memory
+        object.__setattr__(
+            memory, "_mgr", _RaisingMgr(memory._mgr, {"set_state_memory_ast_automap": RuntimeError})
+        )
+        unbounded = claripy.BVV(0x7FFF00000000, 64) + (claripy.BVS("automap_drop_lo", 64) & 0xFFFF)
+        before = mgr.stats["proxy_mem_automap_store_dropped"]
+
+        with caplog.at_level("WARNING", logger="angr.exploration.rust_state_proxy"):
+            memory.store(unbounded, claripy.BVV(0, 32))
+
+        assert mgr.stats["proxy_mem_automap_store_dropped"] == before + 1
+        assert any("automap store" in r.getMessage() for r in caplog.records)
+
+    def test_failed_dirty_page_fetch_warns_and_counts(self, fauxware_project, caplog):
+        state = fauxware_project.factory.entry_state()
+        mgr = RustExplorationManager(fauxware_project, [state])
+        mgr._rust_mgr = _RaisingMgr(
+            mgr._rust_mgr,
+            {"pending_memory_load_page": RuntimeError, "pending_memory_load_symbolic_page": RuntimeError},
+        )
+        mgr._current_callback_state_id = 0
+        before = mgr.stats["dirty_page_fetch_failed"]
+
+        with caplog.at_level("WARNING", logger="angr.exploration.rust_state_sync"):
+            mgr._replay_dirty_page_list(state, [0x600000])
+
+        assert mgr.stats["dirty_page_fetch_failed"] == before + 1
+        assert any("Python mirror page left stale" in r.getMessage() for r in caplog.records)

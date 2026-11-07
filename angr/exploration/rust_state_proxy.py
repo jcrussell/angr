@@ -118,6 +118,8 @@ def drain_solver_graveyard() -> int:
         if current != owner_tid:
             requeue.append((ctx, owner_tid))
             continue
+        # cat-(a) EXPECTED CONTROL FLOW: a context that will not close is
+        # left to pyo3's drop, as an undrained one would be.
         with suppress_recoverable():
             ctx.close()
             drained += 1
@@ -156,6 +158,8 @@ def _rust_state_get(mgr, getter: str, state_id: int, *args, default=None, warn: 
     except MemoryError:
         raise
     except Exception as e:
+        # cat-(b) FALLBACK WITH LOSS: the caller takes ``default``; a caller
+        # for which that default can be wrong passes ``warn=True``.
         prefix = f"{who}." if who else ""
         extra = "".join(f", {a!r}" for a in args)
         log = l.warning if warn else l.debug
@@ -2157,7 +2161,10 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             except MemoryError:
                 raise
             except Exception as e:
-                l.debug(
+                # cat-(c) WRONG-ANSWER RISK: an unpinned base lets a later
+                # concretization of another base-relative address alias this
+                # one (angr-5rjbq).
+                l.warning(
                     "RustMemoryProxy._pin_addr_witness: state pin failed for state %d: %s",
                     state_id,
                     e,
@@ -2170,8 +2177,14 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         # address re-picks witness 0 and re-aliases. Guarded by
         # ``_solver_ctx is not None`` — the caller has already ensured it.
         if self._solver_ctx is not None:
-            with suppress_recoverable():
+            try:
                 self._solver_ctx.add_constraint_ast(pin)
+            except MemoryError:
+                raise
+            except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: the proxy's next concretization
+                # can re-pick a witness that aliases this one, as above.
+                l.warning("RustMemoryProxy._pin_addr_witness: proxy solver pin failed: %s: %s", type(e).__name__, e)
 
     def load(
         self,
@@ -2355,7 +2368,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         except MemoryError:
             raise
         except Exception:
-            # Fallback memory could not satisfy the read either (unmapped,
+            # cat-(b) FALLBACK WITH LOSS: fallback memory could not satisfy
+            # the read either (unmapped,
             # unsat address, or a plugin that doesn't accept these kwargs):
             # let the caller return the zero default, matching the prior
             # behaviour for addresses neither side has mapped.
@@ -2611,8 +2625,23 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # residual failure and drop the store rather than kill the
             # SimProcedure state (p1s02 keep-alive semantics).
             state_id = self._write_state_id
-            with suppress_recoverable():
+            try:
                 self._mgr.set_state_memory_ast_automap(state_id, conc, data_ast)
+            except MemoryError:
+                raise
+            except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: the SimProcedure's write is lost,
+                # so native execution reads the old bytes at ``conc``
+                # (angr-vmi2l.270).
+                l.warning(
+                    "RustMemoryProxy.store: automap store at %#x dropped for state %d: %s: %s",
+                    conc,
+                    state_id,
+                    type(e).__name__,
+                    e,
+                )
+                if self._python_mgr is not None:
+                    self._python_mgr._stats_proxy_mem_automap_store_dropped += 1
             return
 
         if isinstance(addr, claripy.ast.Base):
@@ -4965,7 +4994,9 @@ class _StashDict:
                 except MemoryError:
                     raise
                 except Exception as e:  # pragma: no cover - defensive
-                    l.debug("drop_state_from_stash(%d, %r) failed: %s: %s", sid, key, type(e).__name__, e)
+                    # cat-(c) WRONG-ANSWER RISK: the state stays in a stash the
+                    # caller just assigned without it.
+                    l.warning("drop_state_from_stash(%d, %r) failed: %s: %s", sid, key, type(e).__name__, e)
 
         # Append desired states into `key` in order. move_state with from==to
         # removes and re-appends, so iterating in desired order rebuilds the

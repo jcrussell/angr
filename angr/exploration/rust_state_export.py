@@ -530,7 +530,8 @@ class RustSolverFallback:
         # graveyard so it is closed on its owning (coordinator) thread.
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
-            # Teardown-time best-effort: a torn-down module just falls back
+            # cat-(a) EXPECTED CONTROL FLOW: teardown-time best-effort; a
+            # torn-down module just falls back
             # to pyo3's leak-safe cross-thread drop refusal.
             with suppress_recoverable():
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
@@ -580,7 +581,8 @@ class RustSolverFallback:
         """
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
-            # Best-effort release; pyo3 refuses unsafe cross-thread drops.
+            # cat-(a) EXPECTED CONTROL FLOW: best-effort release; pyo3
+            # refuses unsafe cross-thread drops.
             with suppress_recoverable():
                 from angr.exploration.rust_state_proxy import _release_owned_ctx
 

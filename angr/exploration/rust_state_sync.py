@@ -1420,6 +1420,7 @@ class RustStateSyncMixin:
         cat-(b) FALLBACK WITH LOSS on load failure: returns None, so the
         caller drops that byte and Rust will see concrete data (or zeros).
         """
+        # cat-(b) FALLBACK WITH LOSS: see the docstring.
         with suppress_recoverable():
             val = state.memory.load(addr, 1, endness=state.arch.memory_endness)
             if hasattr(val, "symbolic") and val.symbolic:
@@ -1781,7 +1782,18 @@ class RustStateSyncMixin:
                 page_bytes = self._rust_mgr.pending_memory_load_page(self._current_callback_state_id, page_addr)
             except MemoryError:
                 raise
-            except Exception:
+            except Exception as e:
+                # cat-(c) WRONG-ANSWER RISK: the concrete half of this dirty
+                # page does not replay, so the Python mirror keeps its stale
+                # bytes there and a Python step reads them (angr-vmi2l.270).
+                l.warning(
+                    "pending_memory_load_page(%d, %#x) failed, Python mirror page left stale: %s: %s",
+                    self._current_callback_state_id,
+                    page_addr,
+                    type(e).__name__,
+                    e,
+                )
+                self._stats_dirty_page_fetch_failed += 1
                 page_bytes = None
             _ffi_ns += time.perf_counter_ns() - _t0
 
