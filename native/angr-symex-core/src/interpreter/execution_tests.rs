@@ -468,6 +468,54 @@ fn python_fallback_mid_block_rolls_back_the_partial_block() {
     assert!(interp.store_buffers_empty());
 }
 
+// An opcode the table does not map re-runs the block in Python's VEX engine,
+// which may model it, instead of erroring the state; the error itself keeps
+// the typed `Op` variant so `execute_irsb_for_test` can raise
+// `RustUnsupportedVexOpError` (angr-mx00p.49).
+#[test]
+fn unmapped_vex_op_defers_the_block_to_python() {
+    const RSP: u32 = 48;
+    let e = CbExecutionError::Op(OpError::UnsupportedVexOp {
+        op_name: "Iop_MadeUp32".to_string(),
+    });
+    assert_eq!(e.strategy(), FallbackStrategy::PythonCallback);
+
+    let ctx = SymContext::new_mock();
+    let mut interp = new_interp(&ctx);
+    interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
+    interp.registers.put(RSP, RustBV::concrete(0x7ff0, 64));
+    let mut irsb = make_irsb(0x1000, 4);
+    irsb.tyenv.types.push(IRType::I32);
+    irsb.statements.push(IRStmt::Put {
+        offset: RSP,
+        data: IRExpr::Const(IRConst::U64(0x7fe8)),
+    });
+    irsb.statements.push(IRStmt::WrTmp {
+        tmp: 0,
+        data: IRExpr::Unop {
+            op: IROp::Unmapped("Iop_MadeUp32"),
+            arg: Box::new(IRExpr::Const(IRConst::U32(7))),
+        },
+    });
+    irsb.next = IRExpr::Const(IRConst::U64(0x1004));
+    interp.cache_block(0x1000, irsb);
+    interp.set_pc(0x1000);
+
+    let callbacks = TestHost::default();
+    let (result, _blocks, _forks) =
+        interp.run_until_event(&callbacks, 4, &std::collections::HashSet::new(), false);
+    match &result {
+        RunResult::NeedPythonVEX { addr, reason } => {
+            assert_eq!(*addr, 0x1000);
+            assert!(reason.contains("Iop_MadeUp32"), "reason names the op: {reason}");
+        }
+        other => panic!("expected NeedPythonVEX at the block start, got {other:?}"),
+    }
+    assert_eq!(interp.registers.get(RSP, 8).as_u64(), Some(0x7ff0));
+    assert_eq!(interp.stats.python_vex_op_fallback_count, 1);
+    assert_eq!(interp.stats.python_vex_unop_fallback_count, 1);
+}
+
 /// A lift cut caps the lift window and marks a cached block that runs through
 /// it, as Python's `extra_stop_points` split a block (angr-mx00p.132.60).
 #[test]

@@ -73,10 +73,10 @@ pub enum OpError {
     /// Routed from `IROp::Unmapped(name)`. Like `UnsupportedNeon`, this
     /// is propagated explicitly past the silent fresh-symbolic fallback
     /// in `interpreter::expressions` so callers see the real op name
-    /// (typed `RustUnsupportedVexOpError` on the test path; stringified
-    /// into the errored stash in live exploration — see the taxonomy note
-    /// in `errors.rs`) instead of getting a fresh-symbolic value of the
-    /// wrong width.
+    /// (typed `RustUnsupportedVexOpError` on the test path) instead of
+    /// getting a fresh-symbolic value of the wrong width. Live exploration
+    /// re-runs the block in Python's VEX engine instead of erroring the
+    /// state (`CbExecutionError::strategy`, angr-mx00p.49).
     #[error("unmapped VEX opcode: {op_name}")]
     UnsupportedVexOp { op_name: String },
     /// A concrete rounding-mode operand `VexRm::decode` rejects (see its

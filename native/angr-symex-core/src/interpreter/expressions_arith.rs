@@ -130,9 +130,14 @@ impl<'a> VEXInterpreter<'a> {
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
-            // op + arch (typed RustUnsupportedVexOpError on the test
-            // path; stringified into the errored stash live).
-            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // the op name (typed RustUnsupportedVexOpError on the test
+            // path; `CbExecutionError::strategy` re-runs the block in
+            // Python live, angr-mx00p.49).
+            Err(e @ OpError::UnsupportedVexOp { .. }) => {
+                self.stats.python_vex_unop_fallback_count += 1;
+                self.stats.python_vex_op_fallback_count += 1;
+                Err(CbExecutionError::Op(e))
+            }
             // Fallback for unsupported unary ops (e.g., float conversions).
             Err(e) => {
                 self.stats.python_vex_unop_fallback_count += 1;
@@ -178,9 +183,14 @@ impl<'a> VEXInterpreter<'a> {
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
-            // op + arch (typed RustUnsupportedVexOpError on the test
-            // path; stringified into the errored stash live).
-            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // the op name (typed RustUnsupportedVexOpError on the test
+            // path; `CbExecutionError::strategy` re-runs the block in
+            // Python live, angr-mx00p.49).
+            Err(e @ OpError::UnsupportedVexOp { .. }) => {
+                self.stats.python_vex_binop_fallback_count += 1;
+                self.stats.python_vex_op_fallback_count += 1;
+                Err(CbExecutionError::Op(e))
+            }
             // angr-s6miz: the dispatch-fabricate families
             // (`is_dispatch_fabricate_family`: Iop_Pclmul*, Iop_Crc32C) parse to a
             // concrete IROp but have no native dispatch arm, so `binop` returns
@@ -255,9 +265,14 @@ impl<'a> VEXInterpreter<'a> {
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
-            // op + arch (typed RustUnsupportedVexOpError on the test
-            // path; stringified into the errored stash live).
-            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // the op name (typed RustUnsupportedVexOpError on the test
+            // path; `CbExecutionError::strategy` re-runs the block in
+            // Python live, angr-mx00p.49).
+            Err(e @ OpError::UnsupportedVexOp { .. }) => {
+                self.stats.python_vex_triop_fallback_count += 1;
+                self.stats.python_vex_op_fallback_count += 1;
+                Err(CbExecutionError::Op(e))
+            }
             Err(e) => {
                 self.stats.python_vex_triop_fallback_count += 1;
                 self.vex_op_fallback(e, any_sym, width, format!("unsup_triop_{:x}", self.pc))
@@ -297,9 +312,14 @@ impl<'a> VEXInterpreter<'a> {
             Err(e @ OpError::UnsupportedNeon { .. }) => Err(CbExecutionError::Op(e)),
             // angr-tkbr.2: unmapped pyvex opcode — propagate past
             // the silent fresh-symbolic fallback so the failure carries
-            // op + arch (typed RustUnsupportedVexOpError on the test
-            // path; stringified into the errored stash live).
-            Err(e @ OpError::UnsupportedVexOp { .. }) => Err(CbExecutionError::Op(e)),
+            // the op name (typed RustUnsupportedVexOpError on the test
+            // path; `CbExecutionError::strategy` re-runs the block in
+            // Python live, angr-mx00p.49).
+            Err(e @ OpError::UnsupportedVexOp { .. }) => {
+                self.stats.python_vex_qop_fallback_count += 1;
+                self.stats.python_vex_op_fallback_count += 1;
+                Err(CbExecutionError::Op(e))
+            }
             Err(e) => {
                 self.stats.python_vex_qop_fallback_count += 1;
                 self.vex_op_fallback(e, any_sym, width, format!("unsup_qop_{:x}", self.pc))

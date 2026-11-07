@@ -211,9 +211,8 @@ pub(super) use fcmp_scalar_arms;
 /// `VEXOps::unop`/`binop`/`qop`/`binop_with_rm` surfaces this as
 /// `OpError::UnsupportedVexOp { op_name }`. On the test-only path that
 /// maps to a typed `RustUnsupportedVexOpError(op_name, arch)`; in live
-/// exploration it is stringified into the errored stash (see the
-/// "Test-only taxonomy vs. the live exploration path" note in
-/// `errors.rs`). Silently rewriting this path to `IROp::Raw(0)` would
+/// exploration `CbExecutionError::strategy` re-runs the block in Python's
+/// VEX engine (angr-mx00p.49). Silently rewriting this path to `IROp::Raw(0)` would
 /// mask missing coverage and produce fresh-symbolic results that are
 /// hard to attribute (angr-tkbr.2).
 pub fn parse_opcode(op_str: &str) -> IROp {
@@ -256,7 +255,7 @@ pub fn parse_opcode(op_str: &str) -> IROp {
     // typed UnsupportedVexOp error instead of silently producing fresh
     // symbolic results. See angr-tkbr.2.
     // Debug, not warn: the opcode table parses every VEX op name eagerly, and
-    // executing an unmapped op already raises `UnsupportedVexOp`.
+    // executing an unmapped op already surfaces `UnsupportedVexOp`.
     log::debug!("Unmapped VEX operation: {op_str}");
     IROp::Unmapped(intern_unmapped_op(op_str))
 }

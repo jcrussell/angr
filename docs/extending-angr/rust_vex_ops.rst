@@ -11,8 +11,10 @@ Most of the engine's perf headroom over the Python engine comes from
 keeping IR execution inside Rust. When pyvex hands the engine an
 ``Iop_*`` string it has never seen, that hot path collapses into a
 ``log::warn!("Unmapped VEX operation: {}")`` and an
-``IROp::Unmapped(name)``, which dispatch turns into a hard
-``RustUnsupportedVexOpError``. Adding a new op closes that gap.
+``IROp::Unmapped(name)``. A live run re-executes the whole block in
+the Python VEX engine (``CbExecutionError::strategy``), and the test-only
+``execute_irsb_for_test`` hook raises a typed ``RustUnsupportedVexOpError``.
+Adding a new op closes that gap.
 
 Pipeline overview
 -----------------

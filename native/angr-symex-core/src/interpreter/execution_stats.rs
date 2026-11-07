@@ -193,7 +193,9 @@ define_execution_stats! {
     /// Number of VEX op evaluations (Unop/Binop/Triop/Qop) that reached
     /// `VEXInterpreter::vex_op_fallback` because `VEXOps::*` returned an
     /// `OpError` other than the explicitly-surfaced `UnsupportedNeon` /
-    /// `UnsupportedVexOp` variants. By default the op is NOT evaluated
+    /// `UnsupportedVexOp` variants, plus each `UnsupportedVexOp` (an
+    /// unmapped opcode), which a live run re-executes in Python
+    /// (angr-mx00p.49). For the `vex_op_fallback` arms, by default the op is NOT evaluated
     /// natively at all: with a symbolic operand it returns
     /// `CbExecutionError::NeedPythonFallback` (the block IS re-run in
     /// Python), and with all-concrete operands it returns the typed

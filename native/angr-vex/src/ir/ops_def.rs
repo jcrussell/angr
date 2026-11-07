@@ -914,8 +914,9 @@ pub enum IROp {
     /// `IROp` variant. Holds an interned `&'static str` of the original
     /// pyvex opcode name (e.g. `"Iop_FakeNotARealOp"`). Dispatch in
     /// `VEXOps::unop`/`binop`/`qop`/`binop_with_rm` surfaces this as
-    /// `OpError::UnsupportedVexOp { op_name }`, which the engine maps to
-    /// `RustUnsupportedVexOpError(op_name, arch)` (angr-tkbr.2). Replaces
+    /// `OpError::UnsupportedVexOp { op_name }`, which the test hook maps to
+    /// `RustUnsupportedVexOpError(op_name, arch)` (angr-tkbr.2) and a live
+    /// run defers to Python's VEX engine (angr-mx00p.49). Replaces
     /// the previous silent `IROp::Raw(0)` fallback that lost the name
     /// and produced fresh-symbolic results.
     Unmapped(&'static str),

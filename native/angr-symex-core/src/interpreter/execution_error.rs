@@ -127,9 +127,18 @@ pub enum CbExecutionError {
 impl CbExecutionError {
     /// Map this error to its declared [`FallbackStrategy`]. The match is
     /// exhaustive so adding a variant forces an explicit strategy choice.
+    ///
+    /// An op the opcode table does not map (`OpError::UnsupportedVexOp`)
+    /// re-runs the block in Python's VEX engine, which may model it; if it
+    /// does not, the Python engine errors the state itself. The variant stays
+    /// `Op` rather than becoming `NeedPythonFallback` so that
+    /// `execute_irsb_for_test` still raises the typed
+    /// `RustUnsupportedVexOpError` (angr-tkbr.2, angr-mx00p.49).
     pub fn strategy(&self) -> FallbackStrategy {
         match self {
-            CbExecutionError::Unsupported(_) | CbExecutionError::NeedPythonFallback(_) => {
+            CbExecutionError::Unsupported(_)
+            | CbExecutionError::NeedPythonFallback(_)
+            | CbExecutionError::Op(OpError::UnsupportedVexOp { .. }) => {
                 FallbackStrategy::PythonCallback
             }
             CbExecutionError::Memory(_)
