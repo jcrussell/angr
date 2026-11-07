@@ -33,10 +33,18 @@ PYTHON_ENGINE_CALLERS = (
     "/angr/simos/",
 )
 
+# Callers that ``copy()`` the manager they get. ``Callable.perform_call`` keeps
+# ``caller.copy()`` as its result, and ``RustExplorationManager.copy`` refuses
+# (angr-vmi2l.239), so these get a ``SimulationManager`` stepping on a
+# ``RustBackend``: still the Rust engine, and copyable (angr-l5f65).
+COPYING_CALLERS = ("/angr/callable.py",)
 
-def install_rust_engine_patch(make_manager):
+
+def install_rust_engine_patch(make_manager, make_simgr):
     """Patch ``AngrObjectFactory.simulation_manager`` / ``.simgr`` to build a
-    Rust manager via ``make_manager(project, states)``.
+    Rust manager via ``make_manager(project, states)``, or via
+    ``make_simgr(project, states)`` for a :data:`COPYING_CALLERS` call; it
+    returns a ``SimulationManager`` with a ``RustBackend``.
 
     Calls originating from :data:`PYTHON_ENGINE_CALLERS`, and calls passing a
     non-empty ``techniques=`` list (``Callable.perform_call()`` passes an empty
@@ -66,6 +74,9 @@ def install_rust_engine_patch(make_manager):
             states = list(thing)
         else:
             states = [thing]
+        for frame in traceback.extract_stack()[:-1]:
+            if any(caller in frame.filename for caller in COPYING_CALLERS):
+                return make_simgr(factory_self.project, states)
         return make_manager(factory_self.project, states)
 
     angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager

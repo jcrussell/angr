@@ -13,9 +13,10 @@ invokes the first few entries and checks them against the known flag
 ``project.factory.simulation_manager(...)`` without naming an engine (and
 its ``techniques=`` kwarg makes the workload ineligible even on a
 ``Project(engine="rust")`` project), so the test monkey-patches the factory
-method to return a :class:`RustExplorationManager` — the same hook
-``tests/benchmarks/run_single.py`` installs when invoking the bench under
-the Rust engine.
+method, as ``tests/benchmarks/run_single.py`` does under the Rust engine.
+``perform_call`` keeps ``caller.copy()``, which a bare
+:class:`RustExplorationManager` refuses, so the patch hands a Callable a
+``SimulationManager`` stepping on a ``RustBackend`` (angr-l5f65).
 """
 
 from __future__ import annotations
@@ -44,8 +45,7 @@ EXPECTED_FLAG = "MMA{fc7d90ca001fc8712497d88d9ee7efa9e9b32ed8}"
 @pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration not available")
 class TestCallableRust:
     """``project.factory.callable(addr)`` returns the expected concrete byte
-    when the underlying SimulationManager has been swapped for
-    :class:`RustExplorationManager`.
+    when the underlying SimulationManager steps on the Rust engine.
     """
 
     def test_callable_returns_expected_bytes(self):
@@ -74,6 +74,12 @@ class TestCallableRust:
                 concrete = ret.concrete_value
                 ch = chr(concrete & 0xFF)
                 assert ch == expected[i], f"index {i}: got {ch!r} (0x{concrete:x}), expected {expected[i]!r}"
+                # The Rust engine stepped the call: a backend that declined every
+                # state would pass on the Python engine.
+                backend = howtouse.result_path_group._backend
+                assert backend is not None
+                assert backend.stats["claimed"] > 0
+                assert not backend.stats["declined"]
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -98,7 +98,7 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
     if example_dir not in sys.path:
         sys.path.insert(0, example_dir)
 
-    import angr  # noqa: F401 — make sure the editable install is reachable
+    import angr  # make sure the editable install is reachable
 
     # The bench builds its managers through project.factory.simulation_manager,
     # which yields a *Python* SimulationManager. Without the engine swap this
@@ -113,13 +113,19 @@ def _run_iters_in_child(example_name, iters, mem_limit_mb, examples_dir, engine)
         from engine_patch import install_rust_engine_patch
 
         from angr.exploration import RustExplorationManager
+        from angr.exploration.rust_backend import RustBackend
 
         def _make_rust_manager(project, states):
             nonlocal managers_built
             managers_built += 1
             return RustExplorationManager(project, states)
 
-        install_rust_engine_patch(_make_rust_manager)
+        def _make_simgr(project, states):
+            nonlocal managers_built
+            managers_built += 1
+            return angr.SimulationManager(project, active_states=states, backend=RustBackend(project))
+
+        install_rust_engine_patch(_make_rust_manager, _make_simgr)
 
     spec = importlib.util.spec_from_file_location("solve_mod", solve_script)
     module = importlib.util.module_from_spec(spec)

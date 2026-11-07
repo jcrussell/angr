@@ -21,6 +21,7 @@ guards.
 from __future__ import annotations
 
 import os
+import traceback
 
 import pytest
 
@@ -214,7 +215,8 @@ class RustFactoryPatch:
     Both behaviors strip the ``techniques`` kwarg that
     :meth:`Callable.perform_call` passes but ``RustExplorationManager`` does
     not accept; this is harmless for the integration path (the kwarg is
-    absent there).
+    absent there). A Callable gets a ``SimulationManager`` on a
+    ``RustBackend`` instead, since it ``copy()``s its manager.
     """
 
     def __init__(self, fallback_to_python: bool = False):
@@ -232,8 +234,6 @@ class RustFactoryPatch:
 
         def rust_simulation_manager(factory_self, thing=None, **kwargs):
             if fallback:
-                import traceback
-
                 for frame in traceback.extract_stack()[:-1]:
                     if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
                         return original_sm(factory_self, thing, **kwargs)
@@ -246,6 +246,14 @@ class RustFactoryPatch:
                 states = list(thing)
             else:
                 states = [thing]
+            # Callable keeps caller.copy(), which RustExplorationManager refuses
+            # (angr-vmi2l.239): give it a SimulationManager on a RustBackend (angr-l5f65).
+            if any(frame.filename.endswith("/angr/callable.py") for frame in traceback.extract_stack()[:-1]):
+                from angr.exploration.rust_backend import RustBackend
+
+                return angr.SimulationManager(
+                    factory_self.project, active_states=states, backend=RustBackend(factory_self.project)
+                )
             return RustExplorationManager(factory_self.project, active_states=states)
 
         AngrObjectFactory.simulation_manager = rust_simulation_manager

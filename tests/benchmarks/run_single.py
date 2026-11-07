@@ -304,9 +304,9 @@ def _run_in_child(
 
         def _make_rust_manager(project, states):
             nonlocal rust_mgr_instance, rust_api, rust_managers_built
-            rust_managers_built += 1
             if os.environ.get(SIMGR_BACKEND_ENV):
                 return _make_simgr_with_backend(project, states)
+            rust_managers_built += 1
             rust_mgr_instance = rust_api = RustExplorationManager(
                 project,
                 states,
@@ -332,8 +332,10 @@ def _run_in_child(
             # RustBackend. rust_mgr_instance is the simgr (its stashes); rust_api is the
             # backend (stats, perf_report). use_shared_lineage_solver and diff_state are
             # RustExplorationManager-only and not honored here.
-            nonlocal rust_mgr_instance, rust_api
+            nonlocal rust_mgr_instance, rust_api, rust_managers_built
             from angr.exploration.rust_backend import RustBackend
+
+            rust_managers_built += 1
 
             backend = RustBackend(
                 project,
@@ -347,7 +349,7 @@ def _run_in_child(
             rust_mgr_instance = angr.SimulationManager(project, active_states=states, backend=backend)
             return rust_mgr_instance
 
-        restore_engine_patch = install_rust_engine_patch(_make_rust_manager)
+        restore_engine_patch = install_rust_engine_patch(_make_rust_manager, _make_simgr_with_backend)
     elif diff_state:
         # For the python engine we still need to install the snapshotter on
         # the SimulationManager that solve.py builds.
