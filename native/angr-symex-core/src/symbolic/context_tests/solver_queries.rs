@@ -1797,19 +1797,10 @@ fn test_bitcount_ops_above_64_bits_on_zero_operand() {
 /// Lowering is total in a term's depth: an engine-built chain far deeper than
 /// a recursive walk's native stack allows lowers, solves and branches like a
 /// shallow one (angr-vmi2l.83; it used to fail every query past depth 4096).
-/// The body runs on a large stack only because dropping the chain recurses
-/// in clarirs `AstNode`'s drop glue, which the lowering does not touch.
+/// It runs on the default test-thread stack, so dropping the chain must not
+/// recurse per level either (angr-vmi2l.343).
 #[test]
 fn test_deep_term_lowers_and_solves() {
-    std::thread::Builder::new()
-        .stack_size(256 << 20)
-        .spawn(deep_term_lowers_and_solves)
-        .unwrap()
-        .join()
-        .unwrap();
-}
-
-fn deep_term_lowers_and_solves() {
     const DEPTH: usize = 5000;
     let ctx = SymContext::new();
     let x = RustBV::symbol("deep_x", 32);

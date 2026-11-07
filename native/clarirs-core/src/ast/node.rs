@@ -250,8 +250,19 @@ impl Drop for AstNode<'_> {
         // verifies liveness, so a throwaway duplicate built by a racing
         // thread leaves the live entry untouched. This body runs
         // before `op`'s child references drop, so the cache lock is never held
-        // across the recursive child drops.
+        // across the child drops.
         self.ctx.ast_cache.remove_if_expired(self.hash);
+        // Drop the children from a work list rather than through the drop glue,
+        // which recurses once per level and overflows the stack on a deep
+        // chain (angr-vmi2l.343). A child this node owned uniquely gives up its
+        // own children here, so its own `drop` finds a leaf and returns.
+        let mut pending = Vec::new();
+        std::mem::replace(&mut self.op, AstOp::BoolV(false)).into_children(&mut pending);
+        while let Some(child) = pending.pop() {
+            if let Some(mut node) = Arc::into_inner(child) {
+                std::mem::replace(&mut node.op, AstOp::BoolV(false)).into_children(&mut pending);
+            }
+        }
     }
 }
 
@@ -296,6 +307,36 @@ mod tests {
             assert!(std::ptr::eq(node.variables(), wide.variables()));
         }
         Ok(())
+    }
+
+    /// Dropping a chain far deeper than the thread's stack allows frames for
+    /// runs in bounded stack, and a still-referenced inner node survives it
+    /// (angr-vmi2l.343).
+    #[test]
+    fn test_deep_chain_drops_on_a_small_stack() {
+        std::thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(|| -> Result<(), ClarirsError> {
+                let ctx = Context::new();
+                let y = ctx.bvs("y", 32)?;
+                let mut chain = ctx.bvs("x", 32)?;
+                let mut mid = None;
+                for i in 0..200_000 {
+                    chain = ctx.add(chain, y.clone())?;
+                    if i == 1000 {
+                        mid = Some(chain.clone());
+                    }
+                }
+                let mid = mid.expect("the loop passes the midpoint");
+                drop(chain);
+                assert_eq!(mid.depth(), 1002);
+                assert!(matches!(mid.op(), AstOp::Add(_)));
+                Ok(())
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

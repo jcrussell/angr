@@ -205,6 +205,17 @@ macro_rules! ast_op_arity {
                     $(AstOp::$ter(_, _, _ $($(, $terp)*)?) => AstOp::$ter(c(0), c(1), c(2) $($(, *$terp)*)?),)*
                 })
             }
+
+            /// Moves this operation's children onto `out`, consuming it.
+            pub(crate) fn into_children(self, out: &mut Vec<AstRef<'c>>) {
+                match self {
+                    $(AstOp::$leaf(..))|* => {}
+                    $(AstOp::$nary(v))|* => out.extend(v),
+                    $(AstOp::$un(a, ..))|* => out.push(a),
+                    $(AstOp::$bin(a, b, ..))|* => out.extend([a, b]),
+                    $(AstOp::$ter(a, b, c, ..))|* => out.extend([a, b, c]),
+                }
+            }
         }
     };
 }
