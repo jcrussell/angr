@@ -3221,13 +3221,14 @@ map is write-only with respect to memory --- a guest that walks
 ``environ``/``__environ`` itself instead of calling ``getenv`` does not
 observe a native ``setenv``/``putenv``/``unsetenv``.
 
-**Standard ``except SimError`` does not catch Rust errors.** By the
-same mechanism, downstream code that ``except angr.errors.SimError:``
-around ``mgr.run(...)`` will not catch the typed Rust exceptions.
-Migration recipe: change the clause to
-``except (angr.errors.SimError, angr.exploration.RustExecutionError):``,
-or catch ``Exception`` if the surrounding code already does broad
-recovery.
+**A Rust step failure is a ``SimError``.** An errored record's
+``error`` is the ``angr.errors`` class the Python engine would raise, and
+under the ``SimulationManager`` backend ``step_state`` raises that class,
+so ``except angr.errors.SimError:`` and ``isinstance(rec.error, SimError)``
+work unchanged (see `User-facing error taxonomy`_). The
+``RustExecutionError`` family is raised only by the test-only hooks, so it
+is importable from ``angr.exploration`` but not from the top-level
+``angr`` namespace.
 
 Native procedures for library hooks
 -----------------------------------

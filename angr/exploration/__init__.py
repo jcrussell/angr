@@ -29,6 +29,10 @@ and the standard stash API (active, found, deadended, …) are supported.
 
 from __future__ import annotations
 
+# A live run never raises these: its errored record holds a SimError subclass.
+# They are what the test-only hooks in angr.rustylib.vex_engine._testing raise,
+# so they stay importable here and are kept off the top-level angr namespace
+# (angr-vmi2l.252).
 from angr.rustylib.vex_engine import (
     RustExecutionError,
     RustMalformedIRSBError,

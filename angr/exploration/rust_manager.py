@@ -949,8 +949,9 @@ class RustErrorRecord:
     """
 
     # Stable error-class taxonomy. Prefixes match the Display impls of
-    # CbExecutionError variants in native/angr-symex-core/src/interpreter/execution_error.rs and
-    # the formatted error strings in native/angr/src/exploration/stepping.rs.
+    # CbExecutionError variants in native/angr-symex-core/src/interpreter/execution_error.rs
+    # (pinned by display_prefixes_match_the_python_error_classifier in its
+    # execution_tests.rs) and the formatted error strings of the stepping loop.
     _ERROR_CLASS_PREFIXES = (
         ("ir decoding error", "nodecode"),
         ("memory error", "memory"),

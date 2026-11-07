@@ -621,3 +621,37 @@ fn a_pin_taken_after_a_second_symbolic_exit_survives_the_block() {
         written[0]
     );
 }
+
+// A live run's errored record is built from `CbExecutionError`'s Display, and
+// `RustErrorRecord._classify` (angr/exploration/rust_manager.py) picks the
+// error class by the lowercased prefix listed in its `_ERROR_CLASS_PREFIXES`.
+// A reworded format string would silently reclassify the record as "unknown"
+// (angr-vmi2l.252). The match is exhaustive so a new variant must name the
+// prefix it adds to that tuple.
+#[test]
+fn display_prefixes_match_the_python_error_classifier() {
+    let samples = [
+        CbExecutionError::Memory(MemoryError::Unmapped { addr: 0, size: 1 }),
+        CbExecutionError::Op(OpError::NotUnary(IROp::Unmapped("Iop_X"))),
+        CbExecutionError::InvalidIR("x".to_string()),
+        CbExecutionError::Unsupported("x".to_string()),
+        CbExecutionError::UnknownTemp(3),
+        CbExecutionError::Callback("x".to_string()),
+        CbExecutionError::LiftError("x".to_string()),
+        CbExecutionError::NeedPythonFallback("x".to_string()),
+    ];
+    for e in samples {
+        let prefix = match e {
+            CbExecutionError::Memory(_) => "memory error",
+            CbExecutionError::Op(_) => "operation error",
+            CbExecutionError::InvalidIR(_) => "invalid vex ir",
+            CbExecutionError::Unsupported(_) => "unsupported",
+            CbExecutionError::UnknownTemp(_) => "unknown temporary",
+            CbExecutionError::Callback(_) => "callback error",
+            CbExecutionError::LiftError(_) => "lift error",
+            CbExecutionError::NeedPythonFallback(_) => "need python fallback",
+        };
+        let msg = e.to_string().to_lowercase();
+        assert!(msg.starts_with(prefix), "{msg:?} does not start with {prefix:?}");
+    }
+}

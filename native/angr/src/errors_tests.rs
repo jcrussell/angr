@@ -2,10 +2,12 @@
 //!
 //! Two contracts are pinned here:
 //!
-//! 1. **Display** — the `thiserror` format strings are what the errored-stash
-//!    record and the Python exception message are built from (see the
-//!    "Test-only taxonomy vs. the live exploration path" note in `errors.rs`),
-//!    so a silent reformat is a user-visible change.
+//! 1. **Display** — the `thiserror` format strings are the message of the
+//!    typed exception the test-only hooks raise (see the "Test-only taxonomy
+//!    vs. the live exploration path" note in `errors.rs`). A live run's
+//!    errored record is built from `CbExecutionError`'s Display instead,
+//!    pinned by `display_prefixes_match_the_python_error_classifier` in
+//!    `angr-symex-core`'s `interpreter/execution_tests.rs`.
 //! 2. **Variant → subclass** — `From<RustExecError> for PyErr` must land each
 //!    variant on its own `create_exception!` class, and every class must stay a
 //!    subclass of `RustExecutionError` so `except RustExecutionError` keeps

@@ -195,7 +195,7 @@ from .errors import (
     UnsupportedNodeTypeError,
     UnsupportedSyscallError,
 )
-from .exploration import RustExecutionError, RustExplorationManager
+from .exploration import RustExplorationManager
 from .exploration_techniques import ExplorationTechnique
 from .go import analyses as go_analyses
 from .go import knowledge_plugins as go_knowledge_plugins
@@ -301,7 +301,6 @@ __all__ = (
     "PathUnreachableError",
     "PointerWrapper",
     "Project",
-    "RustExecutionError",
     "RustExplorationManager",
     "Server",
     "SimAbstractMemoryError",
