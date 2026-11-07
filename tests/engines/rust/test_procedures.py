@@ -2775,6 +2775,66 @@ class TestSimProcedureRepeatedSelfCall:
         )
 
 
+_FORKCALL_CALLEE = 0x400030  # test rax, rax; je +1; nop; ret: two states return
+
+
+class _ForkingSelfCallProc(angr.SimProcedure):
+    """Calls a callee that forks on a symbolic rax, so two states return into
+    the same continuation; each writes the local it saved before the call."""
+
+    local_vars = ("tag",)
+
+    def run(self):
+        self.tag = _SELFCALL_SENTINEL
+        self.call(_FORKCALL_CALLEE, [], "after_call", prototype="void x()")
+
+    def after_call(self):
+        from angr import claripy
+
+        self.state.memory.store(_SELFCALL_MARK, claripy.BVV(self.tag, 64), endness="Iend_LE")
+
+
+class TestSimProcedureSharedContinuation:
+    """angr-mx00p.136.34: the saved procedure_data of a continuation is
+    manager-wide, keyed by its address. ``_init_callback_callstack`` popped
+    it on first use, so the second state to reach the continuation ran it
+    without its locals."""
+
+    def test_both_forks_get_the_continuation_locals(self):
+        from angr import claripy
+
+        shellcode = bytearray(b"\x90" * 0x200)
+        callee = _FORKCALL_CALLEE - _SELFCALL_LOAD
+        shellcode[callee : callee + 7] = b"\x48\x85\xc0\x74\x01\x90\xc3"
+        # `call HOOK; jmp $`, as in TestSimProcedureRepeatedSelfCall.
+        call_site = _SELFCALL_RETTGT
+        rel = (_SELFCALL_HOOK - (call_site + 5)) & 0xFFFFFFFF
+        shellcode[call_site - _SELFCALL_LOAD] = 0xE8
+        shellcode[call_site - _SELFCALL_LOAD + 1 : call_site - _SELFCALL_LOAD + 5] = rel.to_bytes(4, "little")
+        shellcode[call_site - _SELFCALL_LOAD + 5] = 0xEB  # jmp $
+        shellcode[call_site - _SELFCALL_LOAD + 6] = 0xFE
+        proj = angr.load_shellcode(bytes(shellcode), arch="AMD64", load_address=_SELFCALL_LOAD)
+        proj.hook(_SELFCALL_HOOK, _ForkingSelfCallProc(), replace=True)
+        state = proj.factory.blank_state(
+            addr=call_site,
+            add_options={
+                angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+            },
+        )
+        state.regs.rax = claripy.BVS("fork", 64)
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=12)
+
+        states = mgr.active + mgr.deadended + mgr.errored + mgr.unconstrained
+        marks = [s.solver.eval(s.memory.load(_SELFCALL_MARK, 8, endness="Iend_LE")) for s in states]
+        assert marks.count(_SELFCALL_SENTINEL) == 2, (
+            f"a fork ran after_call without its locals; marks={[hex(m) for m in marks]}, "
+            f"addrs={[hex(s.addr) for s in states]}, stash counts={mgr.stash_counts()}"
+        )
+
+
 class TestNativeMemoryCopyAndSet:
     """Integration tests for NativeMemcpy / NativeMemmove / NativeMemset
     (angr-8vfnz) plus the string-copy family NativeStrcpy / NativeStrncpy /

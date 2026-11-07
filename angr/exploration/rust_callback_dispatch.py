@@ -354,8 +354,10 @@ class RustCallbackDispatchMixin:
 
         # Check for stored procedure_data from a previous self.call().
         # This restores the full context (arguments, local vars) for continuations.
-        if addr_int in self._pending_procedure_data:
-            stored_data = self._pending_procedure_data.pop(addr_int)
+        # Read, not pop: every state forked after the call reaches this
+        # continuation, and a re-arm overwrites the entry (angr-mx00p.136.34).
+        stored_data = self._pending_procedure_data.get(addr_int)
+        if stored_data is not None:
             try:
                 if hasattr(state.callstack, "top") and state.callstack.top is not None:
                     state.callstack.top.procedure_data = stored_data
