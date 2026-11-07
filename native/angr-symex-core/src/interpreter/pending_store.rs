@@ -8,6 +8,14 @@ use rustc_hash::FxHashMap;
 
 /// Pending concrete stores buffered for a single VEX block.
 ///
+/// Each store's bytes are value-LE (index 0 is the value's low byte), which
+/// is what the flush sinks take. On a big-endian target the byte at memory
+/// offset `j` of an `L`-byte store is therefore `data[L - 1 - j]`, so every
+/// address-keyed read and patch takes the target's `big_endian` and maps
+/// through [`value_range`] (angr-vmi2l.172). It is a parameter rather than a
+/// field because the interpreter's register file, its one source, is
+/// replaced after construction (`exploration/step_core.rs`).
+///
 /// Stores are appended in execution order and flushed on block boundary or
 /// auto-flush threshold. Loads forward through pending stores by checking the
 /// most recent store covering each load address.
@@ -25,6 +33,28 @@ pub(crate) struct PendingStoreBuffer {
     /// fully-covering store. That earlier store's bytes are kept up to date
     /// by `push` (see below), so the fallback never returns stale data.
     byte_index: FxHashMap<u64, usize>,
+}
+
+/// The value-LE byte range of a buffer holding an `len`-byte value that
+/// backs memory offsets `mem`. The identity on little-endian. On big-endian,
+/// memory offset `j` is value byte `len - 1 - j`, so the range is mirrored.
+/// The mirrored slice is itself the value-LE encoding of the narrower
+/// big-endian read, so callers decode it unchanged.
+///
+/// Shared by the concrete pending buffer, the flushed concrete map
+/// (`VEXInterpreter::flushed_store_bytes`) and the symbolic-store maps
+/// (`VEXInterpreter::symbolic_overlap_load`).
+pub(super) fn value_range(
+    big_endian: bool,
+    len: usize,
+    mem: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    if big_endian {
+        // overflow-ok: callers pass `mem.end <= len`.
+        len - mem.end..len - mem.start
+    } else {
+        mem
+    }
 }
 
 /// Byte range of a `size`-byte load at `addr` within a store buffer of length
@@ -48,6 +78,21 @@ pub(super) fn covering_range(
     let off = usize::try_from(addr.wrapping_sub(s_addr)).ok()?;
     let end = off.checked_add(size)?;
     (end <= s_len).then_some(off..end)
+}
+
+/// The value-LE index of memory offset `off` in an `len`-byte store; the
+/// single-byte form of [`value_range`].
+fn value_index(big_endian: bool, len: usize, off: usize) -> usize {
+    // overflow-ok: callers pass `off < len`.
+    if big_endian { len - 1 - off } else { off }
+}
+
+/// Order `out`, gathered in memory order, as the load's value-LE bytes.
+fn into_value_order<T>(big_endian: bool, mut out: Vec<T>) -> Vec<T> {
+    if big_endian {
+        out.reverse();
+    }
+    out
 }
 
 /// Offsets of the region where a new store of `len` bytes at `addr` overlaps
@@ -101,7 +146,7 @@ impl PendingStoreBuffer {
         self.stores.is_empty()
     }
 
-    pub(crate) fn push(&mut self, addr: u64, data: Vec<u8>) {
+    pub(crate) fn push(&mut self, addr: u64, data: Vec<u8>, big_endian: bool) {
         let idx = self.stores.len();
         let len = data.len() as u64;
 
@@ -124,6 +169,8 @@ impl PendingStoreBuffer {
             {
                 let s_range = s_off..s_off + overlap_len; // overflow-ok: s_off + overlap_len <= s_data.len()
                 let new_range = new_off..new_off + overlap_len; // overflow-ok: new_off + overlap_len <= data.len()
+                let s_range = value_range(big_endian, s_data.len(), s_range);
+                let new_range = value_range(big_endian, data.len(), new_range);
                 s_data[s_range].copy_from_slice(&data[new_range]);
             }
         }
@@ -164,19 +211,19 @@ impl PendingStoreBuffer {
     /// up-to-date on every `push` (see `push`'s doc comment), so this
     /// correctly returns last-write-wins bytes rather than stale data from
     /// before the later, narrower store overwrote part of its range.
-    pub(crate) fn try_load(&self, addr: u64, size: usize) -> Option<&[u8]> {
+    pub(crate) fn try_load(&self, addr: u64, size: usize, big_endian: bool) -> Option<&[u8]> {
         let &idx = self.byte_index.get(&addr)?;
         let (store_addr, store_data) = &self.stores[idx];
         // store_addr <= addr is guaranteed: byte_index[addr] = idx means
         // store idx covers the byte at addr.
         if let Some(range) = covering_range(*store_addr, store_data.len(), addr, size) {
-            return Some(&store_data[range]);
+            return Some(&store_data[value_range(big_endian, store_data.len(), range)]);
         }
         // The most recent store covering addr is smaller than the load.
         // Fall back to reverse scan to find an earlier fully-covering store.
         for (s_addr, s_data) in self.stores.iter().rev() {
             if let Some(range) = covering_range(*s_addr, s_data.len(), addr, size) {
-                return Some(&s_data[range]);
+                return Some(&s_data[value_range(big_endian, s_data.len(), range)]);
             }
         }
         None
@@ -201,7 +248,12 @@ impl PendingStoreBuffer {
     /// covering it, so gathering byte-by-byte is last-write-wins by
     /// construction — unlike `try_load`'s reverse scan, it does not lean on
     /// `push`'s overlap patching.
-    pub(crate) fn try_load_assembled(&self, addr: u64, size: usize) -> Option<Vec<u8>> {
+    pub(crate) fn try_load_assembled(
+        &self,
+        addr: u64,
+        size: usize,
+        big_endian: bool,
+    ) -> Option<Vec<u8>> {
         // Fast-skip the common miss (no pending store at the load address)
         // before allocating the output buffer.
         if !self.byte_index.contains_key(&addr) {
@@ -215,9 +267,12 @@ impl PendingStoreBuffer {
             let &idx = self.byte_index.get(&byte_addr)?;
             let (store_addr, store_data) = &self.stores[idx];
             let off = usize::try_from(byte_addr.wrapping_sub(*store_addr)).ok()?;
-            out.push(*store_data.get(off)?);
+            if off >= store_data.len() {
+                return None;
+            }
+            out.push(store_data[value_index(big_endian, store_data.len(), off)]);
         }
-        Some(out)
+        Some(into_value_order(big_endian, out))
     }
 
     /// Gather whatever buffered bytes cover `[addr, addr+size)`, leaving
@@ -238,7 +293,12 @@ impl PendingStoreBuffer {
     /// always carries at least one `Some` byte. Like `try_load_assembled`,
     /// gathering through `byte_index` makes this last-write-wins by
     /// construction.
-    pub(crate) fn try_load_partial(&self, addr: u64, size: usize) -> Option<Vec<Option<u8>>> {
+    pub(crate) fn try_load_partial(
+        &self,
+        addr: u64,
+        size: usize,
+        big_endian: bool,
+    ) -> Option<Vec<Option<u8>>> {
         // Fast-skip the overwhelmingly common miss before allocating. Unlike
         // `try_load_assembled` this cannot key off the load's *first* byte:
         // the covered region may start anywhere inside the range.
@@ -254,27 +314,28 @@ impl PendingStoreBuffer {
             let byte = self.byte_index.get(&byte_addr).and_then(|&idx| {
                 let (store_addr, store_data) = &self.stores[idx];
                 let off = usize::try_from(byte_addr.wrapping_sub(*store_addr)).ok()?;
-                store_data.get(off).copied()
+                (off < store_data.len())
+                    .then(|| store_data[value_index(big_endian, store_data.len(), off)])
             });
             any |= byte.is_some();
             out.push(byte);
         }
-        any.then_some(out)
+        any.then(|| into_value_order(big_endian, out))
     }
 
     /// Find bytes from a pending store whose base address exactly equals
     /// `addr` and whose length is at least `size`. Used by callers that need
     /// the value originally written at `addr` (not arbitrary bytes from a
     /// larger covering store).
-    pub(crate) fn try_load_exact(&self, addr: u64, size: usize) -> Option<&[u8]> {
+    pub(crate) fn try_load_exact(&self, addr: u64, size: usize, big_endian: bool) -> Option<&[u8]> {
         let &idx = self.byte_index.get(&addr)?;
         let (store_addr, store_data) = &self.stores[idx];
         if *store_addr == addr && store_data.len() >= size {
-            return Some(&store_data[..size]);
+            return Some(&store_data[value_range(big_endian, store_data.len(), 0..size)]);
         }
         for (s_addr, s_data) in self.stores.iter().rev() {
             if *s_addr == addr && s_data.len() >= size {
-                return Some(&s_data[..size]);
+                return Some(&s_data[value_range(big_endian, s_data.len(), 0..size)]);
             }
         }
         None

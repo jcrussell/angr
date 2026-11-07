@@ -381,7 +381,7 @@ fn store_to_concrete_addr_buffers_pending_store() {
     // Buffered into pending_stores keyed by address.
     let data = interp
         .pending_stores
-        .try_load(0x4000, 4)
+        .try_load(0x4000, 4, false)
         .expect("pending store at 0x4000");
     assert_eq!(data, &[0xef, 0xbe, 0xad, 0xde]);
 }
@@ -651,7 +651,7 @@ fn cas_concrete_store_without_callback_buffers_bytes_only() {
     });
 
     assert_eq!(
-        interp.pending_stores.try_load_exact(0x1010, 4),
+        interp.pending_stores.try_load_exact(0x1010, 4, interp.registers.is_big_endian()),
         Some(&0xdead_beefu32.to_le_bytes()[..]),
         "the concrete value must be buffered as bytes"
     );
@@ -1461,7 +1461,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_concrete_lower_layer() {
     // Lower layer (a previously flushed store from an earlier block).
     interp.all_flushed_stores.insert(0x4000, vec![0x11, 0x22]);
     // In-flight store covering only the low byte of the coming 2-byte load.
-    interp.pending_stores.push(0x4000, vec![0xaa]);
+    interp.pending_stores.push(0x4000, vec![0xaa], interp.registers.is_big_endian());
 
     let irsb = make_irsb_with_temps(0x1000, &[IRType::I16]);
     interp.temps.resize(1, None);
@@ -1497,7 +1497,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_symbolic_lower_layer() {
     let mut interp = new_interp(&ctx);
     let sym = RustBV::symbol("flushed", 16);
     interp.all_flushed_symbolic_stores.insert(0x4000, sym);
-    interp.pending_stores.push(0x4000, vec![0xaa]);
+    interp.pending_stores.push(0x4000, vec![0xaa], interp.registers.is_big_endian());
 
     let irsb = make_irsb_with_temps(0x1000, &[IRType::I16]);
     interp.temps.resize(1, None);

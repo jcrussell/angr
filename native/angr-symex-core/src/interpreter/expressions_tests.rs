@@ -753,7 +753,7 @@ fn single_candidate_symbolic_load_sees_pending_and_flushed_stores() {
         let mut interp = new_interp(&ctx);
         assert!(!interp.use_rust_memory);
         interp.add_concrete_memory(at, vec![0xAA; 4]);
-        interp.pending_stores.push(at, stored.to_le_bytes().to_vec());
+        interp.pending_stores.push(at, stored.to_le_bytes().to_vec(), interp.registers.is_big_endian());
         (interp, pinned_symbolic_addr(&ctx, name, at))
     };
 
@@ -802,7 +802,7 @@ fn multi_candidate_symbolic_load_sees_pending_flushed_and_cached_bytes() {
         ctx.eval(&got).expect("pinned load has a model")
     };
     let pending = |interp: &mut VEXInterpreter<'_>| {
-        interp.pending_stores.push(at, stored.to_le_bytes().to_vec());
+        interp.pending_stores.push(at, stored.to_le_bytes().to_vec(), interp.registers.is_big_endian());
     };
     let flushed = |interp: &mut VEXInterpreter<'_>| {
         pending(interp);
@@ -952,4 +952,84 @@ fn eval_ccall_seg_selector_defers_unless_protected_mode() {
         .eval_ccall(&callbacks, &cee, IRType::I64, &args, &env)
         .expect("protected-mode flat table is served natively");
     assert_eq!(linear.as_u64(), Some(0x1000_0010));
+}
+
+/// A big-endian MIPS32 interpreter on the callback path (no `rust_memory`).
+fn new_be_interp(ctx: &SymContext) -> VEXInterpreter<'_> {
+    let interp = VEXInterpreter::with_config_endian(
+        VexArch::MIPS32,
+        ctx,
+        crate::interpreter::ExecutionConfig::default(),
+        false,
+    );
+    assert!(!interp.use_rust_memory);
+    assert!(interp.registers.is_big_endian());
+    interp
+}
+
+/// Every callback-ladder rung decodes in the target's byte order
+/// (angr-vmi2l.172). The store buffers hold value-LE bytes and the concrete
+/// cache holds memory-order bytes, and each rung read them as little-endian
+/// memory, so on a big-endian target a whole word came back byte-reversed
+/// and a narrower read inside a wider store picked the value's wrong end.
+#[test]
+fn big_endian_callback_ladder_decodes_in_memory_order() {
+    let callbacks = TestHost {
+        accept_stores: true,
+        ..TestHost::default()
+    };
+    let ctx = SymContext::new_mock();
+    let at: u64 = 0x4000;
+    let word: u32 = 0x1122_3344;
+    let load = |interp: &VEXInterpreter<'_>, addr: u64, size: usize| {
+        interp
+            .load_concrete_addr(&callbacks, addr, size)
+            .unwrap()
+            .as_u64()
+    };
+    let push = |interp: &mut VEXInterpreter<'_>, addr: u64, le: Vec<u8>| {
+        let be = interp.registers.is_big_endian();
+        interp.pending_stores.push(addr, le, be);
+    };
+
+    // Concrete cache: memory-order bytes.
+    let mut interp = new_be_interp(&ctx);
+    interp.add_concrete_memory(at, vec![0x11, 0x22, 0x33, 0x44]);
+    assert_eq!(load(&interp, at, 4), Some(0x1122_3344), "cache word");
+    assert_eq!(load(&interp, at + 1, 1), Some(0x22), "cache byte");
+
+    // Pending store: a narrower read inside it (try_load), and a later
+    // narrower store patching it (push's overlap patch).
+    let mut interp = new_be_interp(&ctx);
+    push(&mut interp, at, word.to_le_bytes().to_vec());
+    assert_eq!(load(&interp, at, 1), Some(0x11), "pending first byte");
+    assert_eq!(load(&interp, at + 2, 2), Some(0x3344), "pending tail half");
+    push(&mut interp, at + 3, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0x1122_3399), "patched word");
+
+    // Two pending halves assembled into one word (try_load_assembled).
+    let mut interp = new_be_interp(&ctx);
+    push(&mut interp, at, 0xAABB_u16.to_le_bytes().to_vec());
+    push(&mut interp, at + 2, 0xCCDD_u16.to_le_bytes().to_vec());
+    assert_eq!(load(&interp, at, 4), Some(0xAABB_CCDD), "assembled word");
+
+    // A pending byte spliced over the cache (try_load_partial).
+    let mut interp = new_be_interp(&ctx);
+    interp.add_concrete_memory(at, vec![0x11, 0x22, 0x33, 0x44]);
+    push(&mut interp, at + 1, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0x1199_3344), "partial splice");
+
+    // Flushed concrete store, read narrower at its base.
+    let mut interp = new_be_interp(&ctx);
+    push(&mut interp, at, word.to_le_bytes().to_vec());
+    interp.flush_stores(&callbacks).unwrap();
+    assert_eq!(load(&interp, at, 2), Some(0x1122), "flushed first half");
+
+    // Symbolic-store maps: an exact-key narrower read and an offset read.
+    let mut interp = new_be_interp(&ctx);
+    interp
+        .pending_symbolic_stores
+        .insert(at, RustBV::concrete(u128::from(word), 32));
+    assert_eq!(load(&interp, at, 1), Some(0x11), "symbolic exact key");
+    assert_eq!(load(&interp, at + 1, 2), Some(0x2233), "symbolic overlap");
 }

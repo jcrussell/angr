@@ -76,8 +76,8 @@ impl<'a> VEXInterpreter<'a> {
             .get(self.registers.arch().sp_offset(), ptr_size);
         let sp_val = sp.as_u64()?;
 
-        // Buffered stores keep raw little-endian bytes; the low `min(size, 8)`
-        // of them are the pointer.
+        // The buffer lookups below hand back the `size` value-LE bytes at
+        // `sp` on either byte order; the low `min(size, 8)` are the pointer.
         let from_le = |data: &[u8]| {
             let mut bytes = [0u8; 8];
             let len = std::cmp::min(size, 8);
@@ -97,7 +97,10 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Pending concrete stores.
-        if let Some(data) = self.pending_stores.try_load_exact(sp_val, size) {
+        if let Some(data) =
+            self.pending_stores
+                .try_load_exact(sp_val, size, self.registers.is_big_endian())
+        {
             return Some(from_le(data));
         }
 
@@ -110,9 +113,7 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Flushed concrete stores (cross-block within same step).
-        if let Some(data) = self.all_flushed_stores.get(&sp_val)
-            && data.len() >= size
-        {
+        if let Some(data) = self.flushed_store_bytes(sp_val, size) {
             return Some(from_le(data));
         }
 

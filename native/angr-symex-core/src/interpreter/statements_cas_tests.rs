@@ -68,7 +68,7 @@ fn temp_u64(interp: &VEXInterpreter<'_>, tmp: usize) -> Option<u64> {
 fn stored_word(interp: &VEXInterpreter<'_>, addr: u64) -> Option<u32> {
     interp
         .pending_stores
-        .try_load_assembled(addr, 4)
+        .try_load_assembled(addr, 4, false)
         .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("4-byte word")))
 }
 
@@ -296,7 +296,7 @@ fn cas_single_big_endian_still_swaps() {
     assert_eq!(
         interp
             .pending_stores
-            .try_load_assembled(0x5000, 4)
+            .try_load_assembled(0x5000, 4, false)
             .map(|b| b.len()),
         Some(4),
         "a matching BE single CAS must still store its 4-byte dataLo"

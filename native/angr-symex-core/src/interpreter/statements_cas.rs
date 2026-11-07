@@ -387,7 +387,8 @@ impl<'a> VEXInterpreter<'a> {
                 reject_symbolic_byte_store(data_bv, addr_concrete, "CAS store")?;
                 self.evict_overlapping_symbolic_stores(addr_concrete, data_size);
                 let data_bytes = bv_to_bytes(data_bv);
-                self.pending_stores.push(addr_concrete, data_bytes);
+                self.pending_stores
+                    .push(addr_concrete, data_bytes, self.registers.is_big_endian());
                 if self.pending_stores.len() >= self.max_pending_stores {
                     self.flush_stores(callbacks)?;
                 }

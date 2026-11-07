@@ -498,7 +498,8 @@ impl<'a> VEXInterpreter<'a> {
         let ite_bytes = bv_to_bytes(&ite_result);
         match kind {
             GuardedStoreAddr::Literal => {
-                self.pending_stores.push(addr_concrete, ite_bytes);
+                self.pending_stores
+                    .push(addr_concrete, ite_bytes, self.registers.is_big_endian());
                 if self.pending_stores.len() >= self.max_pending_stores {
                     self.flush_stores(callbacks)?;
                 }
@@ -679,7 +680,8 @@ impl<'a> VEXInterpreter<'a> {
             let size_bytes = (data_val.width() / 8) as usize;
             self.evict_overlapping_symbolic_stores(addr_concrete, size_bytes);
             let data_bytes = bv_to_bytes(&data_val);
-            self.pending_stores.push(addr_concrete, data_bytes);
+            self.pending_stores
+                .push(addr_concrete, data_bytes, self.registers.is_big_endian());
 
             if self.pending_stores.len() >= self.max_pending_stores {
                 self.flush_stores(callbacks)?;
@@ -715,7 +717,8 @@ impl<'a> VEXInterpreter<'a> {
         } else {
             let size_bytes = (data_val.width() / 8) as usize;
             self.evict_overlapping_symbolic_stores(addr, size_bytes);
-            self.pending_stores.push(addr, bv_to_bytes(data_val));
+            self.pending_stores
+                .push(addr, bv_to_bytes(data_val), self.registers.is_big_endian());
         }
     }
 

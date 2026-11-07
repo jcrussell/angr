@@ -63,7 +63,10 @@ impl InspectView {
         if let Some(value) = symbolic_store_exact(&self.pending_symbolic_stores, addr, bits) {
             return Some(value);
         }
-        if let Some(data) = self.pending_stores.try_load_assembled(addr, bytes) {
+        if let Some(data) =
+            self.pending_stores
+                .try_load_assembled(addr, bytes, self.registers.is_big_endian())
+        {
             return Some(bytes_to_bv(&data, bits));
         }
         if let Some(value) = symbolic_store_exact(&self.flushed_symbolic_stores, addr, bits) {

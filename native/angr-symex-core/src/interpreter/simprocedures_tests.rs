@@ -22,7 +22,7 @@ fn get_return_addr_reads_pending_concrete_store() {
     set_sp(&mut interp, 0x7fff_0000);
     interp
         .pending_stores
-        .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
+        .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec(), false);
     assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
@@ -51,7 +51,7 @@ fn get_return_addr_pending_symbolic_store_shadows_stale_concrete_bytes() {
     // Stale pre-call bytes still sitting in both concrete buffers.
     interp
         .pending_stores
-        .push(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec());
+        .push(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec(), false);
     interp
         .all_flushed_stores
         .insert(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec());
@@ -112,7 +112,7 @@ fn get_return_addr_pending_concrete_beats_flushed_symbolic() {
         .insert(0x7fff_0000, RustBV::symbol("old", 64));
     interp
         .pending_stores
-        .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
+        .push(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec(), false);
     assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
@@ -136,6 +136,6 @@ fn get_return_addr_ignores_stack_buffers_on_link_register_abi() {
     // A caller local that happens to sit at [sp].
     interp
         .pending_stores
-        .push(0x7fff_0000, 0xdead_beefu32.to_le_bytes().to_vec());
+        .push(0x7fff_0000, 0xdead_beefu32.to_le_bytes().to_vec(), false);
     assert_eq!(interp.get_return_addr().concrete(), Some(0x8004));
 }

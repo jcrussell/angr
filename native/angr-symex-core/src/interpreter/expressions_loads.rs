@@ -16,7 +16,7 @@
 //! `state.inspect` dispatchers in `expressions_inspect.rs`.
 
 use super::bv_utils::{build_ite_chain, bytes_to_bv, splice_bytes_over_bv};
-use super::pending_store::covering_range;
+use super::pending_store::{covering_range, value_range};
 use super::*;
 use rustc_hash::FxHashMap;
 
@@ -65,6 +65,11 @@ impl<'a> VEXInterpreter<'a> {
     /// still serves the loads in its wrapped tail (angr-fs8kb.64). Forming
     /// either end address instead, as this did with `checked_add` /
     /// `saturating_add`, turned such a store into a silent miss.
+    ///
+    /// On a big-endian target memory offset `o` is the value's byte
+    /// `width - 1 - o`, so the covered range is mirrored through
+    /// `pending_store::value_range` before it becomes bit positions
+    /// (angr-vmi2l.172).
     pub(super) fn symbolic_overlap_load(
         &self,
         map: &FxHashMap<u64, RustBV>,
@@ -75,9 +80,11 @@ impl<'a> VEXInterpreter<'a> {
             return None;
         }
         for (&s_addr, bv) in map.iter() {
-            let Some(range) = covering_range(s_addr, (bv.width() / 8) as usize, addr, size) else {
+            let len = (bv.width() / 8) as usize;
+            let Some(range) = covering_range(s_addr, len, addr, size) else {
                 continue;
             };
+            let range = value_range(self.registers.is_big_endian(), len, range);
             // overflow-ok: `covering_range` bounds `range.end` by the store's
             // byte width, so both bit positions stay inside `bv.width()`, and
             // a zero-size load cannot reach here (`range.end > range.start`
@@ -106,7 +113,15 @@ impl<'a> VEXInterpreter<'a> {
             if sym_val.width() == want {
                 return Some(sym_val.clone());
             } else if sym_val.width() > want {
-                return Some(sym_val.extract((size * 8 - 1) as u32, 0));
+                // The address's bytes are the value's low end on
+                // little-endian and its high end on big-endian.
+                let lo = if self.registers.is_big_endian() {
+                    sym_val.width() - want
+                } else {
+                    0
+                };
+                // overflow-ok: `want` is non-zero and `lo + want <= width`.
+                return Some(sym_val.extract(lo + want - 1, lo));
             }
             return None;
         }
@@ -197,7 +212,10 @@ impl<'a> VEXInterpreter<'a> {
         // try_load fast-skips when no pending store overlaps the
         // load address; falls back to a reverse scan only when the
         // most recent covering store is smaller than the load.
-        if let Some(data) = self.pending_stores.try_load(addr_concrete, size) {
+        if let Some(data) =
+            self.pending_stores
+                .try_load(addr_concrete, size, self.registers.is_big_endian())
+        {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
         // No *single* buffered store covers the whole load (a byte-wise write
@@ -205,7 +223,11 @@ impl<'a> VEXInterpreter<'a> {
         // them before falling through to the layers below, which know nothing
         // about the still-buffered stores and would answer with stale
         // pre-write bytes (angr-6cp06.69).
-        if let Some(data) = self.pending_stores.try_load_assembled(addr_concrete, size) {
+        if let Some(data) = self.pending_stores.try_load_assembled(
+            addr_concrete,
+            size,
+            self.registers.is_big_endian(),
+        ) {
             return Ok(bytes_to_bv(&data, (size * 8) as u32));
         }
         // Still no full coverage, but *some* bytes of the load may be
@@ -216,7 +238,11 @@ impl<'a> VEXInterpreter<'a> {
         // bytes back over their positions; `splice_bytes_over_bv` handles a
         // symbolic lower-layer answer as an Extract/Concat rather than a byte
         // patch.
-        let partial = self.pending_stores.try_load_partial(addr_concrete, size);
+        let partial = self.pending_stores.try_load_partial(
+            addr_concrete,
+            size,
+            self.registers.is_big_endian(),
+        );
         let below = self.load_concrete_addr_below_pending(callbacks, addr_concrete, size)?;
         match partial {
             Some(overlay) => Ok(splice_bytes_over_bv(&below, &overlay)),
@@ -248,15 +274,18 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Also check previously flushed concrete stores (cross-block)
-        if let Some(store_data) = self.all_flushed_stores.get(&addr_concrete)
-            && size <= store_data.len()
-        {
-            let data = &store_data[..size];
+        if let Some(data) = self.flushed_store_bytes(addr_concrete, size) {
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
 
-        // FAST PATH: Check if address is in Rust-cached concrete memory
+        // FAST PATH: Check if address is in Rust-cached concrete memory.
+        // The cache holds memory-order bytes, unlike the value-LE store
+        // buffers above (angr-vmi2l.172).
         if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
+            if self.registers.is_big_endian() {
+                let le: Vec<u8> = data.iter().rev().copied().collect();
+                return Ok(bytes_to_bv(&le, (size * 8) as u32));
+            }
             return Ok(bytes_to_bv(data, (size * 8) as u32));
         }
         // SLOW PATH: Fall back to Python callback
@@ -272,15 +301,25 @@ impl<'a> VEXInterpreter<'a> {
     fn has_bytes_above_host(&self, addr: u64, size: usize) -> bool {
         self.symbolic_store_load(&self.pending_symbolic_stores, addr, size)
             .is_some()
-            || self.pending_stores.try_load_partial(addr, size).is_some()
+            || self
+                .pending_stores
+                .try_load_partial(addr, size, self.registers.is_big_endian())
+                .is_some()
             || self
                 .symbolic_store_load(&self.all_flushed_symbolic_stores, addr, size)
                 .is_some()
-            || self
-                .all_flushed_stores
-                .get(&addr)
-                .is_some_and(|data| size <= data.len())
+            || self.flushed_store_bytes(addr, size).is_some()
             || self.try_read_concrete_memory(addr, size).is_some()
+    }
+
+    /// The value-LE bytes of a `size`-byte load at `addr` from the flushed
+    /// concrete store based exactly at `addr`, when it is at least that wide.
+    /// On a big-endian target the address's bytes are the stored value's
+    /// high end, not its low end (angr-vmi2l.172).
+    pub(super) fn flushed_store_bytes(&self, addr: u64, size: usize) -> Option<&[u8]> {
+        let data = self.all_flushed_stores.get(&addr)?;
+        (size <= data.len())
+            .then(|| &data[value_range(self.registers.is_big_endian(), data.len(), 0..size)])
     }
 
     /// Load from memory via Python callback.
