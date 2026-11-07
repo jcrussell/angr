@@ -102,16 +102,10 @@ fn test_merge_ite_cells_survive_skip() {
 /// the page is walked and an ITE cell is emitted.
 #[test]
 fn test_symbolic_overlay_not_skipped() {
-    let ctx = SymContext::new();
-
     // Base already has a symbolic byte at the divergent page.
     let mut base = build_base();
     let saddr = BASE + DIVERGENT_PAGE_IDX * PAGE_SIZE;
-    base.store(
-        &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbol("shared_sym", 8),
-        &ctx,
-    )
+    base.store_concrete(saddr, RustBV::symbol("shared_sym", 8))
     .unwrap();
 
     let mut a = base.fork();
@@ -139,18 +133,10 @@ fn test_symbolic_overlay_not_skipped() {
     // Each arm overwrites the shared symbolic byte with a distinct new symbol,
     // which does NOT break the data Arc (symbolic store only touches the bitmap
     // + symbolic_objects) — the divergence lives purely in symbolic_objects.
-    a.store(
-        &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbol("arm_a_sym", 8),
-        &ctx,
-    )
+    a.store_concrete(saddr, RustBV::symbol("arm_a_sym", 8))
     .unwrap();
     let mut b = b_seed;
-    b.store(
-        &RustBV::concrete(saddr as u128, 64),
-        RustBV::symbol("arm_b_sym", 8),
-        &ctx,
-    )
+    b.store_concrete(saddr, RustBV::symbol("arm_b_sym", 8))
     .unwrap();
 
     merge_instrument::reset();

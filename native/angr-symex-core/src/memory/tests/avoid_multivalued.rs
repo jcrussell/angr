@@ -4,10 +4,10 @@
 //! Both options are user-reachable SimOptions that silently change results:
 //! a symbolic-address load stops reading memory and mints an unconstrained
 //! value, and a symbolic-address store is dropped on the floor. Before this
-//! module the five memory-level gates —
-//! [`SymbolicMemory::load_symbolic`], [`SymbolicMemory::load_symbolic_unified`],
-//! [`SymbolicMemory::store_symbolic`], [`SymbolicMemory::store_symbolic_unified`]
-//! and [`SymbolicMemory::store_symbolic_unified_multi`] — had no Rust-side test
+//! module the memory-level gates —
+//! [`SymbolicMemory::load_symbolic_unified`],
+//! [`SymbolicMemory::store_symbolic_unified`] and
+//! [`SymbolicMemory::store_symbolic_unified_multi`] — had no Rust-side test
 //! at all, so deleting any one branch stayed green.
 //!
 //! Every test pins the symbolic address to a *single* concrete solution, so the
@@ -66,44 +66,9 @@ fn bounds(ctx: &SymContext, bv: &RustBV) -> (u128, u128) {
 // Reads
 // ---------------------------------------------------------------------------
 
-/// `load_symbolic` with AVOID_MULTIVALUED_READS off reads the backer; with it
-/// on it returns a fully unconstrained value that never touched the page.
-#[test]
-fn load_symbolic_short_circuits_to_unconstrained_under_avoid_multivalued_reads() {
-    let ctx = SymContext::new_mock();
-    let mem = backed_memory();
-
-    let off = mem
-        .load_symbolic(
-            pinned_symbolic_addr(&ctx, "mv_off_addr"),
-            8,
-            &ctx,
-            &concretizer_with(false, false),
-        )
-        .expect("load with the option off must succeed");
-    assert_eq!(
-        bounds(&ctx, &off),
-        (BACKER, BACKER),
-        "option off: the pinned address must concretize and read the backer"
-    );
-
-    let on = mem
-        .load_symbolic(
-            pinned_symbolic_addr(&ctx, "mv_on_addr"),
-            8,
-            &ctx,
-            &concretizer_with(true, false),
-        )
-        .expect("load with the option on must succeed");
-    assert_eq!(
-        bounds(&ctx, &on),
-        (0, u64::MAX as u128),
-        "option on: the load must be fully unconstrained, not the backer"
-    );
-}
-
-/// Same contract for the unified entry point, which has its own copy of the
-/// short-circuit.
+/// `load_symbolic_unified` with AVOID_MULTIVALUED_READS off reads the
+/// backer; with it on it returns a fully unconstrained value that never
+/// touched the page.
 #[test]
 fn load_symbolic_unified_short_circuits_to_unconstrained_under_avoid_multivalued_reads() {
     let ctx = SymContext::new_mock();
@@ -148,23 +113,14 @@ fn avoid_multivalued_read_short_circuit_honors_zero_fill_unconstrained() {
     mem.set_zero_fill_unconstrained(true);
 
     let concretizer = concretizer_with(true, false);
-    for (name, loaded) in [
-        (
-            "load_symbolic",
-            mem.load_symbolic(pinned_symbolic_addr(&ctx, "zf_a"), 8, &ctx, &concretizer),
-        ),
-        (
-            "load_symbolic_unified",
-            mem.load_symbolic_unified(pinned_symbolic_addr(&ctx, "zf_b"), 8, &ctx, &concretizer),
-        ),
-    ] {
-        let value = loaded.unwrap_or_else(|e| panic!("{name} must succeed: {e:?}"));
-        assert_eq!(
-            value.as_u64(),
-            Some(0),
-            "{name}: zero_fill_unconstrained must make the short-circuit yield concrete 0"
-        );
-    }
+    let value = mem
+        .load_symbolic_unified(pinned_symbolic_addr(&ctx, "zf"), 8, &ctx, &concretizer)
+        .expect("load_symbolic_unified must succeed");
+    assert_eq!(
+        value.as_u64(),
+        Some(0),
+        "zero_fill_unconstrained must make the short-circuit yield concrete 0"
+    );
 }
 
 /// The gate is `option && addr.as_u64().is_none()` — a concrete address must
@@ -175,11 +131,6 @@ fn avoid_multivalued_reads_does_not_fire_for_concrete_addresses() {
     let ctx = SymContext::new_mock();
     let mut mem = backed_memory();
     let concretizer = concretizer_with(true, false);
-
-    let plain = mem
-        .load_symbolic(RustBV::concrete(ADDR as u128, 64), 8, &ctx, &concretizer)
-        .expect("concrete-address load must succeed");
-    assert_eq!(plain.as_u64(), Some(BACKER as u64));
 
     let unified = mem
         .load_symbolic_unified(RustBV::concrete(ADDR as u128, 64), 8, &ctx, &concretizer)
@@ -197,41 +148,6 @@ fn read_back(mem: &SymbolicMemory) -> Option<u64> {
     mem.load_concrete(ADDR, 8)
         .expect("concrete read-back must succeed")
         .as_u64()
-}
-
-/// `store_symbolic` with AVOID_MULTIVALUED_WRITES off writes through the
-/// pinned address; with it on the write is silently dropped.
-#[test]
-fn store_symbolic_drops_the_write_under_avoid_multivalued_writes() {
-    let ctx = SymContext::new_mock();
-
-    let mut off = backed_memory();
-    off.store_symbolic(
-        pinned_symbolic_addr(&ctx, "wr_off_addr"),
-        RustBV::concrete(STORED, 64),
-        &ctx,
-        &concretizer_with(false, false),
-    )
-    .expect("store with the option off must succeed");
-    assert_eq!(
-        read_back(&off),
-        Some(STORED as u64),
-        "option off: the pinned address must concretize and take the write"
-    );
-
-    let mut on = backed_memory();
-    on.store_symbolic(
-        pinned_symbolic_addr(&ctx, "wr_on_addr"),
-        RustBV::concrete(STORED, 64),
-        &ctx,
-        &concretizer_with(false, true),
-    )
-    .expect("store with the option on must report success, not an error");
-    assert_eq!(
-        read_back(&on),
-        Some(BACKER as u64),
-        "option on: the write must be dropped, leaving the backer intact"
-    );
 }
 
 /// The unified store signals the drop through its return value (`Ok(None)`)
@@ -317,19 +233,13 @@ fn store_symbolic_unified_multi_reports_none_and_drops_the_write_under_avoid_mul
 }
 
 /// Concrete-address stores are past the fast path before the gate, so all
-/// three write entry points must still land with the option on.
+/// both write entry points must still land with the option on.
 #[test]
 fn avoid_multivalued_writes_does_not_fire_for_concrete_addresses() {
     let ctx = SymContext::new_mock();
     let concretizer = concretizer_with(false, true);
     let addr = || RustBV::concrete(ADDR as u128, 64);
     let value = || RustBV::concrete(STORED, 64);
-
-    let mut plain = backed_memory();
-    plain
-        .store_symbolic(addr(), value(), &ctx, &concretizer)
-        .expect("concrete-address store must succeed");
-    assert_eq!(read_back(&plain), Some(STORED as u64));
 
     let mut unified = backed_memory();
     unified

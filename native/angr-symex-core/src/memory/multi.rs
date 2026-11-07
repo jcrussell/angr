@@ -297,9 +297,8 @@ impl SymbolicMemory {
         // angr-fgqco: probe read-only before taking `&mut`. `pages` is an
         // `im::OrdMap` shared with forked states, so `get_mut` copies the tree
         // path down to the target page even when `clear_multi` would be a
-        // no-op. `store_symbolic` calls this for *every byte* of every
-        // symbolic store as soon as a single Multi cell exists anywhere in
-        // memory, so the no-op case has to stay free of page-map mutation.
+        // no-op. A store calls this for *every byte* it writes as soon as a
+        // single Multi cell exists anywhere in memory, so the no-op case has to stay free of page-map mutation.
         if self
             .pages
             .get(&page_num)

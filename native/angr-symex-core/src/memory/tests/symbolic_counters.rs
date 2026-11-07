@@ -7,8 +7,8 @@
 
 use super::super::*;
 
-/// angr-0nme Phase 0: an eager symbolic store with N candidate addresses
-/// produces an ITE chain of depth N. `record_mem_ite_depth` must bump the
+/// angr-0nme Phase 0: a symbolic store with N candidate addresses installs
+/// a Multi cell of N alternatives. `record_mem_ite_depth` must bump the
 /// `mem_ite_depth_max` watermark and add to the cumulative total (the
 /// baseline metric for Multi-cell storage, angr-czph).
 ///
@@ -16,10 +16,10 @@ use super::super::*;
 /// with `cargo test` parallel runners, so this asserts on **deltas**
 /// from a captured baseline rather than absolute values. The pre/post
 /// difference for `mem_ite_depth_total` must be at least 3 (one
-/// 3-candidate eager store from this test); for `mem_ite_depth_max` the
+/// 3-candidate store from this test); for `mem_ite_depth_max` the
 /// post-store watermark must be at least 3 (it can only climb).
 #[test]
-fn test_mem_ite_depth_counter_records_eager_multi_store() {
+fn test_mem_ite_depth_counter_records_multi_store() {
     use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
@@ -36,7 +36,7 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
 
     let ctx = SymContext::new_mock();
     // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies and the store
-    // fans out to 3 eager ITE candidates; the default Max-only chain would
+    // fans out to 3 Multi-cell candidates; the default Max-only chain would
     // resolve to one address and record no ITE depth (angr-9ke6b.194).
     let concretizer = AddressConcretizer {
         symbolic_write_addresses: true,
@@ -56,7 +56,7 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     assert!(ctx.is_sat(), "candidate-address context must be SAT");
 
     let value = RustBV::concrete(0xDEAD, 32);
-    mem.store_symbolic(addr, value, &ctx, &concretizer)
+    mem.store_symbolic_unified(addr, value, &ctx, &concretizer)
         .expect("symbolic store with multi solutions must succeed");
 
     let post = get_solver_stats();
@@ -64,7 +64,7 @@ fn test_mem_ite_depth_counter_records_eager_multi_store() {
     let post_total = post.get("mem_ite_depth_total").copied().unwrap();
     assert!(
         post_max >= 3,
-        "expected mem_ite_depth_max >= 3 (got {post_max}) after a 3-candidate eager store"
+        "expected mem_ite_depth_max >= 3 (got {post_max}) after a 3-candidate store"
     );
     assert!(
         post_total >= pre_total + 3,
@@ -85,15 +85,13 @@ fn test_memory_volume_counters_fire_on_load_store() {
     let pre_load_bytes = pre.get("mem_load_bytes").copied().unwrap_or(0);
     let pre_store_bytes = pre.get("mem_store_bytes").copied().unwrap_or(0);
 
-    let ctx = SymContext::new_mock();
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x2000, 0x1000, Permission::RWX);
 
     // Concrete address, 4 bytes stored, 4 bytes loaded.
-    let addr = RustBV::concrete(0x2000, 64);
     let value = RustBV::concrete(0xCAFEBABE, 32);
-    mem.store(&addr, value, &ctx).expect("store ok");
-    let _ = mem.load(addr, 4, &ctx).expect("load ok");
+    mem.store_concrete(0x2000, value).expect("store ok");
+    let _ = mem.load_concrete(0x2000, 4).expect("load ok");
 
     let post = get_solver_stats();
     assert!(
@@ -147,7 +145,7 @@ fn test_concretize_counters_fire_on_symbolic_store() {
     assert!(ctx.is_sat());
 
     let value = RustBV::concrete(0xC0DE, 32);
-    mem.store_symbolic(addr, value, &ctx, &concretizer)
+    mem.store_symbolic_unified(addr, value, &ctx, &concretizer)
         .expect("symbolic store must succeed");
 
     let post = get_solver_stats();
@@ -293,8 +291,6 @@ fn test_symbolic_addr_counters_tick_from_production_entry_points() {
     let value = RustBV::concrete(0x41, 8);
 
     let base_store = store_sym();
-    mem.store_symbolic(addr.clone(), value.clone(), &ctx, &concretizer)
-        .expect("store_symbolic must succeed");
     mem.store_symbolic_unified(addr.clone(), value.clone(), &ctx, &concretizer)
         .expect("store_symbolic_unified must succeed");
     mem.store_symbolic_unified_multi(addr.clone(), value.clone(), &ctx, &concretizer)
@@ -302,20 +298,18 @@ fn test_symbolic_addr_counters_tick_from_production_entry_points() {
     mem.store_with_concretization(&addr, value, &ConcretizationResult::Single(0x1000), &ctx)
         .expect("store_with_concretization must succeed");
     assert!(
-        store_sym() >= base_store + 4,
-        "each of the four symbolic store entry points must bump \
+        store_sym() >= base_store + 3,
+        "each of the three symbolic store entry points must bump \
          mem_store_symbolic_addr (base {base_store}, now {})",
         store_sym()
     );
 
     let base_load = load_sym();
-    mem.load_symbolic(addr.clone(), 1, &ctx, &concretizer)
-        .expect("load_symbolic must succeed");
     mem.load_symbolic_unified(addr, 1, &ctx, &concretizer)
         .expect("load_symbolic_unified must succeed");
     assert!(
-        load_sym() >= base_load + 2,
-        "both symbolic load entry points must bump mem_load_symbolic_addr \
+        load_sym() > base_load,
+        "the symbolic load entry point must bump mem_load_symbolic_addr \
          (base {base_load}, now {})",
         load_sym()
     );

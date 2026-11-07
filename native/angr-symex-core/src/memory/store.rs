@@ -1,6 +1,6 @@
 //! Store operations for `SymbolicMemory`.
 //!
-//! Extracted from `memory/mod.rs` (angr-0lre). Holds the store_*/store_strided/
+//! Extracted from `memory/mod.rs` (angr-0lre). Holds the store_* /
 //! install_multi_for_candidates family in a single file. Multiple `impl SymbolicMemory`
 //! blocks across files are fine — Rust permits inherent impls to be split.
 //!
@@ -27,12 +27,10 @@
 //!
 //! | Entry point | Address | Perm | Unmapped | Auto-map | Multi |
 //! |---|---|---|---|---|---|
-//! | [`SymbolicMemory::store`] | symbolic (`ctx.eval` + pin fallback) | W | `Unmapped` | no | clear |
 //! | [`SymbolicMemory::store_concrete`] | concrete | W | `Unmapped` | no | clear |
 //! | [`SymbolicMemory::store_concrete_lazy`] | concrete | W | `UnmappedPageInRegion` | no | clear |
 //! | [`SymbolicMemory::store_concrete_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, zero RW in lazy regions | clear |
 //! | [`SymbolicMemory::store_concrete_le_bytes_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, per chunk | clear |
-//! | [`SymbolicMemory::store_symbolic`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | no | clear (eager ITE per candidate) |
 //! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
@@ -54,7 +52,7 @@
 //!   `Unmapped` for any other miss, before installing anything.
 //! * Every symbolic entry point drops the store entirely under
 //!   AVOID_MULTIVALUED_WRITES, before any page is touched (tagged
-//!   `SILENT(cat-b)` at the two `_unified` sites).
+//!   `SILENT(cat-b)` in `store_symbolic_with`).
 //!
 //! **Adding a variant:** route it through `store_concrete` (which owns the
 //! permission check, the Multi clear, and the counter) or, for a Multi-cell
@@ -64,7 +62,7 @@
 //! **Panic policy (angr-9ke6b.212):** stores run on guest-supplied addresses
 //! and values, so nothing here may panic on their shape. An unresolvable
 //! address becomes `MemoryError::SymbolicAddress` (via
-//! [`as_symbolic_address_error`]), which the caller turns
+//! [`as_symbolic_address_error`](super::as_symbolic_address_error)), which the caller turns
 //! into a Python-memory-model fallback.
 //!
 //! The `deny` below follows the crate [Panic policy](crate#panic-policy)
@@ -73,59 +71,19 @@
 
 use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
 use crate::symbolic::{
-    RustBV, SymContext, record_concretize_disjunction, record_mem_ite_depth,
-    record_mem_lazy_page_fault, record_mem_store, record_mem_store_symbolic_addr,
+    RustBV, SymContext, record_concretize_disjunction, record_mem_lazy_page_fault,
+    record_mem_store, record_mem_store_symbolic_addr,
 };
 use angr_vex::Endness;
 
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{MemoryPage, PAGE_SIZE, PageIndex, Permission};
 use super::{
-    Address, MemoryError, SymbolicMemory, as_symbolic_address_error, end_page_exclusive,
-    end_page_inclusive, to_symbolic_address_error,
+    Address, MemoryError, SymbolicMemory, end_page_exclusive, end_page_inclusive,
+    to_symbolic_address_error,
 };
 
 impl SymbolicMemory {
-    /// Store a value to memory.
-    pub fn store(
-        &mut self,
-        addr: &RustBV,
-        value: RustBV,
-        ctx: &SymContext,
-    ) -> Result<(), MemoryError> {
-        // angr-9ke6b.229: the symbolic-addr subcounter bump used to live here,
-        // where it was dead — this wrapper has no production caller (`.228`).
-        // It now lives on the four concretizer entry points production uses:
-        // `store_symbolic`, `store_symbolic_unified`,
-        // `store_symbolic_unified_multi` and `store_with_concretization`.
-        //
-        // For symbolic addresses, we need to concretize
-        let concrete_addr = match addr.as_u64() {
-            Some(a) => a,
-            None => match ctx.eval(addr) {
-                Some(a) => {
-                    // Pin the arbitrarily-chosen store address on the path so the
-                    // store is not invisible to a later read that concretizes
-                    // elsewhere (angr-mv08h, parity with Python's store pin).
-                    crate::symbolic::concretize::pin_fallback_addr(ctx, addr, a as u64);
-                    a as u64
-                }
-                None => {
-                    return Err(MemoryError::SymbolicAddress {
-                        description: "could not resolve address for store".to_string(),
-                    });
-                }
-            },
-        };
-
-        // angr-9ke6b.228: no lazy-page-fault bump here. `store_concrete` has no
-        // lazy classification at all (it only ever yields `Unmapped`), so the
-        // branch that used to live here was dead. The counter is bumped by the
-        // producers instead — `check_pages_mapped_lazy` and
-        // `install_multi_for_candidates_safe` on this side.
-        self.store_concrete(Address(concrete_addr), value)
-    }
-
     /// Store to a concrete address.
     ///
     /// angr-9ke6b.99: a sub-byte-width `value` makes `size` zero, which
@@ -371,109 +329,6 @@ impl SymbolicMemory {
                 self.retire_symbolic_object_at(byte_addr);
             }
         }
-    }
-
-    /// Store to a symbolic address with concretization support.
-    ///
-    /// This method handles symbolic addresses by:
-    /// 1. Trying to concretize the address to a single value (fast path)
-    /// 2. Performing conditional stores for strided access patterns
-    /// 3. Performing conditional stores for multiple possible addresses
-    /// 4. Returning an error if the address range is too large
-    ///
-    /// For multiple addresses, each candidate gets a conditional store:
-    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
-    ///
-    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
-    /// the interpreter can fetch the page on-demand.
-    ///
-    /// # Arguments
-    /// * `addr` - The symbolic address to store to
-    /// * `value` - The value to store
-    /// * `ctx` - The solver context
-    /// * `concretizer` - The address concretizer configuration
-    ///
-    /// # Returns
-    /// Ok(()) on success, or a MemoryError if storing fails.
-    pub fn store_symbolic(
-        &mut self,
-        addr: RustBV,
-        value: RustBV,
-        ctx: &SymContext,
-        concretizer: &AddressConcretizer,
-    ) -> Result<(), MemoryError> {
-        // Fast path: concrete address
-        if let Some(concrete_addr) = addr.as_u64() {
-            return self.store_concrete_lazy(concrete_addr, value);
-        }
-        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
-        record_mem_store_symbolic_addr();
-
-        // AVOID_MULTIVALUED_WRITES: silently drop the store. Mirrors the
-        // early `return` in `AddressConcretizationMixin.store`.
-        if concretizer.should_avoid_multivalued_write(&addr) {
-            return Ok(());
-        }
-
-        // Try to concretize the address (write mode: falls back to Max solution)
-        match concretizer.concretize_write(&addr, ctx) {
-            ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_lazy(concrete_addr, value)
-            }
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => self.store_strided(&addr, &value, base, stride, count),
-            ConcretizationResult::Multiple(addrs) => {
-                self.store_eager_ite_candidates(&addr, &value, &addrs)?;
-                // angr-62li: hoist the addr-domain disjunction.
-                Self::assert_address_disjunction(&addr, &addrs, ctx);
-                Ok(())
-            }
-            other => Err(as_symbolic_address_error(&other)),
-        }
-    }
-
-    /// Store to strided addresses with conditional stores.
-    ///
-    /// For each address in the strided pattern, performs:
-    /// `mem[addr] = If(symbolic_addr == addr, new_value, mem[addr])`
-    pub(super) fn store_strided(
-        &mut self,
-        addr_expr: &RustBV,
-        value: &RustBV,
-        base: u64,
-        stride: u64,
-        count: u64,
-    ) -> Result<(), MemoryError> {
-        let addrs = strided_addrs(base, stride, count);
-        self.store_eager_ite_candidates(addr_expr, value, &addrs)
-    }
-
-    /// Shared eager-ITE conditional-store loop (angr-24pv4.3) used by the
-    /// `Multiple` arm of `store_symbolic` and by `store_strided`. For each
-    /// `candidate` builds `mem[candidate] = If(addr_expr == candidate, value,
-    /// mem[candidate])` and records the eager ITE chain depth (Phase 0
-    /// instrumentation, per memory `invariant-mem-ite-depth-counter`). The
-    /// caller is responsible for any `assert_address_disjunction` (only the
-    /// `Multiple` path hoists it; strided does not).
-    pub(super) fn store_eager_ite_candidates(
-        &mut self,
-        addr_expr: &RustBV,
-        value: &RustBV,
-        addrs: &[u64],
-    ) -> Result<(), MemoryError> {
-        let size = value.width() / 8;
-        for &candidate in addrs {
-            let addr_const = RustBV::concrete(candidate as u128, addr_expr.width());
-            let cond = addr_expr.eq(&addr_const);
-            let current = self.load_concrete_lazy(Address(candidate), size)?;
-            let conditional_value = cond.ite(value, &current);
-            self.store_concrete_lazy(candidate, conditional_value)?;
-        }
-        record_mem_ite_depth(addrs.len() as u32);
-        Ok(())
     }
 
     /// Store `value` at a possibly symbolic `addr`, concretizing it in write
@@ -759,9 +614,8 @@ impl SymbolicMemory {
     /// Production-safe Multi-cell install.
     ///
     /// Phase 2 (angr-qh5u) entry point used by `store_symbolic_unified` and
-    /// `store_with_concretization`. Mirrors the eager safety semantics of
-    /// the pre-Phase-2 `store_strided` so Multi installation can't lose
-    /// Python backer data:
+    /// `store_with_concretization`. It refuses missing pages up front so
+    /// Multi installation can't lose Python backer data:
     ///
     /// * If any candidate page is in a lazy region, return
     ///   `UnmappedPageInRegion { page_addr: first_missing }` so the

@@ -2,19 +2,16 @@ use super::super::*;
 
 #[test]
 fn test_memory_concrete() {
-    let ctx = SymContext::new_mock();
-
     let mut mem = SymbolicMemory::new(Endness::Little);
 
     // Map a page
     mem.map(0x1000, 0x1000, Permission::RWX);
 
     // Store and load
-    let addr = RustBV::concrete(0x1000, 64);
     let value = RustBV::concrete(0x12345678, 32);
-    mem.store(&addr, value, &ctx).unwrap();
+    mem.store_concrete(0x1000, value).unwrap();
 
-    let loaded = mem.load(addr, 4, &ctx).unwrap();
+    let loaded = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(loaded.as_u64(), Some(0x12345678));
 }
 
@@ -495,7 +492,7 @@ fn test_symbolic_load_concrete_fast_path() {
 
     // Load with concrete address should work
     let addr = RustBV::concrete(0x1000, 64);
-    let loaded = mem.load_symbolic(addr, 4, &ctx, &concretizer).unwrap();
+    let loaded = mem.load_symbolic_unified(addr, 4, &ctx, &concretizer).unwrap();
     assert_eq!(loaded.as_u64(), Some(0x12345678));
 }
 
@@ -510,7 +507,7 @@ fn test_symbolic_store_concrete_fast_path() {
     // Store with concrete address should work
     let addr = RustBV::concrete(0x1000, 64);
     let value = RustBV::concrete(0xDEADBEEF, 32);
-    mem.store_symbolic(addr, value, &ctx, &concretizer).unwrap();
+    mem.store_symbolic_unified(addr, value, &ctx, &concretizer).unwrap();
 
     let loaded = mem.load_concrete(0x1000, 4).unwrap();
     assert_eq!(loaded.as_u64(), Some(0xDEADBEEF));

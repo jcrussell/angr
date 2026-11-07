@@ -37,10 +37,10 @@ fn test_symbolic_store_partial_overlap_constraint_propagation() {
 
     // Partial overlap: sym1 covers [0x1000, 0x1008); sym2 covers
     // [0x1004, 0x100C). Bytes [0x1004, 0x1008) are written by both.
-    mem.store_symbolic(addr1.clone(), sym1.clone(), &ctx, &concretizer)
-        .expect("store_symbolic addr1 must succeed");
-    mem.store_symbolic(addr2, sym2, &ctx, &concretizer)
-        .expect("store_symbolic addr2 must succeed");
+    mem.store_symbolic_unified(addr1.clone(), sym1.clone(), &ctx, &concretizer)
+        .expect("store_symbolic_unified addr1 must succeed");
+    mem.store_symbolic_unified(addr2, sym2, &ctx, &concretizer)
+        .expect("store_symbolic_unified addr2 must succeed");
 
     // The base context must remain satisfiable.
     assert!(

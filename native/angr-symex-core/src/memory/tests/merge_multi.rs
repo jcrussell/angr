@@ -296,7 +296,6 @@ fn test_second_level_merge_over_other_only_multi_page() {
 /// stale value back over the merged entry on export.
 #[test]
 fn test_collapsed_multi_side_is_retired_from_the_multi_sidecar() {
-    let ctx = SymContext::new();
     let addr = Address(ADDR);
 
     let mut a = SymbolicMemory::new(Endness::Little);
@@ -328,7 +327,7 @@ fn test_collapsed_multi_side_is_retired_from_the_multi_sidecar() {
     // With the bit cleared, the load reaches the merged `symbolic_objects` cell
     // instead of being intercepted by the stale Multi path.
     let loaded = a
-        .load(RustBV::concrete(ADDR as u128, 64), 1, &ctx)
+        .load_concrete(ADDR, 1)
         .expect("load of the merged byte");
     assert_eq!(
         loaded.as_u128(),

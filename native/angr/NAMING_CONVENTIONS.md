@@ -65,8 +65,8 @@ that conflicts with the table above.
 
 ### `value: &RustBV` (not `bv: &RustBV`) in memory store
 
-Memory-store APIs (`call_memory_store_symbolic_value`,
-`store_strided`) take `value: &RustBV` because the semantic role of
+Memory-store APIs (`install_multi_for_candidates` and its `_safe`
+sibling) take `value: &RustBV` because the semantic role of
 the parameter is "the value being stored", not "an arbitrary BV".
 This is a meaningful distinction at a call site: a reader recognizes
 "store a value at an address" faster than "store a BV at an address".

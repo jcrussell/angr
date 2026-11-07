@@ -198,7 +198,6 @@ fn wide_symbolic_divergence_merges_per_byte_lanes() {
 /// width-mismatched, so this load could not resolve to `other`'s value.
 #[test]
 fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
-    let ctx = SymContext::new();
     let addr = Address(0xa000);
 
     let mut a = SymbolicMemory::new(Endness::Little);
@@ -215,7 +214,7 @@ fn wide_symbolic_divergence_resolves_under_a_concrete_merge_cond() {
     assert!(a.merge(&b, &RustBV::concrete(1, 1)));
 
     let loaded = a
-        .load(RustBV::concrete(addr.raw() as u128, 64), 4, &ctx)
+        .load_concrete(addr, 4)
         .expect("load of the merged wide object");
     assert_eq!(
         loaded.as_u128(),

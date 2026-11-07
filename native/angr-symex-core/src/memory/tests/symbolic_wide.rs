@@ -29,8 +29,8 @@ fn test_big_endian_128bit_wide_symbolic_store() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128)));
 
     let addr = RustBV::concrete(0x1000, 64);
-    mem.store_symbolic(addr, sym, &ctx, &concretizer)
-        .expect("store_symbolic must succeed");
+    mem.store_symbolic_unified(addr, sym, &ctx, &concretizer)
+        .expect("store_symbolic_unified must succeed");
     assert!(ctx.is_sat(), "context must remain SAT after store");
 
     // Exact 16-byte load returns the full symbolic value.
@@ -115,8 +115,8 @@ fn test_little_endian_128bit_wide_symbolic_store() {
     ctx.assume_true(&sym.eq(&RustBV::concrete(pinned, 128)));
 
     let addr = RustBV::concrete(0x1000, 64);
-    mem.store_symbolic(addr, sym, &ctx, &concretizer)
-        .expect("store_symbolic must succeed");
+    mem.store_symbolic_unified(addr, sym, &ctx, &concretizer)
+        .expect("store_symbolic_unified must succeed");
     assert!(ctx.is_sat(), "context must remain SAT after store");
 
     // Exact 16-byte load returns the full symbolic value.

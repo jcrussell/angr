@@ -102,9 +102,7 @@ pub(crate) static Z3_UNSAT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static Z3_TIMEOUT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Deepest ITE chain ever stored as a symbolic memory cell value.
 ///
-/// Recorded by the eager `store_strided` path and by Multi-cell installation
-/// (Phase 1/2, `install_multi_for_candidates`) so before/after comparison
-/// against the eager baseline is direct.
+/// Recorded by Multi-cell installation (`install_multi_for_candidates`).
 pub(crate) static MEM_ITE_DEPTH_MAX: AtomicU32 = AtomicU32::new(0);
 /// Cumulative count of conditional iterations added to ITE chains in symbolic
 /// stores. Sum, not max — surfaces total ITE-chain work across a run.
@@ -655,9 +653,7 @@ pub fn reset_solver_stats() {
 /// Record that a symbolic store wrote an ITE chain of `depth` alternatives.
 ///
 /// Bumps the cumulative total and lifts the max watermark via `fetch_max`.
-/// Called from `memory/store.rs::store_strided` and from Multi-cell
-/// installation (`install_multi_for_candidates`) so before/after comparison
-/// against the eager baseline is direct.
+/// Called from Multi-cell installation (`install_multi_for_candidates`).
 #[inline]
 pub fn record_mem_ite_depth(depth: u32) {
     if depth == 0 {
@@ -753,9 +749,8 @@ pub fn record_mem_store(bytes: u64) {
 
 /// Record a load whose address BV was not a concrete literal, i.e. one that
 /// entered address concretization. Bumped by the *symbolic*
-/// entry points — `SymbolicMemory::{load_symbolic, load_symbolic_unified}`,
-/// each after its concrete fast path — not by `SymbolicMemory::load`, which no
-/// production path calls (see `.228`). Disjoint from `mem_load_count`, not a
+/// entry point `SymbolicMemory::load_symbolic_unified`, after its concrete
+/// fast path. Disjoint from `mem_load_count`, not a
 /// subset of it: the counted `load_concrete` is not on the symbolic path
 /// (`load_symbolic_unified` reaches memory via `load_concrete_lazy` /
 /// `load_concrete_or_unconstrained`, neither of which bumps the volume
@@ -768,8 +763,8 @@ pub fn record_mem_load_symbolic_addr() {
 }
 
 /// Symbolic-addr counterpart to `record_mem_load_symbolic_addr`. Bumped by
-/// `SymbolicMemory::{store_symbolic, store_symbolic_unified,
-/// store_symbolic_unified_multi, store_with_concretization}` — the last of
+/// `SymbolicMemory::{store_symbolic_unified, store_symbolic_unified_multi,
+/// store_with_concretization}` — the last of
 /// which is the interpreter's store path, and re-enters on the page-fetch
 /// retry in `try_rust_memory_store`, so the same caveats as the load side
 /// apply.

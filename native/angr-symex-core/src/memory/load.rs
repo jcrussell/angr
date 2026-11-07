@@ -21,12 +21,10 @@
 //!
 //! | Entry point | Address | Perm | Unmapped | Auto-map | Multi |
 //! |---|---|---|---|---|---|
-//! | [`SymbolicMemory::load`] | symbolic (`ctx.eval` + pin fallback) | R | `Unmapped` | no | yes |
 //! | [`SymbolicMemory::load_concrete`] | concrete | R | `Unmapped` | no | yes |
 //! | [`SymbolicMemory::load_concrete_lazy`] | concrete | R | `UnmappedPageInRegion` | no | yes |
 //! | `SymbolicMemory::load_concrete_lazy_inner` (`pub(super)`) | concrete | R | `UnmappedPageInRegion` | no | yes |
 //! | [`SymbolicMemory::load_concrete_or_unconstrained`] | concrete | R, but **result discarded** | *swallowed* → fresh `mem_<addr>_rs*` filler per refusing page | no | yes |
-//! | [`SymbolicMemory::load_symbolic`] | symbolic (concretizer) | R | `UnmappedPageInRegion` | no | yes |
 //! | [`SymbolicMemory::load_symbolic_unified`] | symbolic (concretizer) | R (leaf-dependent) | `UnmappedPageInRegion` for a lazy or host page, else leaf filler | no | yes |
 //!
 //! Notes that the axes alone don't carry:
@@ -37,19 +35,18 @@
 //! * The `Unmapped` cells are the `lazy=false` contract of
 //!   `SymbolicMemory::unmapped_page_error`, and it has one documented leak: a
 //!   load that dispatches to `assemble_load_with_multi` reports a lazy-region
-//!   miss as `UnmappedPageInRegion` regardless of the flag, so `load` /
+//!   miss as `UnmappedPageInRegion` regardless of the flag, so
 //!   `load_concrete` can surface it too when a `Multi` cell is in range.
 //! * `load_concrete_or_unconstrained` is infallible **by design** (ITE-leaf
 //!   filler): it converts *every* error — including `MemoryError::Permission` —
 //!   into an unconstrained value, so it is the one row where a permission
 //!   check exists but cannot reject the load. Do not use it on a guest-visible
 //!   load path.
-//! * `load_symbolic` (eager) builds ITE leaves with the error-propagating
-//!   `load_concrete_lazy`; `load_symbolic_unified` builds them with
+//! * `load_symbolic_unified` builds its ITE leaves with
 //!   `load_concrete_or_unconstrained` after `check_candidate_pages` has sent
 //!   every fetchable missing page back to the caller. Hence the
 //!   leaf-dependent cells.
-//! * Both symbolic entry points short-circuit to
+//! * `load_symbolic_unified` short-circuits to
 //!   `SymbolicMemory::unconstrained_read_value` under AVOID_MULTIVALUED_READS,
 //!   before any page is touched (no perm check, no Multi consult).
 //!
@@ -128,9 +125,9 @@ impl SymbolicMemory {
     ///
     /// Infallible, so the width below has no error channel of its own: it goes
     /// through `fabricate_width_bits` rather than a bare `size * 8`. The
-    /// memory-side callers ([`SymbolicMemory::load_symbolic`] /
-    /// [`SymbolicMemory::load_symbolic_unified`]) run `check_access_size`
-    /// ahead of their AVOID_MULTIVALUED_READS short-circuit, and the
+    /// memory-side caller
+    /// ([`SymbolicMemory::load_symbolic_unified`]) runs `check_access_size`
+    /// ahead of its AVOID_MULTIVALUED_READS short-circuit, and the
     /// interpreter-side ones (`interpreter/expressions_loads.rs`,
     /// `interpreter/concretize_cache.rs`) pass a VEX type width, so the clamp
     /// is defense-in-depth on both (angr-0jh0j.35).
@@ -140,42 +137,6 @@ impl SymbolicMemory {
         } else {
             fresh_unconstrained_read_symbol(fabricate_width_bits(size))
         }
-    }
-
-    /// Load bytes from memory as a RustBV.
-    pub fn load(&self, addr: RustBV, size: u32, ctx: &SymContext) -> Result<RustBV, MemoryError> {
-        // angr-9ke6b.229: the symbolic-addr subcounter bump used to live here,
-        // where it was dead — this wrapper has no production caller (`.228`).
-        // It now lives on `load_symbolic` / `load_symbolic_unified`, the two
-        // concretizer entry points production actually uses.
-        //
-        // For symbolic addresses, we need to concretize or fork
-        let concrete_addr = match addr.as_u64() {
-            Some(a) => a,
-            None => {
-                // Try to evaluate the address
-                match ctx.eval(&addr) {
-                    Some(a) => {
-                        // Pin the arbitrarily-chosen load address on the path so
-                        // a later eval() of inputs cannot yield a path-infeasible
-                        // solution (angr-mv08h, parity with Python's load pin).
-                        crate::symbolic::concretize::pin_fallback_addr(ctx, &addr, a as u64);
-                        a as u64
-                    }
-                    None => {
-                        return Err(MemoryError::SymbolicAddress {
-                            description: "could not resolve address".to_string(),
-                        });
-                    }
-                }
-            }
-        };
-
-        // angr-9ke6b.228: the lazy-page-fault bump lives on the producers
-        // (`unmapped_page_error`, `assemble_load_with_multi`), not here — a
-        // wrapper-level bump would double-count the Multi-cell path and miss
-        // every production caller, which enters below this entry point.
-        self.load_concrete(Address(concrete_addr), size)
     }
 
     /// Load from a concrete address.
@@ -518,75 +479,6 @@ impl SymbolicMemory {
         }
     }
 
-    /// Load from a symbolic address with concretization support.
-    ///
-    /// This method handles symbolic addresses by:
-    /// 1. Trying to concretize the address to a single value (fast path)
-    /// 2. Building a balanced ITE tree for strided access patterns (efficient)
-    /// 3. Building an ITE chain for multiple possible addresses
-    /// 4. Returning an error if the address range is too large
-    ///
-    /// For unmapped pages in lazy regions, returns `UnmappedPageInRegion` so
-    /// the interpreter can fetch the page on-demand.
-    ///
-    /// # Arguments
-    /// * `addr` - The symbolic address to load from
-    /// * `size` - Number of bytes to load
-    /// * `ctx` - The solver context
-    /// * `concretizer` - The address concretizer configuration
-    ///
-    /// # Returns
-    /// The loaded value as a RustBV, or a MemoryError if loading fails.
-    pub fn load_symbolic(
-        &self,
-        addr: RustBV,
-        size: u32,
-        ctx: &SymContext,
-        concretizer: &AddressConcretizer,
-    ) -> Result<RustBV, MemoryError> {
-        // angr-0jh0j.35: the width bound has to be checked *here*, not only in
-        // `SymbolicMemory::load_concrete_common` — the AVOID_MULTIVALUED_READS
-        // short-circuit below reaches
-        // `SymbolicMemory::unconstrained_read_value`, which computes `size * 8`
-        // without ever touching a page.
-        check_access_size(addr.as_u64().unwrap_or(0), size)?;
-
-        // Fast path: concrete address
-        if let Some(concrete_addr) = addr.as_u64() {
-            return self.load_concrete_lazy(Address(concrete_addr), size);
-        }
-        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
-        record_mem_load_symbolic_addr();
-
-        // AVOID_MULTIVALUED_READS: bypass concretization and return an
-        // unconstrained value. Mirrors Python's `_default_value(...)` branch
-        // in `address_concretization_mixin.AddressConcretizationMixin.load`.
-        if concretizer.should_avoid_multivalued_read(&addr) {
-            return Ok(self.unconstrained_read_value(size));
-        }
-
-        // Try to concretize the address (read mode: falls back to Any single solution)
-        let base_value = match concretizer.concretize_read(&addr, ctx) {
-            ConcretizationResult::Single(concrete_addr) => {
-                self.load_concrete_lazy(Address(concrete_addr), size)?
-            }
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => self.load_strided_balanced(&addr, base, stride, count, size)?,
-            ConcretizationResult::Multiple(addrs) => {
-                self.build_balanced_ite_load(&addr, &addrs, size, ctx)?
-            }
-            other => {
-                return Err(as_symbolic_address_error(&other));
-            }
-        };
-
-        // Apply any pending writes that might overlap this symbolic load
-        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value))
-    }
-
     /// Load from a concrete address, returning an unconstrained symbolic value if unmapped.
     ///
     /// This is used as a fallback in ITE construction when an address cannot be mapped.
@@ -702,8 +594,8 @@ impl SymbolicMemory {
         concretizer: &AddressConcretizer,
         host_has_page: &dyn Fn(u64) -> bool,
     ) -> Result<RustBV, MemoryError> {
-        // angr-0jh0j.35: same up-front width bound as
-        // `SymbolicMemory::load_symbolic` — the AVOID_MULTIVALUED_READS
+        // angr-0jh0j.35: the width bound is checked here and not only in
+        // `SymbolicMemory::load_concrete_common`: the AVOID_MULTIVALUED_READS
         // short-circuit and the unmapped-leaf fillers both mint a width off
         // `size` with no page path to refuse on. Both clamp via
         // `fabricate_width_bits` as well (angr-0jh0j.84), so this check is

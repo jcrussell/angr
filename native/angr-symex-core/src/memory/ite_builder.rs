@@ -140,42 +140,6 @@ impl SymbolicMemory {
         Ok(cond.ite(&left, &right))
     }
 
-    /// Build a balanced ITE tree for arbitrary addresses.
-    ///
-    /// This is similar to the strided version but works with any sorted
-    /// list of addresses. Uses binary search style partitioning.
-    pub(super) fn build_balanced_ite_load(
-        &self,
-        addr_expr: &RustBV,
-        addrs: &[u64],
-        size: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, MemoryError> {
-        if addrs.is_empty() {
-            return Err(MemoryError::SymbolicAddress {
-                description: "empty address list".to_string(),
-            });
-        }
-        if addrs.len() == 1 {
-            return self.load_concrete_lazy(addrs[0], size);
-        }
-
-        self.build_balanced_ite_load_inner(addr_expr, addrs, size, ctx)
-    }
-
-    /// Recursive helper for balanced ITE tree with arbitrary addresses.
-    /// Leaves load via the error-propagating `load_concrete_lazy`.
-    fn build_balanced_ite_load_inner(
-        &self,
-        addr_expr: &RustBV,
-        addrs: &[u64],
-        size: u32,
-        ctx: &SymContext,
-    ) -> Result<RustBV, MemoryError> {
-        let mut load_leaf = |m: &Self, a: u64, s: u32, _: &SymContext| m.load_concrete_lazy(a, s);
-        self.build_ite_tree_generic(addr_expr, addrs, size, ctx, &mut load_leaf)
-    }
-
     /// Shared recursive ITE-tree scaffold (angr-24pv4.3) parameterized over a
     /// `load_leaf` closure so the only difference between the lazy
     /// (`load_concrete_lazy`, error-propagating) and unified
