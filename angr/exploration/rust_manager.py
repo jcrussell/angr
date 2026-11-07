@@ -1721,6 +1721,10 @@ class RustExplorationManager(
         from angr.exploration.rust_state_export import _LazySimStateRef
 
         self._lazy_state_refs: dict[int, _LazySimStateRef] = {}
+        # Bumped by every handoff to Rust (_invalidate_state_export_cache). A
+        # held RustStateProxy keys its register memo and solver fork on it,
+        # since a non-forking step keeps the state id (angr-vmi2l.266).
+        self._rust_step_epoch = 0
 
         # Maximum state cache size. Cache is bounded to the in-flight callback
         # state plus a small LRU window of recently-mutated states; root states

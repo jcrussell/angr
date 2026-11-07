@@ -788,12 +788,18 @@ class RustSolverProxy(RustSolverProxyBase):
         return self._state_id
 
     def _ensure_solver(self):
-        if self._solver_ctx is None:
-            if self._shared_ctx_getter is not None:
-                self._solver_ctx = self._shared_ctx_getter()
-            else:
-                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
-                self._solver_ctx_owner = threading.get_ident()
+        getter = self.__dict__.get("_shared_ctx_getter")
+        if getter is not None:
+            # Asked every time: the parent re-forks once Rust has stepped
+            # (``RustStateProxy._get_shared_solver_ctx``), and the constraints
+            # this proxy added went with the old fork.
+            ctx = getter()
+            if ctx is not self._solver_ctx:
+                self._solver_ctx = ctx
+                self._added_constraints = []
+        elif self._solver_ctx is None:
+            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            self._solver_ctx_owner = threading.get_ident()
 
     def _query_ctx(self):
         self._ensure_solver()
@@ -1370,7 +1376,8 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         # before it exists.
         object.__setattr__(self, "_mgr", rust_mgr)
         object.__setattr__(self, "_arch", arch)
-        object.__setattr__(self, "_cache", {})  # name -> claripy BVV/BVS
+        object.__setattr__(self, "_cache_entries", {})  # name -> claripy BVV/BVS; read through ``_cache``
+        object.__setattr__(self, "_cache_epoch", None)
         # angr-7jv5: optional Python-wrapper handle for counter bumps.
         object.__setattr__(self, "_python_mgr", python_mgr)
         object.__setattr__(
@@ -1385,7 +1392,23 @@ class RustRegisterProxy(_ProxyStatePluginMixin):
         object.__setattr__(self, "state", None)
 
     def _drop_state_caches(self):
-        self.__dict__["_cache"].clear()
+        self.__dict__["_cache_entries"].clear()
+
+    @property
+    def _cache(self):
+        """The register-value memo, emptied once Rust has stepped since it was filled.
+
+        Rust keeps a state's id across a non-forking step, so a proxy held
+        across ``step()``/``run()`` still names a live state whose registers
+        moved (angr-vmi2l.266). ``_rust_step_epoch`` is the manager's count of
+        those handoffs; without a manager the memo is never invalidated.
+        """
+        epoch = getattr(self.__dict__["_python_mgr"], "_rust_step_epoch", None)
+        entries = self.__dict__["_cache_entries"]
+        if epoch != self.__dict__["_cache_epoch"]:
+            entries.clear()
+            object.__setattr__(self, "_cache_epoch", epoch)
+        return entries
 
     def prefetch(self, names):
         """Batch-fetch multiple registers in one FFI call and cache them."""
@@ -2088,12 +2111,14 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         return True
 
     def _ensure_solver(self):
-        if self._solver_ctx is None:
-            if self._shared_ctx_getter is not None:
-                self._solver_ctx = self._shared_ctx_getter()
-            else:
-                self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
-                self._solver_ctx_owner = threading.get_ident()
+        getter = self.__dict__.get("_shared_ctx_getter")
+        if getter is not None:
+            # Asked every time: the parent re-forks once Rust has stepped
+            # (``RustStateProxy._get_shared_solver_ctx``).
+            self._solver_ctx = getter()
+        elif self._solver_ctx is None:
+            self._solver_ctx = self._mgr.fork_state_solver(self._state_id)
+            self._solver_ctx_owner = threading.get_ident()
 
     def _pin_addr_witness(self, addr, conc, *, on_state=True, condition=None):
         """Pin a symbolic address to its chosen concretization on the STATE solver.
@@ -4179,6 +4204,8 @@ class RustStateProxy:
         # the same thread that forks it. Required by ``_release_owned_ctx`` to
         # decide whether ``ctx.close()``/``ctx.is_closed()`` is safe to call.
         self._shared_solver_ctx_owner = None
+        # The manager's ``_rust_step_epoch`` when ``_shared_solver_ctx`` was forked.
+        self._shared_solver_ctx_epoch = None
 
     @property
     def state_id(self):
@@ -4232,9 +4259,19 @@ class RustStateProxy:
         state itself, use ``mgr._rust_mgr.add_constraints_to_state`` (the
         write-through path the SimProcedure-callback plugin uses).
         """
+        # Rust keeps a state's id across a non-forking step, so a fork taken
+        # before ``step()``/``run()`` describes the old state: re-fork once
+        # the manager's step epoch has moved (angr-vmi2l.266). Constraints
+        # added to the old view go with it.
+        epoch = getattr(self._python_mgr, "_rust_step_epoch", None)
+        if self._shared_solver_ctx is not None and epoch != self._shared_solver_ctx_epoch:
+            _release_owned_ctx(self._shared_solver_ctx, self._shared_solver_ctx_owner)
+            self._shared_solver_ctx = None
+            self._shared_solver_ctx_owner = None
         if self._shared_solver_ctx is None:
             self._shared_solver_ctx = self._mgr.fork_state_solver(self._state_id)
             self._shared_solver_ctx_owner = threading.get_ident()
+            self._shared_solver_ctx_epoch = epoch
         return self._shared_solver_ctx
 
     @property
