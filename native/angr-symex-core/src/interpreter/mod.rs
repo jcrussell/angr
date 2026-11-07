@@ -749,51 +749,6 @@ impl<'a> VEXInterpreter<'a> {
         }
     }
 
-    /// Load from memory via Python callback.
-    /// This handles the common case of loading from a concrete address.
-    ///
-    /// Bottom rung of the load-resolution ladder: callers reach it from
-    /// `load_layered` (through `load_concrete_addr`, after the pending/flushed
-    /// store buffers and the prefetch and concrete-memory caches, or through
-    /// `load_symbolic_addr`'s concretized arms), never in place of it.
-    /// `synthesize_unservable_load` above gets the last word before the GIL
-    /// crossing.
-    fn load_from_callback(
-        &self,
-        callbacks: &dyn EngineHost,
-        addr_concrete: u64,
-        size: usize,
-    ) -> Result<RustBV, CbExecutionError> {
-        if let Some(bv) = self.synthesize_unservable_load(callbacks, addr_concrete, size) {
-            return Ok(bv);
-        }
-
-        let load = callbacks
-            .memory_load(self.ctx, addr_concrete, size as u32)
-            .map_err(CbExecutionError::Callback)?;
-
-        if load.symbolic {
-            // The host's symbolic value, when it converted (a complex or
-            // unsupported AST falls through to a fresh symbol).
-            if let Some(bv) = load.value {
-                return Ok(bv);
-            }
-            // Fallback: create a fresh symbolic value
-            let name = format!("mem_{addr_concrete:x}_{size}");
-            let bits = (size * 8) as u32;
-            let bv = RustBV::symbol(&name, bits);
-            // angr-vfst: symbolic_variable BP_AFTER for engine-internal fresh
-            // BVS minting. Mirrors Python's `SimSolver.BVS` BP_AFTER
-            // signature. The user-callable `state.solver.BVS()` path still
-            // fires the same event from Python directly.
-            self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &bv);
-            Ok(bv)
-        } else {
-            // Convert bytes to concrete value
-            Ok(bytes_to_bv(&load.bytes, (size * 8) as u32))
-        }
-    }
-
     /// Set the execution configuration.
     /// Production builds the interpreter with its final `ExecutionConfig`; only `exits_tests` swaps one in afterwards (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]

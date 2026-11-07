@@ -162,11 +162,13 @@ impl<'a> VEXInterpreter<'a> {
     /// Concrete-address load path: walk pending/flushed store buffers, prefetch
     /// and concrete-memory caches before falling back to the Python callback.
     ///
-    /// This is the *upper* half of the load-resolution ladder; the lower half
-    /// lives in `mod.rs`, where the `load_from_callback` fallback below first
-    /// tries `synthesize_unservable_load` (native filler for a page neither
-    /// side has) and only then crosses the GIL. Read the two together — no
-    /// rung between `load_layered` and the Python callback lives anywhere else.
+    /// Every load that misses `rust_memory` and has one concrete address
+    /// enters here, including a symbolic address concretized to one
+    /// candidate. The ladder's bottom rung, `load_from_callback`, first tries
+    /// `synthesize_unservable_load` in `mod.rs` (native filler for a page
+    /// neither side has) and only then crosses the GIL. Read the two files
+    /// together — no rung between `load_layered` and the Python callback
+    /// lives anywhere else.
     pub(super) fn load_concrete_addr(
         &self,
         callbacks: &dyn EngineHost,
@@ -261,6 +263,52 @@ impl<'a> VEXInterpreter<'a> {
         self.load_from_callback(callbacks, addr_concrete, size)
     }
 
+    /// Load from memory via Python callback.
+    /// This handles the common case of loading from a concrete address.
+    ///
+    /// Bottom rung of the load-resolution ladder, and its only caller is
+    /// `load_concrete_addr_below_pending`: every load reaches it through
+    /// `load_concrete_addr`, after the pending/flushed store buffers and the
+    /// concrete-memory cache, never in place of them. It lives in this file
+    /// so nothing outside the ladder can call it (angr-vmi2l.173).
+    /// `synthesize_unservable_load` (`mod.rs`) gets the last word before the
+    /// GIL crossing.
+    fn load_from_callback(
+        &self,
+        callbacks: &dyn EngineHost,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
+        if let Some(bv) = self.synthesize_unservable_load(callbacks, addr_concrete, size) {
+            return Ok(bv);
+        }
+
+        let load = callbacks
+            .memory_load(self.ctx, addr_concrete, size as u32)
+            .map_err(CbExecutionError::Callback)?;
+
+        if load.symbolic {
+            // The host's symbolic value, when it converted (a complex or
+            // unsupported AST falls through to a fresh symbol).
+            if let Some(bv) = load.value {
+                return Ok(bv);
+            }
+            // Fallback: create a fresh symbolic value
+            let name = format!("mem_{addr_concrete:x}_{size}");
+            let bits = (size * 8) as u32;
+            let bv = RustBV::symbol(&name, bits);
+            // angr-vfst: symbolic_variable BP_AFTER for engine-internal fresh
+            // BVS minting. Mirrors Python's `SimSolver.BVS` BP_AFTER
+            // signature. The user-callable `state.solver.BVS()` path still
+            // fires the same event from Python directly.
+            self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &bv);
+            Ok(bv)
+        } else {
+            // Convert bytes to concrete value
+            Ok(bytes_to_bv(&load.bytes, (size * 8) as u32))
+        }
+    }
+
     /// Symbolic-address load path: concretize, then dispatch by result shape
     /// (single / multiple / strided / too-large / failed).
     pub(super) fn load_symbolic_addr(
@@ -290,11 +338,10 @@ impl<'a> VEXInterpreter<'a> {
         );
         match &*conc {
             ConcretizationResult::Single(addr_concrete) => {
-                let addr_concrete = *addr_concrete;
-                if let Some(data) = self.try_read_concrete_memory(addr_concrete, size) {
-                    return Ok(bytes_to_bv(data, (size * 8) as u32));
-                }
-                self.load_from_callback(callbacks, addr_concrete, size)
+                // The full concrete ladder, not just the cache: a store
+                // buffered earlier in this block or flushed from an earlier
+                // one is newer than Python's memory (angr-vmi2l.173).
+                self.load_concrete_addr(callbacks, *addr_concrete, size)
             }
             ConcretizationResult::Multiple(addrs) => {
                 // Build ITE chain in Rust instead of delegating to Python
@@ -402,7 +449,7 @@ impl<'a> VEXInterpreter<'a> {
         let addr_width = addr_expr.width();
 
         if addrs.len() == 1 {
-            return self.load_from_callback(callbacks, addrs[0], size);
+            return self.load_concrete_addr(callbacks, addrs[0], size);
         }
 
         let load_requests: Vec<(u64, u32)> = addrs.iter().map(|&a| (a, size as u32)).collect();

@@ -735,6 +735,44 @@ fn load_symbolic_addr_short_circuits_under_avoid_multivalued_reads() {
     );
 }
 
+/// A symbolic address that concretizes to one candidate reads through the
+/// same store buffers as a concrete one (angr-vmi2l.173). The `Single` arm of
+/// `load_symbolic_addr` and the one-candidate `build_ite_load_from_callbacks`
+/// used to consult only the concrete-memory cache and Python, so a store
+/// buffered in this block or flushed from an earlier one read back stale.
+#[test]
+fn single_candidate_symbolic_load_sees_pending_and_flushed_stores() {
+    let callbacks = TestHost {
+        accept_stores: true,
+        ..TestHost::default()
+    };
+    let ctx = SymContext::new_mock();
+    let at: u64 = 0x4010;
+    let stored: u32 = 0x1234_5678;
+    let fresh = |name: &str| {
+        let mut interp = new_interp(&ctx);
+        assert!(!interp.use_rust_memory);
+        interp.add_concrete_memory(at, vec![0xAA; 4]);
+        interp.pending_stores.push(at, stored.to_le_bytes().to_vec());
+        (interp, pinned_symbolic_addr(&ctx, name, at))
+    };
+
+    let (mut interp, addr) = fresh("single_pending");
+    let got = interp.load_symbolic_addr(&callbacks, &addr, 4).unwrap();
+    assert_eq!(got.as_u64(), Some(u64::from(stored)), "Single arm, pending");
+
+    let (mut interp, addr) = fresh("single_flushed");
+    interp.flush_stores(&callbacks).unwrap();
+    let got = interp.load_symbolic_addr(&callbacks, &addr, 4).unwrap();
+    assert_eq!(got.as_u64(), Some(u64::from(stored)), "Single arm, flushed");
+
+    let (interp, addr) = fresh("ite_pending");
+    let got = interp
+        .build_ite_load_from_callbacks(&callbacks, &[at], &addr, 4)
+        .unwrap();
+    assert_eq!(got.as_u64(), Some(u64::from(stored)), "one-candidate ITE");
+}
+
 /// `try_rust_memory_load` has a second copy of the same short-circuit that
 /// returns before `SymbolicMemory::load_symbolic_unified` is called at all.
 ///
