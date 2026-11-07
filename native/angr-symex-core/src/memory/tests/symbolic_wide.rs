@@ -265,3 +265,34 @@ fn test_extract_byte_lane_refuses_wrapping_byte_offset() {
         );
     }
 }
+
+/// angr-vmi2l.185: a `Concrete` wider than 128 bits keeps its value in a
+/// `u128`, so `store_concrete` must write zeros to lanes 16.. rather than
+/// repeat lanes 0.. through a masked shift (or panic under overflow checks).
+#[test]
+fn test_store_concrete_wider_than_u128_zero_fills_upper_lanes() {
+    let value: u128 = 0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10;
+    for endness in [Endness::Little, Endness::Big] {
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(endness);
+        mem.map(0x1000, 0x1000, Permission::RWX);
+        mem.store_concrete(0x1000u64, RustBV::concrete(value, 256))
+            .expect("256-bit concrete store must succeed");
+        for i in 0u32..32 {
+            // Lane index counted from the value's LSB.
+            let lane = match endness {
+                Endness::Little => i,
+                Endness::Big => 31 - i,
+            };
+            let expected = value.checked_shr(lane * 8).unwrap_or(0) & 0xff;
+            let byte = mem
+                .load_concrete(0x1000 + u64::from(i), 1)
+                .expect("single-byte load must succeed");
+            assert_eq!(
+                ctx.eval(&byte),
+                Some(expected),
+                "{endness:?}: byte at offset {i} expected 0x{expected:02x}"
+            );
+        }
+    }
+}

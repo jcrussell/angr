@@ -260,13 +260,14 @@ impl SymbolicMemory {
             .as_u128()
             .ok_or(MemoryError::UnexpectedSymbolic { addr: addr.0 })?;
 
-        // Convert to bytes based on endianness
+        // Convert to bytes based on endianness. A `Concrete` wider than 128
+        // bits holds its value in a `u128` with implicit zero upper bits, so
+        // lanes 16.. are zero; a bare `>>` would mask the shift and repeat
+        // lanes 0.. there (angr-vmi2l.185).
+        let lane = |i: u32| concrete_val.checked_shr(i * 8).unwrap_or(0) as u8;
         let bytes: Vec<u8> = match self.endness {
-            Endness::Little => (0..size).map(|i| (concrete_val >> (i * 8)) as u8).collect(),
-            Endness::Big => (0..size)
-                .rev()
-                .map(|i| (concrete_val >> (i * 8)) as u8)
-                .collect(),
+            Endness::Little => (0..size).map(lane).collect(),
+            Endness::Big => (0..size).rev().map(lane).collect(),
         };
 
         // Write to pages
