@@ -20,6 +20,7 @@ from tests.engines.conftest import (  # noqa: F401
     RustExplorationManager,
     RustSimState,
     _RustExplorationManager,
+    load_fauxware,
 )
 
 # All tests in this module require the Rust extension; skip the whole module
@@ -2065,7 +2066,7 @@ class TestRustInspectExtendedEvents:
         ret = mgr._cb_inspect_dirty(sid, "after", "rdtsc", handler, [], original)
         assert ret is None
 
-    def test_simprocedure_fires_during_exploration(self, fauxware_project):
+    def test_simprocedure_fires_during_exploration(self):
         """simprocedure BP fires while running fauxware (libc procs hit).
 
         The BP is dispatched from the Python SimProcedure bounce, and stock
@@ -2080,9 +2081,12 @@ class TestRustInspectExtendedEvents:
             def run(self, _s):  # pylint: disable=arguments-differ
                 return 0
 
-        fauxware_project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
+        # A project of its own: the hook would outlive this test on the
+        # module-scoped fixture (angr-z8ovo).
+        project = load_fauxware()
+        project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
+        state = project.factory.entry_state()
+        mgr = RustExplorationManager(project, [state])
 
         names = []
 

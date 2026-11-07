@@ -49,6 +49,7 @@ from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
     TrapPoint,
+    load_fauxware,
     load_pbounce,
     pbounce_stdin_state,
 )
@@ -780,7 +781,7 @@ class TestParallelSteady:
             (FAUXWARE_ACCEPTED_ADDR, False),
         }
 
-    def test_steady_bounce_and_resume_counters(self, fauxware_project, monkeypatch):
+    def test_steady_bounce_and_resume_counters(self, monkeypatch):
         """The steady bounce/resume protocol is exercised: both previously
         always-zero counters go positive when a Python SimProcedure bounce is
         serviced and its successors re-injected."""
@@ -794,14 +795,18 @@ class TestParallelSteady:
             def run(self, _s):  # pylint: disable=arguments-differ
                 return 0
 
-        fauxware_project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
-        mgr = _explore_steady(fauxware_project, monkeypatch)
+        # A project of its own: the hook would outlive this test on the
+        # module-scoped fixture and turn every later fauxware explore into a
+        # bounce round-trip (angr-z8ovo).
+        project = load_fauxware()
+        project.hook_symbol("puts", _PyOnlyPuts(), replace=True)
+        mgr = _explore_steady(project, monkeypatch)
         stats = mgr.stats
         assert stats["parallel_real_workers"] == 2
         assert stats["parallel_bounce_roundtrips"] > 0, "no bounce round-tripped in steady mode"
         assert stats["parallel_resume_reinjects"] > 0, "no resumed state re-injected in steady mode"
 
-    def test_steady_budget_yield_preserves_frontier(self, fauxware_project, monkeypatch):
+    def test_steady_budget_yield_preserves_frontier(self, pbounce_project, monkeypatch):
         """angr-ph300.14: the ``SteadyOutcome::Budget`` arm — finalize the
         session and hand control back to Python once a ``run()`` has dispatched
         its allotment — must not lose frontier across the teardown.
@@ -811,30 +816,42 @@ class TestParallelSteady:
         the same exploration as a sequence of ``max_steps=1`` explores forces a
         budget yield + ``finalize_steady_session`` + re-creation on *every*
         step, which is exactly where a dropped resident frontier would hide.
+
+        Driven on the 8-leaf synthetic, not fauxware (angr-z8ovo): workers only
+        report on a terminal, so the budget is checked first when a leaf lands,
+        and on fauxware both finds are usually in by then, which leaves no
+        frontier for the yield to lose.
         """
         monkeypatch.setenv("RUST_PARALLEL_WORKERS", "2")
         monkeypatch.setenv("RUST_PARALLEL_STEADY", "1")
-        mgr = RustExplorationManager(fauxware_project, [fauxware_project.factory.entry_state()])
+        target = pbounce_project.loader.find_symbol("reach_target").rebased_addr
+        mgr = RustExplorationManager(pbounce_project, [_pbounce_state(pbounce_project)])
         assert mgr.stats["parallel_real_workers"] == 2
 
-        calls = 0
-        for _ in range(200):
-            calls += 1
+        yields_with_frontier = 0
+        for _ in range(500):
+            yields_before = mgr.stats["parallel_steady_budget_yields"]
             # max_steps=1 keeps `until`/techniques out of the picture, so the
             # driver leaves frontier residency ON and the budget arm is the only
             # way out of the pump while work remains.
-            mgr.explore(find=FAUXWARE_ACCEPTED_ADDR, num_find=2, max_steps=1)
-            if len(mgr.found) >= 2 or not mgr.active:
+            mgr.explore(find=target, num_find=None, max_steps=1)
+            if not mgr.active:
                 break
+            if mgr.stats["parallel_steady_budget_yields"] > yields_before:
+                yields_with_frontier += 1
+                if yields_with_frontier >= 3:
+                    break
+        assert yields_with_frontier > 0, "no SteadyOutcome::Budget yield left a live frontier behind"
 
-        assert calls > 1, "exploration finished in one budgeted step — the Budget arm was never exercised"
-        assert mgr.stats["parallel_steady_budget_yields"] > 0, (
-            "no SteadyOutcome::Budget yield recorded — the pump exited some other way"
+        # On a loaded box a budgeted call makes little headway, so drain the
+        # rest unbounded: the leaf count still proves the yields kept every path.
+        mgr.explore(find=target, num_find=None)
+        found = list(mgr.found)
+        assert len(list(mgr.errored)) == 0, f"errored: {list(mgr.errored)}"
+        assert len(found) == len(_FEASIBLE_LEAVES), (
+            f"found {len(found)} leaves across budget yields, expected {len(_FEASIBLE_LEAVES)}"
         )
-        assert _path_set(mgr) == {
-            (FAUXWARE_ACCEPTED_ADDR, True),
-            (FAUXWARE_ACCEPTED_ADDR, False),
-        }, f"found set diverged across budget yields: {_path_set(mgr)}"
+        assert {s.addr for s in found} == {target}
 
     def test_steady_path_set_stable_across_runs(self, fauxware_project, monkeypatch):
         run_a = _path_set(_explore_steady(fauxware_project, monkeypatch))
