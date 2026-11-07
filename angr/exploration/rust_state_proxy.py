@@ -2802,6 +2802,7 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
 
         haystack_size = max_search + needle_len - 1
         haystack_ast = self._mgr.get_state_memory_ast(self._state_id, addr, haystack_size)
+        fault = None
         if haystack_ast is None:
             # angr-ric3: the wide load fails on mixed symbolic+concrete or
             # multi-page ranges (Rust ``state.memory_load`` returns Err when
@@ -2814,12 +2815,24 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             # an all-zero haystack and match the needle at offset 0 whenever
             # the first byte equals 0, returning the wrong answer for
             # symbolic-buffer strlen/strchr/memchr callers.
+            #
+            # Each byte goes through ``_load``, so a byte Rust lacks reads the
+            # pre-swap Python memory or takes the unmapped path exactly as
+            # ``load`` does (angr-vmi2l.269). A STRICT_PAGE_ACCESS segfault
+            # truncates the haystack there and is re-raised only if no match
+            # lands before it: SmartFindMixin loads chunk by chunk and stops at
+            # a concrete match, so it faults only when the scan reaches the page.
+            from angr.errors import SimSegfaultException
+
             byte_asts = []
             for i in range(haystack_size):
-                b = self._mgr.get_state_memory_ast(self._state_id, addr + i, 1)
-                if b is None:
-                    b = claripy.BVV(0, 8)
-                byte_asts.append(b)
+                try:
+                    byte_asts.append(self._load(addr + i, 1, "Iend_LE"))
+                except SimSegfaultException as exc:
+                    fault = exc
+                    break
+            if len(byte_asts) < needle_len:
+                raise fault
             haystack_ast = claripy.Concat(*reversed(byte_asts))
 
         # Layout: Rust stores byte i at bit positions [i*8 : i*8+7] (LSB-first
@@ -2853,6 +2866,8 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
             if hasattr(eq, "is_true") and eq.is_true():
                 break
 
+        if fault is not None and not (cases and hasattr(cases[-1][0], "is_true") and cases[-1][0].is_true()):
+            raise fault
         if not match_indices:
             return default_bv, [], []
 

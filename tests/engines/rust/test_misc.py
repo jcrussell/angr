@@ -2138,6 +2138,63 @@ class TestProxyWriteCounters:
         assert value.concrete
         assert value.concrete_value == 0
 
+    def _find_proxy_with_fallback(self, project, state, fallback_writes, fallback_options=frozenset()):
+        """A ``RustMemoryProxy`` whose fallback Python memory holds
+        *fallback_writes* (``{addr: bytes}``) that the Rust state never saw.
+
+        Returns the fallback state too: its memory holds only a weakref to it.
+        """
+        from angr.exploration.rust_state_proxy import RustMemoryProxy
+
+        mgr = RustExplorationManager(project, [state])
+        mgr.run(max_steps=1)
+        state_id = next(iter(mgr._rust_mgr.get_state_ids("active")))
+        fallback = project.factory.blank_state(add_options=set(fallback_options))
+        for addr, data in fallback_writes.items():
+            fallback.memory.map_region(addr - addr % 0x1000, 0x1000, 7)
+            fallback.memory.store(addr, data)
+        proxy = RustMemoryProxy(mgr._rust_mgr, state_id, project.arch, python_mgr=mgr, fallback_memory=fallback.memory)
+        return proxy, fallback
+
+    def test_memory_proxy_find_reads_a_fallback_only_string_as_load_does(self, fauxware_project):
+        """``find`` reads a byte Rust lacks the way ``load`` does: from the
+        pre-swap Python memory (angr-vmi2l.269). It used to read zeros, so a
+        bounced strlen of a setup-time string reported length 0.
+        """
+        addr = 0x44444440
+        proxy, _fallback = self._find_proxy_with_fallback(
+            fauxware_project, fauxware_project.factory.entry_state(), {addr: b"abc\x00"}
+        )
+
+        assert proxy.load(addr, 4).concrete_value == int.from_bytes(b"abc\x00", "big")
+        result, constraints, indices = proxy.find(addr, b"\x00", 16)
+        assert result.concrete_value == addr + 3
+        assert indices == [3]
+        assert constraints == []
+
+    def test_memory_proxy_find_faults_only_when_the_scan_reaches_an_unmapped_page(self, fauxware_project):
+        """Under STRICT_PAGE_ACCESS ``find`` raises the unmapped segfault
+        ``load`` raises, but only if no match lands before the unmapped page,
+        as SmartFindMixin's chunked scan does (angr-vmi2l.269).
+        """
+        from angr.errors import SimSegfaultException
+
+        tail = 0x44444FFC
+        state = fauxware_project.factory.entry_state(add_options={angr.options.STRICT_PAGE_ACCESS})
+        proxy, _fallback = self._find_proxy_with_fallback(
+            fauxware_project, state, {tail: b"ab\x00\x00"}, {angr.options.STRICT_PAGE_ACCESS}
+        )
+
+        result, _, indices = proxy.find(tail, b"\x00", 64)
+        assert result.concrete_value == tail + 2
+        assert indices == [2]
+
+        with pytest.raises(SimSegfaultException) as exc:
+            proxy.find(tail, b"Z", 64)
+        assert exc.value.addr == 0x44445000
+        with pytest.raises(SimSegfaultException):
+            proxy.find(0x55555000, b"\x00", 16)
+
     def test_solver_proxy_add_bumps_counter(self, fauxware_project):
         """``RustSolverProxyPlugin.add`` increments ``_stats_proxy_solver_adds``
         by the number of (non-tautology) constraints accepted. Tautologies
