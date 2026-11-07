@@ -1,7 +1,7 @@
 //! Symbolic memory system for the VEX execution engine.
 //!
 //! This module provides a paged memory model with:
-//! - O(1) forking via copy-on-write (using Grudge's RustPage)
+//! - O(1) forking via copy-on-write (an `im::OrdMap` of [`MemoryPage`]s)
 //! - Mixed concrete/symbolic value storage
 //! - Efficient symbolic address handling
 //!
@@ -934,12 +934,10 @@ impl SymbolicMemory {
         }
     }
 
-    // ==================== UNIFIED SYMBOLIC MEMORY OPERATIONS ====================
-    // These methods handle all symbolic memory operations entirely in Rust,
-    // eliminating the need for Python callbacks that were previously broken.
-    // See memory/concretize_glue.rs for check_candidate_pages and
-    // prepare_strided_region. See memory/load.rs for load_*/load_symbolic_unified
-    // and memory/store.rs for store_*/store_symbolic_unified.
+    // The load and store entry points live in memory/load.rs and
+    // memory/store.rs (their module docs hold the variant matrices);
+    // check_candidate_pages and prepare_strided_region live in
+    // memory/concretize_glue.rs.
 
     /// Fork the memory (O(1) via CoW).
     pub fn fork(&self) -> Self {
@@ -1353,21 +1351,17 @@ impl SymbolicMemory {
         minted
     }
 
-    /// Auto-map a zero page for an unmapped address in a lazy region.
+    /// Map a fresh RWX page with no host bytes at `addr`'s page when that
+    /// page is unmapped and inside a lazy region. Returns true if it mapped
+    /// one.
     ///
-    /// # DEPRECATION WARNING
-    ///
-    /// This function is deprecated for use in interpreter callbacks. Creating
-    /// speculative zero pages causes state divergence when Python has actual
-    /// data (from backers like file contents or initialized sections). Use
-    /// this function only for internal Rust memory operations where Python
-    /// state is not involved.
-    ///
-    /// For interpreter callbacks that need memory, prefer falling back to
-    /// the Python callback which can provide correct backer data.
-    ///
-    /// This creates a speculative zero page that can be validated later
-    /// against Python state. Returns true if a page was created.
+    /// The page holds zeros under ZERO_FILL_UNCONSTRAINED_MEMORY and is
+    /// uninitialized otherwise, so a later load mints a filler for its
+    /// bytes. Nothing checks it against the host afterwards: a page the host
+    /// backs (file contents, initialized sections) must be fetched, not
+    /// mapped here, so only a caller that knows the host holds no bytes for
+    /// the page (`store_concrete_automap_internal`, the interpreter's store
+    /// of a page the host has no bytes for) may call this.
     pub fn auto_map_zero_page(&mut self, addr: impl Into<Address>) -> bool {
         let page_num = addr.into().page_num();
 

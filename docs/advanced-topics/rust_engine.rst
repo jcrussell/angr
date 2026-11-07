@@ -1725,12 +1725,17 @@ vs. Python.
        gets concrete zeros instead.
    * - ``SYMBOL_FILL_UNCONSTRAINED_MEMORY``
      - Force symbolic fill on uninitialized memory reads.
-     - **Matches by default.** Rust's ``load_concrete_lazy``
-       (``native/angr-symex-core/src/memory/load.rs::load_concrete_lazy``) returns a fresh
-       ``unc_mem_*`` symbolic BVS when ``zero_fill_unconstrained`` is
-       unset — i.e., symbolic-fill is already Rust's default for memory.
-       The option is silently accepted but has no effect because Rust
-       was already doing what it asks for.
+     - **Matches by default.** Unless ``zero_fill_unconstrained`` is set
+       (``ZERO_FILL_UNCONSTRAINED_MEMORY``), Rust fills memory nobody
+       wrote with fresh symbols: ``SymbolicMemory::fill_uninit`` mints a
+       ``mem_<addr>_rs<id>_<bits>`` filler (``mem_filler_name``) over each
+       never-written run a concrete load reads, ``unmapped_leaf_filler``
+       does the same for an ITE leaf on a page neither side holds, and
+       ``unconstrained_read_value`` returns a
+       ``symbolic_read_unconstrained_N`` symbol for an
+       ``AVOID_MULTIVALUED_READS`` read. Symbolic fill is already Rust's
+       default for memory, so the option is silently accepted and has no
+       effect.
    * - ``TRACK_MEMORY_ACTIONS``, ``TRACK_REGISTER_ACTIONS``,
        ``TRACK_TMP_ACTIONS``, ``TRACK_JMP_ACTIONS``,
        ``TRACK_OP_ACTIONS``

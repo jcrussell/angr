@@ -655,14 +655,17 @@ impl SymbolicMemory {
         }
     }
 
-    /// Unified symbolic load that handles all concretization results in Rust.
-    ///
-    /// This method replaces the Python fallback for symbolic memory loads.
-    /// It handles all cases:
-    /// - Single address: direct load
-    /// - Multiple addresses: build balanced ITE tree over every candidate
-    /// - Strided access: build balanced ITE tree
-    /// - Failed or too-large concretization: return error
+    /// Load `size` bytes at a possibly symbolic `addr`, concretizing it in
+    /// read mode:
+    /// - Concrete address: `load_concrete_lazy`, no concretization
+    /// - AVOID_MULTIVALUED_READS on a multi-valued address:
+    ///   `unconstrained_read_value`, no concretization
+    /// - Single address: `load_concrete_lazy`
+    /// - Multiple addresses: a balanced ITE tree over every candidate, plus
+    ///   the address-disjunction constraint
+    /// - Strided access: a balanced ITE tree over the stride
+    /// - `TooLarge` / `Failed`: a `SymbolicAddress` error, for the caller
+    ///   to hand to the Python memory model
     ///
     /// No page is auto-mapped. A missing candidate page in a lazy region
     /// returns `UnmappedPageInRegion` for the caller to fetch and retry;

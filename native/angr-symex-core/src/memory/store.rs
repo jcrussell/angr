@@ -476,20 +476,24 @@ impl SymbolicMemory {
         Ok(())
     }
 
-    /// Unified symbolic store that handles all concretization results in Rust.
+    /// Store `value` at a possibly symbolic `addr`, concretizing it in write
+    /// mode:
+    /// - Concrete address or a `Single` result: `store_concrete_lazy`
+    /// - AVOID_MULTIVALUED_WRITES on a multi-valued address: the store is
+    ///   dropped and `Ok(None)` returned
+    /// - `Multiple` / `Strided`: Multi cells on every candidate through
+    ///   `install_multi_for_candidates_safe` (no ITE is folded at store
+    ///   time; `assemble_load_with_multi` builds it on a later load), plus
+    ///   the address-disjunction constraint for `Multiple`
+    /// - `TooLarge` / `Failed`: a `SymbolicAddress` error, for the caller
+    ///   to hand to the Python memory model
     ///
-    /// This method replaces the Python fallback for symbolic memory stores.
-    /// It handles all cases by performing conditional stores for each candidate address:
-    /// `mem[candidate] = If(addr == candidate, new_value, mem[candidate])`
-    ///
-    /// # Arguments
-    /// * `addr` - The symbolic address to store to
-    /// * `value` - The value to store
-    /// * `ctx` - The solver context
-    /// * `concretizer` - The address concretizer
+    /// No page is auto-mapped: a missing candidate page surfaces as
+    /// `UnmappedPageInRegion` or `Unmapped` before anything is written.
     ///
     /// # Returns
-    /// Ok(()) on success, or an error if storing fails.
+    /// The concretization result the store used (`Single` for a concrete
+    /// address), or `None` when AVOID_MULTIVALUED_WRITES dropped it.
     pub fn store_symbolic_unified(
         &mut self,
         addr: RustBV,
@@ -872,18 +876,17 @@ impl SymbolicMemory {
         self.install_multi_for_candidates(addr_expr, value, candidates)
     }
 
-    /// Lazy variant of `store_symbolic_unified`. After Phase 2 (angr-qh5u)
-    /// the default `store_symbolic_unified` also installs Multi cells for
-    /// Multiple / Strided, so this is now an alias kept for the Python
-    /// `_try_multi_cell_store` wiring (Phase 1.4, angr-5zw8) and for
-    /// existing tests that monkey-patch routing. Behavior is identical to
-    /// the default unified path.
+    /// [`SymbolicMemory::store_symbolic_unified`] for an address that
+    /// carries a `MultiwriteAnnotation` on the Python side (the
+    /// `_try_multi_cell_store` wiring, angr-5zw8). It differs from the
+    /// default path in two ways:
     ///
-    /// Unlike the default path, this variant uses the bare
-    /// `install_multi_for_candidates` helper (which auto-maps unmapped
-    /// pages as zero RW), matching the original Phase 1.3 contract used
-    /// by SimProcedure-originated stores. The default path uses the
-    /// `_safe` variant which preserves Python backer data.
+    /// - It concretizes with `concretize_write_multiwrite`, which keeps the
+    ///   Range strategy even when SYMBOLIC_WRITE_ADDRESSES is off.
+    /// - It installs through the bare `install_multi_for_candidates`, which
+    ///   maps a missing candidate page as a zero RW page instead of
+    ///   returning `UnmappedPageInRegion` / `Unmapped`, so it can shadow
+    ///   host backer data the default `_safe` path would have fetched.
     pub fn store_symbolic_unified_multi(
         &mut self,
         addr: RustBV,
