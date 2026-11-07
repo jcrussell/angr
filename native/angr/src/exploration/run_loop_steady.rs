@@ -595,6 +595,32 @@ impl RustExplorationManager {
 }
 
 impl RustExplorationManager {
+    /// Route the residuals `finalize_steady_session` drained, each paired with
+    /// its `kind_map` tag and lineage root. Untagged states go back to
+    /// `STASH_ACTIVE` through [`Self::route_materialized_terminal`].
+    ///
+    /// A bounce can be among them: workers stream a bounce terminal as soon as
+    /// its step ends and cancel is task-boundary-only, so one buffered in
+    /// `up_rx` (or produced by an in-flight step) reaches the drain whenever
+    /// the pump returned early. Such a bounce is parked in
+    /// `pending_parallel_bounces`, never pushed to active (angr-vmi2l.20). A
+    /// `SyscallPython` state's pc is already past the syscall and an
+    /// `UnmodeledCall` would re-lift the external callee, so stepping either
+    /// again is wrong. The next `run()` dispatches the queue through
+    /// `process_parallel_bounce_queue`, and
+    /// [`Self::flush_parked_bounces_to_active`] replays only the kinds with a
+    /// re-enterable entry address.
+    pub(crate) fn route_steady_residuals(
+        &mut self,
+        residuals: Vec<(RustSimState, Option<MatKind>, u64)>,
+    ) {
+        let mut bounces: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
+        for (state, kind, root) in residuals {
+            self.route_materialized_terminal(state, kind, root, &mut bounces);
+        }
+        self.pending_parallel_bounces.extend(bounces);
+    }
+
     /// Finalize the live steady session (angr-nkoct): cancel it, wake every
     /// worker so it observes the cancel and drains its resident frontier
     /// upstream, route those residuals + the injector surplus back to
@@ -670,9 +696,8 @@ impl RustExplorationManager {
         // worker is parked.
         residuals.extend(sess.session.drain_residual_payloads());
 
-        // Route residuals back to STASH_ACTIVE (untagged ⇒ active successor).
         let main_ctx = z3::Context::thread_local();
-        let mut discard: Vec<(RustSimState, BounceKind, u64)> = Vec::new();
+        let mut routed: Vec<(RustSimState, Option<MatKind>, u64)> = Vec::new();
         for payload in residuals {
             let state = match payload.reattach(&main_ctx) {
                 Ok(s) => s,
@@ -696,16 +721,9 @@ impl RustExplorationManager {
                 .lock()
                 .expect("kind_map poisoned")
                 .remove(&id);
-            self.route_materialized_terminal(state, kind, root, &mut discard);
+            routed.push((state, kind, root));
         }
-        // A residual should never be a bounce (bounces materialize during the
-        // pump, not the drain); if one slips through, route it as active so
-        // nothing is lost.
-        for (state, _kind, root) in discard {
-            let id = state.state_id();
-            self.sm.set_root(id, root);
-            self.route_successor(state, true);
-        }
+        self.route_steady_residuals(routed);
 
         // Fold session accounting into the manager (counters + profiling).
         sess.parked.clear();

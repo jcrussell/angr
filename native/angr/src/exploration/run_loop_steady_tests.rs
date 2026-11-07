@@ -7,6 +7,7 @@
 use super::*;
 
 use crate::exploration::scheduler::{CancelToken, TaskOutcome};
+use crate::exploration::test_support::mgr_and_state;
 use crate::stash::STASH_ACTIVE;
 use crate::state::RustSimState;
 use crate::vex::IRSB;
@@ -384,5 +385,43 @@ fn seed_steady_session_from_active_notifies_policy_on_state_removed() {
             mgr.sm.get(STASH_ACTIVE).is_none_or(|s| s.is_empty()),
             "the drained states left STASH_ACTIVE"
         );
+    });
+}
+
+/// angr-vmi2l.20: a bounce drained by `finalize_steady_session` is parked in
+/// `pending_parallel_bounces`, not routed to `STASH_ACTIVE`. A `SyscallPython`
+/// state's pc is already past the syscall, so stepping it from active would
+/// skip the syscall. The untagged residual next to it still goes to active.
+#[test]
+fn steady_residual_bounce_is_parked_not_routed_active() {
+    Python::initialize();
+    Python::attach(|_py| {
+        let (mut mgr, bounced, bounced_id) = mgr_and_state(0x40_0002);
+        let plain = RustSimState::new("amd64").unwrap();
+        let plain_id = plain.state_id();
+        let root = 0x77;
+        let kind = MatKind::Bounce(BounceKind::SyscallPython {
+            num: Some(0),
+            jumpkind: crate::vex::ir::JumpKind::Sys_syscall,
+        });
+
+        mgr.route_steady_residuals(vec![(bounced, Some(kind), root), (plain, None, plain_id)]);
+
+        assert_eq!(
+            mgr.get_state_ids(STASH_ACTIVE),
+            vec![plain_id],
+            "only the untagged residual is active"
+        );
+        assert_eq!(mgr.pending_parallel_bounces.len(), 1, "the bounce is parked");
+        let (state, parked_kind, parked_root) = &mgr.pending_parallel_bounces[0];
+        assert_eq!(state.state_id(), bounced_id);
+        assert!(matches!(parked_kind, BounceKind::SyscallPython { num: Some(0), .. }));
+        assert_eq!(*parked_root, root, "root carried alongside the bounce");
+
+        // The explore-end flush keeps it parked: SyscallPython has no
+        // re-enterable entry address.
+        mgr.flush_parked_bounces_to_active();
+        assert_eq!(mgr.pending_parallel_bounces.len(), 1);
+        assert_eq!(mgr.get_state_ids(STASH_ACTIVE), vec![plain_id]);
     });
 }
