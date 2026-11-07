@@ -2334,19 +2334,7 @@ class RustExplorationManager(
             if _is_rust_memory_proxy(state.memory):
                 return (bytes(4096), 0, False)
             try:
-                # angr-gorvf.4.5: UltraPage side tables answer this without
-                # materializing a page-wide AST. See _fetch_page_from_ultrapage.
-                fast = self._fetch_page_from_ultrapage(state, page_addr)
-                if fast is not None:
-                    return fast
-                data = state.memory.load(page_addr, 4096, endness=state.arch.memory_endness)
-                is_symbolic = getattr(data, "symbolic", False)
-                if is_symbolic:
-                    if _DBG:
-                        l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
-                    return (bytes(4096), 0, False)
-                concrete = state.solver.eval(data).to_bytes(4096, "little")
-                return (concrete, 7, True)
+                return self._fetch_page_bytes(state, page_addr)
             except (SimError, ClaripyError):
                 # cat-(b) FALLBACK WITH LOSS: page fetch failed; return empty page
                 # with perms=0 so Rust marks it inaccessible (a load there will
@@ -2537,7 +2525,10 @@ class RustExplorationManager(
                     val = claripy.BVV(int_val, len(data) * 8)
                 else:
                     val = claripy.BVV(data, 64)
-                state.memory.store(addr, val, endness="Iend_LE")
+                # Rust buffers a store as its value's little-endian bytes
+                # (`bv_to_bytes`) and its own memory applies the arch endness,
+                # so this store must too (angr-vmi2l.234).
+                state.memory.store(addr, val, endness=state.arch.memory_endness)
             except (SimError, ClaripyError) as e:
                 # cat-(c) WRONG-ANSWER RISK: batch memory store partially failed;
                 # some addresses keep stale data. Logs at debug; promote upstream
@@ -2622,6 +2613,35 @@ class RustExplorationManager(
             return (bytes(4096), 0, False)
         return (bytes(concrete_data), 7, True)
 
+    def _fetch_page_bytes(self, state, page_addr: int) -> tuple:
+        """The ``(data, perms, is_mapped)`` triple for one page of ``state``.
+
+        Shared by ``_cb_fetch_page`` and ``_cb_batch_fetch_pages``; their
+        callers own the error handling. ``data`` is the page in memory order,
+        so the load is ``Iend_LE`` whatever the arch: only then do the
+        evaluated int's little-endian bytes come out in address order. An
+        arch-endness load hands a big-endian page to Rust reversed end to end
+        (angr-vmi2l.234).
+        """
+        # angr-gorvf.4.5: UltraPage side tables answer this without
+        # materializing a page-wide AST. See _fetch_page_from_ultrapage.
+        fast = self._fetch_page_from_ultrapage(state, page_addr)
+        if fast is not None:
+            return fast
+        data = state.memory.load(page_addr, 4096, endness="Iend_LE")
+        if getattr(data, "symbolic", False):
+            # angr-gorvf.4.3: a symbolic page is DECLINED (is_mapped=False)
+            # — Rust keeps serving it through the per-load memory_load
+            # callback, which preserves the AST. Concretizing it here would be
+            # pure waste: a `solver.eval` of a 32768-bit symbolic AST (a full
+            # Z3 solve; nearly all of the callback GIL on
+            # google2016_unbreakable_1) whose result `fetch_pages_batch` then
+            # throws away, since it skips every !is_mapped entry.
+            if _DBG:
+                l.debug(f"fetch_page 0x{page_addr:x}: has symbolic data, declining")
+            return (bytes(4096), 0, False)
+        return (state.solver.eval(data).to_bytes(4096, "little"), 7, True)
+
     def _cb_batch_fetch_pages(self, page_addrs: list) -> list:
         state = self._get_callback_state() or self._get_default_state()
         if state is None:
@@ -2638,24 +2658,7 @@ class RustExplorationManager(
         results = []
         for page_addr in page_addrs:
             try:
-                fast = self._fetch_page_from_ultrapage(state, page_addr)
-                if fast is not None:
-                    results.append(fast)
-                    continue
-                data = state.memory.load(page_addr, 4096, endness="Iend_LE")
-                if getattr(data, "symbolic", False):
-                    # angr-gorvf.4.3: a symbolic page is DECLINED (is_mapped=False)
-                    # — Rust keeps serving it through the per-load memory_load
-                    # callback, which preserves the AST. Concretizing it here was
-                    # pure waste: a `solver.eval` of a 32768-bit symbolic AST (a
-                    # full Z3 solve; nearly all of the callback GIL on
-                    # google2016_unbreakable_1) whose result was then thrown away
-                    # by `fetch_pages_batch`, which skips every !is_mapped entry.
-                    # `_cb_fetch_page` already declined without evaluating.
-                    results.append((bytes(4096), 0, False))
-                else:
-                    concrete = state.solver.eval(data).to_bytes(4096, "little")
-                    results.append((concrete, 7, True))
+                results.append(self._fetch_page_bytes(state, page_addr))
             except (SimError, ClaripyError) as e:
                 # cat-(b) FALLBACK WITH LOSS: batch page fetch partial failure.
                 # Decline (is_mapped=False) so Rust marks the page inaccessible

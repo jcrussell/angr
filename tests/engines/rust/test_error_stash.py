@@ -1103,6 +1103,32 @@ class TestErrorRecovery:
             (b"\xaa" * 4096, 7, True),
         ]
 
+    def test_page_callbacks_keep_memory_order_on_a_big_endian_arch(self):
+        """angr-vmi2l.234: a fetched page is memory-order bytes on every arch,
+        and a batched store's payload is its value's little-endian bytes. On
+        MIPS32 (big-endian) the single-page fetch loaded with the arch endness,
+        so it handed Rust the page reversed end to end, and the store batch
+        wrote each value byte-swapped."""
+        shellcode = bytes.fromhex("03e00008")  # jr $ra
+        proj = angr.load_shellcode(shellcode, arch="MIPS32", load_address=0x1000)
+        assert proj.arch.memory_endness == "Iend_BE"
+        state = proj.factory.blank_state(addr=0x1000)
+        mgr = RustExplorationManager(proj, [state])
+
+        page = bytes(range(256)) * 16
+        state.memory.store(0x3000, page, inspect=False, disable_actions=True)
+        # Force the load-based path that a non-UltraPage backend takes.
+        mgr._fetch_page_from_ultrapage = lambda *a, **kw: None
+        self._put_state_in_default_cache(mgr, state)
+
+        assert mgr._cb_fetch_page(0x3000) == (page, 7, True)
+        assert mgr._cb_batch_fetch_pages([0x3000]) == [(page, 7, True)]
+
+        mgr._set_callback_state(state)
+        mgr._cb_memory_store_batch([(0x4000, (0x11223344).to_bytes(4, "little"))])
+        stored = state.memory.load(0x4000, 4, endness="Iend_LE")
+        assert state.solver.eval(stored).to_bytes(4, "little") == bytes.fromhex("11223344")
+
     def test_cb_fetch_page_swallows_sim_memory_error(self):
         """SimMemoryError from state.memory.load() must keep returning empty page."""
         from angr.errors import SimMemoryError
