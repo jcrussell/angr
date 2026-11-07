@@ -7429,12 +7429,35 @@ class RustExplorationManager(
             "project.factory.simgr(...), whose copy() works on the Rust backend."
         )
 
-    def _merge_native(self, stash: str, state_ids: list[int]) -> list[int] | None:
-        """Merge same-pc native states in-Rust, no export round trip (M3-4).
+    def _native_merge_key(self, state_id: int) -> tuple | None:
+        """Upstream's ``SimulationManager._merge_key`` read from Rust, or None.
 
-        Groups ``state_ids`` by program counter (the default ``merge_key``,
-        ``s.addr``) using the lightweight ``get_state_pc_by_id`` accessor, then
-        calls ``merge_states`` per multi-member group. The Rust ``merge_states``
+        The pc, the call stack's function addresses and the set of open fds,
+        so two states at one pc under different callers or fd tables stay
+        apart (angr-vmi2l.240). Rust's root frame and closed-fd tombstones
+        are dropped on every state alike, so equal keys mean equal upstream
+        keys. None (a symbolic pc, or a lookup that failed) sends every state
+        to the export path, which applies upstream's key itself.
+        """
+        pc = self._rust_mgr.get_state_pc_by_id(state_id)
+        if pc is None:
+            return None
+        try:
+            frames = self._rust_mgr.get_state_call_stack(state_id)
+            fds = self._rust_mgr.get_state_open_fds(state_id)
+        except (RuntimeError, KeyError) as e:
+            # cat-(a) EXPECTED CONTROL FLOW: the export path groups this state
+            # on the same key.
+            l.debug("native merge key for state %d unavailable: %s", state_id, e)
+            return None
+        return pc, tuple(frame[1] for frame in frames), frozenset(info[0] for info in fds if info[5])
+
+    def _merge_native(self, stash: str, state_ids: list[int]) -> list[int] | None:
+        """Merge native states in-Rust, no export round trip (M3-4).
+
+        Groups ``state_ids`` on ``_native_merge_key``, Rust's reading of
+        upstream's default ``SimulationManager._merge_key`` (angr-vmi2l.240),
+        then calls ``merge_states`` per multi-member group. The Rust ``merge_states``
         forks + merges the source states and pushes the result to ``stash`` but
         does NOT remove the sources, so we drop them afterwards (matching the
         Python path's ``_merge_drop`` dance).
@@ -7451,16 +7474,15 @@ class RustExplorationManager(
 
         Returns:
             The ids of the groups left for the Python export path (empty when
-            the native path handled every group), or None if a pc lookup
+            the native path handled every group), or None if a key lookup
             failed and the caller should merge every state in Python.
         """
-        # Group by pc; a missing pc means we cannot group natively -> fall back.
-        groups: dict[int, list[int]] = {}
+        groups: dict[tuple, list[int]] = {}
         for sid in state_ids:
-            pc = self._rust_mgr.get_state_pc_by_id(sid)
-            if pc is None:
+            key = self._native_merge_key(sid)
+            if key is None:
                 return None
-            groups.setdefault(pc, []).append(sid)
+            groups.setdefault(key, []).append(sid)
 
         merged_any = False
         left_for_python: list[int] = []
@@ -7494,15 +7516,17 @@ class RustExplorationManager(
                 self._rust_mgr.clear_stash("_merge_drop")
         return left_for_python
 
-    def merge(
-        self, stash: str = "active", merge_func=None, merge_key=None, prune=True, **kwargs
-    ) -> RustExplorationManager:
-        """Merge states in a stash.
+    def merge(self, merge_func=None, merge_key=None, stash: str = "active", prune=True) -> RustExplorationManager:
+        """Merge states in a stash, with ``SimulationManager.merge``'s signature.
 
-        Exports states to Python, performs merge via claripy, then replaces
-        the stash with merged states. Falls back to keeping all states
-        unmerged if merge fails.
+        ``prune`` prunes ``stash`` first, and the default ``merge_key`` is
+        upstream's ``_merge_key`` (pc, call-stack function addresses, open
+        fds), read natively by ``_native_merge_key`` (angr-vmi2l.240). Groups
+        the native merge cannot take are exported, merged in Python, and
+        re-imported. A group whose merge fails stays unmerged.
         """
+        if prune:
+            self.prune(from_stash=stash)
         state_ids = list(self._rust_mgr.get_state_ids(stash))
         if len(state_ids) <= 1:
             return self
@@ -7556,14 +7580,22 @@ class RustExplorationManager(
             if len(py_states) <= 1:
                 return self
 
-            # Group by merge key (default: PC)
             if merge_key is None:
-                merge_key = lambda s: s.addr
+                from angr.sim_manager import SimulationManager
 
-            groups = {}
+                merge_key = SimulationManager._merge_key
+
+            # Grouped by equality, as upstream does: its default key holds a
+            # list and a set, so it is not hashable.
+            groups: list[tuple[object, list]] = []
             for s in py_states:
                 key = merge_key(s)
-                groups.setdefault(key, []).append(s)
+                for group_key, members in groups:
+                    if group_key == key:
+                        members.append(s)
+                        break
+                else:
+                    groups.append((key, [s]))
 
             # Each entry pairs a state to re-add with the set of symbolic-file
             # paths its source lineage(s) demoted, so the re-add can re-apply
@@ -7578,7 +7610,7 @@ class RustExplorationManager(
                         paths.update(demoted_by_sid.get(sid, ()))
                 return paths
 
-            for key, group in groups.items():
+            for key, group in groups:
                 group_demoted = _group_demoted(group)
                 if len(group) <= 1:
                     # Unmerged single state keeps its own demoted paths.
