@@ -1150,7 +1150,10 @@ class TestRustExplorationPython:
         assert len(answers[0]) == 1
 
     def test_split_takes_upstream_kwargs_like_python(self, fauxware_project):
-        """split() has SimulationManager.split's signature: from_stash/to_stash, rankers, DROP (angr-mx00p.132.35)."""
+        """split() has SimulationManager.split's signature: from_stash/to_stash, rankers, DROP (angr-mx00p.132.35).
+
+        The positional stash_splitter and stash_ranker cases are angr-vmi2l.237.
+        """
 
         def states():
             out = []
@@ -1174,9 +1177,12 @@ class TestRustExplorationPython:
             ranked = [rbx(s) for s in mgr.active]
             mgr.split(stash_splitter=lambda ss: (ss[1:], ss[:1]), from_stash="active", to_stash="rest")
             splitter = ([rbx(s) for s in mgr.active], [rbx(s) for s in mgr.rest])
-            results.append((plain, ranked, splitter, len(mgr.stashes["_DROP"])))
+            mgr.split(lambda ss: (ss[:0], ss), from_stash="rest", to_stash="active")
+            mgr.split(stash_ranker=lambda ss: sorted(ss, key=rbx, reverse=True), limit=2, to_stash="low")
+            stash_ranked = ([rbx(s) for s in mgr.active], [rbx(s) for s in mgr.low])
+            results.append((plain, ranked, splitter, stash_ranked, len(mgr.stashes["_DROP"])))
         assert results[0] == results[1]
-        assert results[0] == (([5, 2, 4, 1], [3]), [1, 2], ([2], [3, 1]), 0)
+        assert results[0] == (([5, 2, 4, 1], [3]), [1, 2], ([2], [3, 1]), ([3, 2], [1]), 0)
 
     def test_seed_state_breakpoints_fire_like_python(self):
         """BPs set on the seed state before simgr() fire, and read state.inspect.attrs (angr-mx00p.132.52)."""
