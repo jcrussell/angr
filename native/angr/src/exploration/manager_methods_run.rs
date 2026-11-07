@@ -52,9 +52,10 @@ impl RustExplorationManager {
 
     /// Resume after a SimProcedure callback. See `resume::_resume_after_simprocedure` for the body.
     ///
-    /// `executed_block` is `(block address, exit jumpkind)` when the callback
-    /// was a Python VEX fallback, so the history records that block instead
-    /// of a procedure's `Ijk_Ret` (see `resume::apply_callback_resume`).
+    /// `executed_block` is `(step address, exit jumpkind)` for the step
+    /// Python ran: a VEX-fallback block, or a hook whose successor left
+    /// through `Ijk_NoHook` / `Ijk_Boring` / `Ijk_Call`. `None` records a
+    /// procedure's `Ijk_Ret` (see `resume::apply_callback_resume`).
     #[pyo3(signature = (state_id, new_pc, register_changes=None, memory_changes=None, new_constraints=None, executed_block=None))]
     #[angr_symex_macros::steady_guard_exempt(
         reason = "resumes one state_id-scoped pending callback; drives the run loop, does not \

@@ -160,6 +160,10 @@ impl HistoryEntry {
     /// A no-return procedure ended the state: Python's `SimProcedure.exit`
     /// step, whose `Ijk_Exit` no VEX exit carries (angr-mx00p.132.8).
     pub const JK_EXIT: u8 = 5;
+    /// A zero-length user hook ran: angr's `UserHook` leaves through
+    /// `Ijk_NoHook`, which tells the next step not to fire the hook again.
+    /// Like `JK_EXIT`, no VEX exit carries it (angr-vmi2l.21).
+    pub const JK_NOHOOK: u8 = 6;
 
     /// Create from JumpKind enum.
     pub fn jumpkind_from_vex(jk: &angr_vex::JumpKind) -> u8 {
@@ -171,6 +175,17 @@ impl HistoryEntry {
             Self::JK_SYSCALL
         } else {
             Self::JK_BORING
+        }
+    }
+
+    /// Parse an `Ijk_*` name from Python into the byte encoding: the
+    /// angr-only `Ijk_Exit` / `Ijk_NoHook` first, then the VEX kinds through
+    /// [`angr_vex::parse_jumpkind`].
+    pub fn jumpkind_from_str(jk: &str) -> u8 {
+        match jk {
+            "Ijk_Exit" => Self::JK_EXIT,
+            "Ijk_NoHook" => Self::JK_NOHOOK,
+            _ => Self::jumpkind_from_vex(&angr_vex::parse_jumpkind(jk)),
         }
     }
 
@@ -188,6 +203,7 @@ impl HistoryEntry {
             Self::JK_RET => JumpKind::Ret.ijk_name(),
             Self::JK_SYSCALL => JumpKind::Sys_syscall.ijk_name(),
             Self::JK_EXIT => "Ijk_Exit",
+            Self::JK_NOHOOK => "Ijk_NoHook",
             _ => "Ijk_Other",
         }
     }

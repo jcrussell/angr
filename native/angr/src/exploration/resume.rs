@@ -175,10 +175,11 @@ impl RustExplorationManager {
     /// step Python ran, then the constraints the Python side added. Returns
     /// `true` when the constraint sync left the state unsatisfiable.
     ///
-    /// `executed_block` is `(block address, exit jumpkind)` when Python's VEX
-    /// engine ran a block for the interpreter
-    /// ([`RustSimState::finish_python_block`]); `None` records a procedure's
-    /// return ([`RustSimState::return_from_procedure`]).
+    /// `executed_block` is `(step address, exit jumpkind)` for the step Python
+    /// ran: a block its VEX engine ran for the interpreter, or a hook or
+    /// procedure leaving through its successor's jumpkind
+    /// ([`RustSimState::finish_python_block`]). `None` records a procedure's
+    /// `Ijk_Ret` from the pc the state was parked at.
     ///
     /// Shared by the pending state's own resume
     /// ([`Self::_resume_after_simprocedure`]) and every extra successor of the
@@ -206,17 +207,21 @@ impl RustExplorationManager {
         if let Some(mem_changes) = memory_changes {
             changes.memory_writes = mem_changes;
         }
+        // The entry's source is the pc Python stepped from (the hook or block
+        // address), read before `apply_changes` moves it to `new_pc`
+        // (angr-vmi2l.21).
+        let step_addr = state.pc();
         state.apply_changes(&changes);
         match executed_block {
             Some((block_addr, jumpkind)) => state.finish_python_block(
                 block_addr,
-                crate::state::HistoryEntry::jumpkind_from_vex(&crate::vex::parse_jumpkind(
-                    jumpkind,
-                )),
+                crate::state::HistoryEntry::jumpkind_from_str(jumpkind),
                 new_pc,
             ),
             // The procedure ran in Python: no Ijk_Ret popped its frame here.
-            None => state.return_from_procedure(new_pc),
+            None => {
+                state.finish_python_block(step_addr, crate::state::HistoryEntry::JK_RET, new_pc)
+            }
         }
 
         // Sync the constraints the SimProcedure added on the Python side

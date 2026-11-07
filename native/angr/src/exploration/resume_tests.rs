@@ -410,3 +410,50 @@ fn forked_successor_routes_from_its_own_fork() {
         );
     });
 }
+
+/// The history entry a resume records (angr-vmi2l.21): a procedure return
+/// comes from the pc the state was parked at, not the new pc, and a
+/// zero-length hook passed as `(addr, "Ijk_NoHook")` records `Ijk_NoHook`
+/// instead of a procedure's `Ijk_Ret`.
+#[test]
+fn resume_records_the_parked_pc_and_the_passed_jumpkind() {
+    Python::initialize();
+    const HOOK: u64 = 0x40_0004;
+    let reason = || CallbackReason::SimProcedure {
+        addr: HOOK,
+        name: "hook".to_string(),
+        num_args: 0,
+        return_addr: 0,
+    };
+    let park_at_hook = |mgr: &mut RustExplorationManager| {
+        let mut state = RustSimState::new("amd64").expect("state");
+        state.set_pc(HOOK);
+        park(mgr, PendingCallback::lightweight(state, reason()))
+    };
+    let last_entry = |mgr: &RustExplorationManager| {
+        let state = mgr
+            .sm
+            .stashes()
+            .get(STASH_ACTIVE)
+            .and_then(|d| d.front())
+            .expect("resumed state is active");
+        let e = state.detailed_history().back().expect("history entry");
+        (e.addr, crate::state::HistoryEntry::jumpkind_str(e.jumpkind), e.jump_target)
+    };
+
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let sid = park_at_hook(&mut mgr);
+    Python::attach(|py| {
+        mgr._resume_after_simprocedure(py, sid, 0x40_1004, None, None, None, None)
+            .expect("resume procedure");
+    });
+    assert_eq!(last_entry(&mgr), (HOOK, "Ijk_Ret", 0x40_1004));
+
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    let sid = park_at_hook(&mut mgr);
+    Python::attach(|py| {
+        mgr._resume_after_simprocedure(py, sid, HOOK, None, None, None, Some((HOOK, "Ijk_NoHook")))
+            .expect("resume zero-length hook");
+    });
+    assert_eq!(last_entry(&mgr), (HOOK, "Ijk_NoHook", HOOK));
+}

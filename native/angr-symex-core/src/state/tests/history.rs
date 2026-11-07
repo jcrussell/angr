@@ -192,3 +192,17 @@ fn python_block_records_its_own_address_and_exit() {
     assert!(state.call_stack().is_empty());
     assert_eq!(state.block_count(), 2);
 }
+
+/// The angr-only `Ijk_NoHook` / `Ijk_Exit` names survive the Python-side
+/// parse and print back unchanged (angr-vmi2l.21): a zero-length hook's
+/// entry must export as `Ijk_NoHook`, or the exported state re-fires it.
+#[test]
+fn test_jumpkind_from_str_round_trips_angr_only_kinds() {
+    for name in ["Ijk_NoHook", "Ijk_Exit", "Ijk_Boring", "Ijk_Call", "Ijk_Ret"] {
+        assert_eq!(HistoryEntry::jumpkind_str(HistoryEntry::jumpkind_from_str(name)), name);
+    }
+    assert_eq!(
+        HistoryEntry::jumpkind_from_str("Ijk_Sys_syscall"),
+        HistoryEntry::JK_SYSCALL
+    );
+}

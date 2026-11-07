@@ -433,7 +433,14 @@ def _install_rust_history_warning(state) -> None:
 
 
 # Rust's detailed-history jumpkind codes (``HistoryEntry::jumpkind_str``).
-_HISTORY_JUMPKINDS = {0: "Ijk_Boring", 1: "Ijk_Call", 2: "Ijk_Ret", 3: "Ijk_Sys_syscall", 5: "Ijk_Exit"}
+_HISTORY_JUMPKINDS = {
+    0: "Ijk_Boring",
+    1: "Ijk_Call",
+    2: "Ijk_Ret",
+    3: "Ijk_Sys_syscall",
+    5: "Ijk_Exit",
+    6: "Ijk_NoHook",
+}
 
 
 def _history_child(parent, entry, arch) -> SimStateHistory:

@@ -895,8 +895,12 @@ class RustCallbackDispatchMixin:
                 _emit_bounce_trace(name, addr, None)
             if _DBG:
                 l.debug(f"Internal passthrough at 0x{addr:x} - continuing execution")
-            # Resume execution at this address, no SimProcedure to run
-            self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
+            # Resume execution at this address, no SimProcedure to run. The
+            # entry says Ijk_NoHook so an exported state does not re-fire the
+            # hook at addr either (angr-vmi2l.21).
+            self._rust_mgr.resume_after_simprocedure(
+                event.callback_state_id, addr, None, None, executed_block=(addr, "Ijk_NoHook")
+            )
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
@@ -916,7 +920,9 @@ class RustCallbackDispatchMixin:
             except Exception as e:
                 if _DBG:
                     l.debug(f"Could not set skip_hook_addr for stale hook 0x{addr:x}: {e}")
-            self._rust_mgr.resume_after_simprocedure(event.callback_state_id, addr, None, None)
+            self._rust_mgr.resume_after_simprocedure(
+                event.callback_state_id, addr, None, None, executed_block=(addr, "Ijk_NoHook")
+            )
             self._perf_stats.record_simprocedure_call(time.perf_counter_ns() - _sp_total_start)
             return
 
@@ -1334,11 +1340,12 @@ class RustCallbackDispatchMixin:
             event,
             skip_hook_addr=skip_hook_addr,
             resumed_id=resumed_id,
+            executed_block=self._proc_history(addr, first_succ),
         )
 
         # Additional successors are finished from their own forks.
         for succ, fork_id in extras:
-            self._add_forked_state(succ, fork_id)
+            self._add_forked_state(succ, fork_id, self._proc_history(addr, succ))
         return False
 
     def _handle_callback_no_successors(
@@ -1421,6 +1428,7 @@ class RustCallbackDispatchMixin:
         event: _ExplorationEvent,
         skip_hook_addr: int | None = None,
         resumed_id: int | None = None,
+        executed_block: tuple[int, str] | None = None,
     ):
         """Resume Rust execution with a successor state.
 
@@ -1438,6 +1446,9 @@ class RustCallbackDispatchMixin:
             resumed_id: The id the resumed state carries once routed: the
                         pending id, or the fork ``_settle_callback_successors``
                         adopted (angr-mx00p.112).
+            executed_block: The history entry to record, from
+                            :meth:`_proc_history`; ``None`` records an
+                            ``Ijk_Ret`` from the callback pc.
         """
         if resumed_id is None:
             resumed_id = event.callback_state_id
@@ -1473,7 +1484,9 @@ class RustCallbackDispatchMixin:
         self._sync_state_unlinks_to_rust(succ_state, event.callback_state_id)
 
         _sb_resume_start = time.perf_counter_ns()
-        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
+        self._rust_mgr.resume_after_simprocedure(
+            event.callback_state_id, new_pc, None, None, None, executed_block=executed_block
+        )
         self._perf_stats.add_sync_back_subphase("resume", time.perf_counter_ns() - _sb_resume_start)
 
         # Update cache for future callbacks
@@ -1526,7 +1539,10 @@ class RustCallbackDispatchMixin:
         self._sync_state_posix_fds_to_rust(state, event.callback_state_id)
         self._sync_state_unlinks_to_rust(state, event.callback_state_id)
 
-        self._rust_mgr.resume_after_simprocedure(event.callback_state_id, new_pc, None, None, None)
+        # A zero-length hook leaves through Ijk_NoHook, as angr's UserHook does.
+        self._rust_mgr.resume_after_simprocedure(
+            event.callback_state_id, new_pc, None, None, None, executed_block=(addr, "Ijk_NoHook")
+        )
         state_id = event.callback_state_id
 
         # Update cache with modified state for future callbacks
@@ -2629,6 +2645,17 @@ class RustCallbackDispatchMixin:
             self._run_callback_scoped(self._handle_python_vex_fallback_inner, event)
         finally:
             self._perf_stats.record_vex_fallback_call(time.perf_counter_ns() - _vf_total_start)
+
+    @staticmethod
+    def _proc_history(proc_addr: int, succ: angr.SimState) -> tuple[int, str]:
+        """The ``executed_block`` resume argument for a procedure successor.
+
+        The entry is the procedure at ``proc_addr`` leaving through the
+        successor's own jumpkind: ``Ijk_Ret`` for a returning SimProcedure,
+        ``Ijk_NoHook`` / ``Ijk_Boring`` for a zero-length / sized ``UserHook``,
+        ``Ijk_Call`` for a ``self.call`` continuation (angr-vmi2l.21).
+        """
+        return proc_addr, succ.history.jumpkind or "Ijk_Ret"
 
     @staticmethod
     def _vex_fallback_history(block_addr: int, succ: angr.SimState) -> tuple[int, str]:

@@ -26,7 +26,7 @@ import threading
 from angr import claripy
 from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import RustStateBinding, unscoped_binding
-from angr.exploration.rust_state_export import _LazySimStateRef, rust_stdin_read_symbols
+from angr.exploration.rust_state_export import _HISTORY_JUMPKINDS, _LazySimStateRef, rust_stdin_read_symbols
 from angr.sim_state import SimState
 from angr.state_plugins.sim_action_object import _raw_ast
 
@@ -2931,16 +2931,6 @@ class RustScratchProxy:
     stable post-block values to read.
     """
 
-    # Mirrors angr's Ijk_* string convention. Indices match the u8 values
-    # produced by RustSimState::detailed_history (native/angr-symex-core/src/state/mod.rs).
-    _JUMPKIND_NAMES = (
-        "Ijk_Boring",
-        "Ijk_Call",
-        "Ijk_Ret",
-        "Ijk_Sys_syscall",
-        "Ijk_Other",
-    )
-
     def __init__(self, rust_mgr, state_id):
         self._mgr = rust_mgr
         self._state_id = state_id
@@ -2979,9 +2969,7 @@ class RustScratchProxy:
         if not history:
             return None
         _addr, kind_u8, _target = history[-1]
-        if 0 <= kind_u8 < len(self._JUMPKIND_NAMES):
-            return self._JUMPKIND_NAMES[kind_u8]
-        return "Ijk_Other"
+        return _HISTORY_JUMPKINDS.get(kind_u8, "Ijk_Other")
 
     # SimStateScratch attributes the Rust engine doesn't persist between
     # blocks. Returning None matches how Python's plugin reads them before
