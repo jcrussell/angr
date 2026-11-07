@@ -2103,6 +2103,10 @@ the rest fire read-only (mutations are ignored).
   fires ``mem_read``, unless the guard is provably false; the guard is
   ``mem_write_condition`` / ``mem_read_condition`` (``guard == 1``), as in
   Python angr, and ``None`` for an unguarded access (angr-vmi2l.337).
+  An ``IRStmt::CAS`` writeback (``lock cmpxchg``) is Python's one guarded
+  store of the whole value (``dataHi:dataLo`` for ``cmpxchg16b``): it fires
+  the pair once over that value unless the comparison is provably false,
+  with the comparison as ``mem_write_condition`` (angr-vmi2l.175).
 * ``dirty_result`` — a ``dirty`` BP_AFTER that assigns
   ``state.inspect.dirty_result`` replaces the dirty handler's return
   value before it is concretized and handed back to the interpreter.

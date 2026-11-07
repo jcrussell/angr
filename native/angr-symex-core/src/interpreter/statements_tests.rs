@@ -568,9 +568,8 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
     interp.cache_block(0x1010, make_irsb_with_temps(0x1010, &[]));
     assert!(interp.has_cached_block(0x1010));
 
-    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let addr_bv = RustBV::concrete(0x1010, 64);
     let data_bv = RustBV::symbol("cas_data", 32);
-    let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_test_host(|cb| {
         // Bare `TestHost::default()` has no memory_store_symbolic_value, so
@@ -578,7 +577,7 @@ fn cas_store_symbolic_data_concrete_addr_invalidates_cached_block() {
         // asserted by `cas_symbolic_store_without_callback_errors_not_zero_fills`
         // below). Invalidation happens before that dispatch and still applies.
         let err = interp
-            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .cas_store_symbolic_data(cb, &addr_bv, &data_bv)
             .expect_err("symbolic CAS data with no symbolic-store callback must error");
         assert!(matches!(err, CbExecutionError::Unsupported(_)), "{err}");
     });
@@ -602,14 +601,13 @@ fn cas_symbolic_store_without_callback_errors_not_zero_fills() {
     let mut interp = new_interp(&ctx);
     interp.add_concrete_memory(0x1000, vec![0xffu8; 0x1000]);
 
-    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let addr_bv = RustBV::concrete(0x1010, 64);
     let data_bv = RustBV::symbol("cas_sym", 32);
-    let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_test_host(|cb| {
         assert!(!cb.has_memory_store_symbolic_value());
         let err = interp
-            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .cas_store_symbolic_data(cb, &addr_bv, &data_bv)
             .expect_err("symbolic store without its callback must not silently succeed");
         let msg = err.to_string();
         assert!(
@@ -639,14 +637,13 @@ fn cas_concrete_store_without_callback_buffers_bytes_only() {
     let mut interp = new_interp(&ctx);
     interp.add_concrete_memory(0x1000, vec![0u8; 0x1000]);
 
-    let addr_expr = IRExpr::Const(IRConst::U64(0x1010));
+    let addr_bv = RustBV::concrete(0x1010, 64);
     let data_bv = RustBV::concrete(0xdead_beef, 32);
-    let call_irsb = make_irsb_with_temps(0x1010, &[]);
 
     with_test_host(|cb| {
         assert!(!cb.has_memory_store_symbolic_value());
         interp
-            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb)
+            .cas_store_symbolic_data(cb, &addr_bv, &data_bv)
             .expect("a concrete CAS value needs no symbolic-store callback");
     });
 
@@ -678,21 +675,14 @@ fn cas_store_symbolic_data_symbolic_addr_invalidates_cached_block() {
     interp.cache_block(0x2010, make_irsb_with_temps(0x2010, &[]));
     assert!(interp.has_cached_block(0x2010));
 
-    // A symbolic address value, placed in temp 0 so `RdTmp(0)` evaluates to
-    // it unchanged -- IRExpr has no way to embed an arbitrary RustBV literal,
-    // so this is the standard way tests inject a specific RustBV as an
-    // expression's evaluated value. Constrain it to a single solution
-    // (0x2010, inside the cached block) so concretization is deterministic.
+    // A symbolic address constrained to a single solution (0x2010, inside
+    // the cached block) so concretization is deterministic.
     let addr_bv = RustBV::symbol("cas_sym_addr", 64);
     crate::symbolic::concretize::pin_fallback_addr(&ctx, &addr_bv, 0x2010);
-    interp.temps = vec![Some(addr_bv)];
-
-    let addr_expr = IRExpr::RdTmp(0);
     let data_bv = RustBV::symbol("cas_sym_data", 32);
-    let call_irsb = make_irsb_with_temps(0x2010, &[]);
 
     with_test_host(|cb| {
-        let res = interp.cas_store_symbolic_data(cb, &addr_expr, &data_bv, &call_irsb);
+        let res = interp.cas_store_symbolic_data(cb, &addr_bv, &data_bv);
         // No memory_store_symbolic_full callback is registered on this bare
         // TestHost::default(), so the store dispatch itself errors out --
         // but invalidation must already have happened before that point.
@@ -1328,18 +1318,17 @@ fn storeg_symbolic_guard_multiwrite_guards_every_candidate() {
 fn cas_symbolic_writeback_reads_back_for_rust_memory() {
     let ctx = SymContext::new_mock();
     let mut interp = new_interp_rust_memory(&ctx);
-    let irsb = make_irsb_with_temps(0x1000, &[]);
 
     let swap = RustBV::symbol("cas_swap", 1);
     let data_bv = swap.ite(
         &RustBV::concrete(0x5eed_0001, 32),
         &RustBV::concrete(0x0a0a_0a00, 32),
     );
-    let addr_expr = IRExpr::Const(IRConst::U64(0x4020));
+    let addr_bv = RustBV::concrete(0x4020, 64);
 
     with_proxy_callbacks(|cb| {
         interp
-            .cas_store_symbolic_data(cb, &addr_expr, &data_bv, &irsb)
+            .cas_store_symbolic_data(cb, &addr_bv, &data_bv)
             .expect("CAS symbolic writeback");
         let (in_block, flushed) = read_back(&mut interp, cb, 0x4020, 4);
         for value in [&in_block, &flushed] {

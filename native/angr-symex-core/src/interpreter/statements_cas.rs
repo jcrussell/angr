@@ -7,7 +7,7 @@
 //! `interpreter/mod.rs` — a mod.rs inner-attribute deny propagates into every
 //! child module, so it is not restated here (no file in `interpreter/` restates
 //! it). There are no `unwrap`/`expect` sites left: the all-Some/all-None DCAS
-//! validation in `execute_cas_stmt` now binds `old_hi`/`data_hi` in the arm
+//! validation in `execute_cas_stmt` now binds `old_hi` in the arm
 //! that proves them present, so the DCAS branch needs no second unwrap.
 
 use super::bv_utils::{bv_to_bytes, reject_symbolic_byte_store};
@@ -16,9 +16,8 @@ use super::*;
 /// DCAS-only state bundled together so the single-CAS path can pass `None`
 /// and the DCAS path can pass `Some(&DcasState)` through `cas_writeback` and
 /// the oldHi temp-assignment in `execute_cas_stmt`.
-pub(super) struct DcasState<'a> {
+pub(super) struct DcasState {
     addr_hi_expr: IRExpr,
-    data_hi_expr: &'a IRExpr,
     current_hi: RustBV,
     expd_hi_val: RustBV,
     data_hi_val: RustBV,
@@ -47,7 +46,7 @@ pub(super) struct CasWriteback<'s> {
     cmp: &'s RustBV,
     data_lo_val: &'s RustBV,
     current_lo: &'s RustBV,
-    dcas: Option<&'s DcasState<'s>>,
+    dcas: Option<&'s DcasState>,
 }
 
 impl<'a> VEXInterpreter<'a> {
@@ -82,7 +81,7 @@ impl<'a> VEXInterpreter<'a> {
         // point of carrying the values out of it is that the DCAS branch then
         // needs no second `unwrap` to re-derive what this match established.
         let dcas_operands = match (old_hi, expd_hi, data_hi) {
-            (Some(old_hi), Some(_), Some(data_hi)) => Some((old_hi, data_hi)),
+            (Some(old_hi), Some(_), Some(_)) => Some(old_hi),
             (None, None, None) => None,
             _ => {
                 return Err(CbExecutionError::InvalidIR(
@@ -123,13 +122,12 @@ impl<'a> VEXInterpreter<'a> {
 
         // For DCAS, also load the high half at addr + sizeof(half).
         let dcas = match dcas_operands {
-            Some((old_hi_idx, data_hi_expr)) => {
+            Some(old_hi_idx) => {
                 let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
                 let (current_hi, expd_hi_val, data_hi_val) =
                     self.cas_load_dcas_high(callbacks, &addr_hi_expr, cas, half_ty, irsb)?;
                 Some(DcasState {
                     addr_hi_expr,
-                    data_hi_expr,
                     current_hi,
                     expd_hi_val,
                     data_hi_val,
@@ -227,10 +225,16 @@ impl<'a> VEXInterpreter<'a> {
 
     /// Perform the CAS writeback. Three cases on `cmp`:
     ///   - concrete false: no store.
-    ///   - concrete true:  store `data` (reusing the original IRExpr).
+    ///   - concrete true:  store `data`.
     ///   - symbolic:       store `ITE(cmp, data, current)` — the deferred-fork
     ///     branch, where both outcomes are encoded into a single
     ///     state via ITE rather than splitting into two states.
+    ///
+    /// Python's CAS is one `StoreG` of the whole value (`dataHi:dataLo` for a
+    /// DCAS) at `addr` guarded by `cmp`, so unless `cmp` is concretely false
+    /// `mem_write` fires before and after once over that value, with `cmp` as
+    /// `mem_write_condition`, and a `mem_write_expr` override replaces it
+    /// (angr-vmi2l.175).
     pub(super) fn cas_writeback(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -244,39 +248,56 @@ impl<'a> VEXInterpreter<'a> {
             current_lo,
             dcas,
         } = wb;
-        let (addr, data_lo_expr, endness) = (cas.addr, cas.data_lo, cas.endness);
+        let decided = cmp.as_u64();
+        if decided == Some(0) {
+            return Ok(());
+        }
+        let addr_lo = self.eval_expr_with_callbacks(callbacks, cas.addr, &irsb.tyenv)?;
+        let half_bits = data_lo_val.width();
+        let mut data = match dcas {
+            Some(d) => d.data_hi_val.concat(data_lo_val),
+            None => data_lo_val.clone(),
+        };
+        let data_size = data.width().div_ceil(8) as usize;
+        if let Some(injected) = self.dispatch_mem_write_inspect(
+            callbacks,
+            &addr_lo,
+            &data,
+            data_size,
+            cas.endness,
+            Some(cmp),
+            "before",
+        ) {
+            data = injected;
+        }
 
-        match cmp.as_u64() {
-            Some(0) => Ok(()),
-            Some(_) => {
-                self.cas_dispatch_store(callbacks, addr, data_lo_expr, data_lo_val, endness, irsb)?;
-                if let Some(d) = dcas {
-                    self.cas_dispatch_store(
-                        callbacks,
-                        &d.addr_hi_expr,
-                        d.data_hi_expr,
-                        &d.data_hi_val,
-                        endness,
-                        irsb,
-                    )?;
-                }
-                Ok(())
-            }
-            None => {
-                self.cas_store_undecided(callbacks, addr, cmp, data_lo_val, current_lo, irsb)?;
-                if let Some(d) = dcas {
-                    self.cas_store_undecided(
-                        callbacks,
-                        &d.addr_hi_expr,
-                        cmp,
-                        &d.data_hi_val,
-                        &d.current_hi,
-                        irsb,
-                    )?;
-                }
-                Ok(())
+        let mut halves = vec![(addr_lo.clone(), data.extract(half_bits - 1, 0), current_lo)];
+        if let Some(d) = dcas {
+            let addr_hi = self.eval_expr_with_callbacks(callbacks, &d.addr_hi_expr, &irsb.tyenv)?;
+            halves.push((
+                addr_hi,
+                data.extract(data.width() - 1, half_bits),
+                &d.current_hi,
+            ));
+        }
+        for (addr_val, data_half, current) in halves {
+            if decided.is_some() {
+                self.cas_store_decided(callbacks, &addr_val, data_half)?;
+            } else {
+                self.cas_store_undecided(callbacks, &addr_val, cmp, &data_half, current)?;
             }
         }
+
+        self.dispatch_mem_write_inspect(
+            callbacks,
+            &addr_lo,
+            &data,
+            data_size,
+            cas.endness,
+            Some(cmp),
+            "after",
+        );
+        Ok(())
     }
 
     /// Write back one half of a CAS whose comparison `cmp` is undecided: the
@@ -287,43 +308,37 @@ impl<'a> VEXInterpreter<'a> {
     fn cas_store_undecided(
         &mut self,
         callbacks: &dyn EngineHost,
-        addr_expr: &IRExpr,
+        addr_val: &RustBV,
         cmp: &RustBV,
         data_val: &RustBV,
         current: &RustBV,
-        irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
-        let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
         let swapped = cmp.ite(data_val, current);
         if addr_val.is_symbolic() {
-            self.store_guarded_symbolic_addr(callbacks, &addr_val, cmp, data_val, &swapped, "CAS")
+            self.store_guarded_symbolic_addr(callbacks, addr_val, cmp, data_val, &swapped, "CAS")
         } else {
-            self.cas_store_symbolic_data(callbacks, addr_expr, &swapped, irsb)
+            self.cas_store_symbolic_data(callbacks, addr_val, &swapped)
         }
     }
 
-    /// Dispatch a CAS store: if the precomputed RustBV is concrete, synthesize
-    /// an IRStmt::Store that reuses the full Store path (which re-evaluates the
-    /// data IRExpr); if symbolic, route through `cas_store_symbolic_data`.
-    pub(super) fn cas_dispatch_store(
+    /// Write back one half of a CAS whose comparison held: a concrete value is
+    /// an ordinary store (`store_value`, counted in `store_stmt_count` as the
+    /// `IRStmt::Store` it replaces was), a symbolic one goes through
+    /// `cas_store_symbolic_data`.
+    fn cas_store_decided(
         &mut self,
         callbacks: &dyn EngineHost,
-        addr_expr: &IRExpr,
-        data_expr: &IRExpr,
-        data_bv: &RustBV,
-        endness: Endness,
-        irsb: &IRSB,
+        addr_val: &RustBV,
+        data_bv: RustBV,
     ) -> Result<(), CbExecutionError> {
         if data_bv.is_symbolic() {
-            self.cas_store_symbolic_data(callbacks, addr_expr, data_bv, irsb)
+            self.cas_store_symbolic_data(callbacks, addr_val, &data_bv)
         } else {
-            let store_stmt = IRStmt::Store {
-                addr: addr_expr.clone(),
-                data: data_expr.clone(),
-                endness,
-            };
-            self.execute_stmt_with_callbacks(callbacks, &store_stmt, irsb)?;
-            Ok(())
+            if self.profiling_enabled {
+                self.stats.store_stmt_count += 1;
+            }
+            let data_size = data_bv.width().div_ceil(8) as usize;
+            self.store_value(callbacks, addr_val, data_bv, data_size)
         }
     }
 
@@ -344,25 +359,23 @@ impl<'a> VEXInterpreter<'a> {
     /// `block_cache` against self-modifying `lock cmpxchg` writes.
     ///
     /// Precondition (not enforced): `data_bv` is symbolic. Both callers
-    /// uphold it — `cas_dispatch_store` sends a concrete value down the
-    /// synthesized-`IRStmt::Store` path instead, and `cas_store_undecided`
+    /// uphold it — `cas_store_decided` sends a concrete value to
+    /// `store_value` instead, and `cas_store_undecided`
     /// builds an `ite` over an unresolved comparison for a concrete address. A concrete
     /// value passed here is still handled correctly, but it takes the
     /// callback path a plain store would have taken more cheaply.
     pub(super) fn cas_store_symbolic_data(
         &mut self,
         callbacks: &dyn EngineHost,
-        addr_expr: &IRExpr,
+        addr_val: &RustBV,
         data_bv: &RustBV,
-        irsb: &IRSB,
     ) -> Result<(), CbExecutionError> {
-        let addr_val = self.eval_expr_with_callbacks(callbacks, addr_expr, &irsb.tyenv)?;
         let data_size = (data_bv.width() / 8) as usize;
         // Under `use_rust_memory` the writeback is an ordinary store: parked
         // in the pending buffers it was invisible to a later in-block load
         // and replayed over any newer direct store (angr-vmi2l.168).
         if self.use_rust_memory {
-            return self.store_value(callbacks, &addr_val, data_bv.clone(), data_size);
+            return self.store_value(callbacks, addr_val, data_bv.clone(), data_size);
         }
         if let Some(addr_concrete) = addr_val.as_u64() {
             self.invalidate_code_at_store(addr_concrete, data_size);
@@ -372,7 +385,7 @@ impl<'a> VEXInterpreter<'a> {
             } else {
                 // No `memory_store_symbolic_value` callback. Every current
                 // caller arrives with a *symbolic* `data_bv`
-                // (`cas_dispatch_store` gates on `is_symbolic`;
+                // (`cas_store_decided` gates on `is_symbolic`;
                 // `cas_store_undecided` hands in an
                 // `ite`), so this guard hard-errors rather than zero-filling
                 // memory (angr-9ke6b.19) and the buffering below is reached
@@ -397,7 +410,7 @@ impl<'a> VEXInterpreter<'a> {
             // The plain store's dispatch, so a concretized CAS lands in Rust
             // memory; the host's full store is only for the shapes Rust cannot
             // enumerate, and a proxy-backed host refuses it (angr-vmi2l.324).
-            self.handle_symbolic_store(callbacks, &addr_val, data_bv, data_size)?;
+            self.handle_symbolic_store(callbacks, addr_val, data_bv, data_size)?;
         }
         Ok(())
     }
