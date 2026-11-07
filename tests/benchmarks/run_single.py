@@ -23,7 +23,7 @@ import sys
 # this file by path (test_misc.py's TestCounterParity) has no script dir on
 # sys.path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from replay_oracle import REPLAY_ORACLES, host_can_replay, replay
+from replay_oracle import MODEL_CHOICE_ORACLES, REPLAY_ORACLES, host_can_replay, replay
 
 EXAMPLES_DIR = os.environ.get("ANGR_EXAMPLES_DIR") or os.path.expanduser("~/repos/angr-examples/examples")
 # Synthetic examples shipped in-repo (e.g. inline-ELF benchmarks for arches
@@ -479,19 +479,26 @@ def _run_in_child(
                 if test_fn is None:
                     raise RuntimeError("solve.py defines no test() oracle")
                 replay_spec = REPLAY_ORACLES.get(example_name) if host_can_replay() else None
+                choice_spec = MODEL_CHOICE_ORACLES.get(example_name)
+                recorded_spec = replay_spec or choice_spec
                 found_stdins = []
-                if replay_spec is not None:
+                if recorded_spec is not None:
                     # test() looks its entry up in the module globals, so
                     # this wrapper sees every answer it checks.
-                    bench_main = getattr(module, replay_spec.entry)
+                    bench_main = getattr(module, recorded_spec.entry)
 
                     def _recording_main(*a, **kw):
                         result = bench_main(*a, **kw)
                         found_stdins.append(result)
                         return result
 
-                    setattr(module, replay_spec.entry, _recording_main)
-                test_fn()
+                    setattr(module, recorded_spec.entry, _recording_main)
+                try:
+                    test_fn()
+                except AssertionError:
+                    # Another valid model of an ambiguous script still passes.
+                    if not (choice_spec and found_stdins and set(found_stdins) <= choice_spec.accepted):
+                        raise
                 if replay_spec is not None:
                     if not found_stdins:
                         raise AssertionError(f"replay oracle: test() never called {replay_spec.entry}()")

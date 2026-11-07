@@ -15,9 +15,9 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-import run_regression as rr  # noqa: E402
-from replay_oracle import REPLAY_ORACLES, host_can_replay, replay
-from run_single import EXAMPLES_DIR, _resolve_examples_dir  # noqa: E402
+import run_regression as rr
+from replay_oracle import MODEL_CHOICE_ORACLES, REPLAY_ORACLES, host_can_replay, replay
+from run_single import EXAMPLES_DIR, _resolve_examples_dir
 
 _SUITE_NAMES = sorted({e[0] for e in rr.FAST_SUITE + rr.MEDIUM_SUITE})
 
@@ -28,7 +28,7 @@ def test_bench_defines_a_test_oracle(name):
     if not os.path.exists(solve):
         pytest.skip(f"{name}: example checkout not available")
     with open(solve) as f:
-        assert re.search(r"^def test\(", f.read(), re.M), f"{name}/solve.py has no test() oracle"
+        assert re.search(r"^def test\(", f.read(), re.MULTILINE), f"{name}/solve.py has no test() oracle"
 
 
 def test_replay_oracles_are_gated_benches():
@@ -56,3 +56,15 @@ def test_replay_oracle_tells_good_stdin_from_broken(name):
     assert replay(spec, example_dir, good) is None
     assert replay(spec, example_dir, broken) is not None
     assert replay(spec, example_dir, good.decode()) is not None
+
+
+@pytest.mark.parametrize("name", sorted(MODEL_CHOICE_ORACLES))
+def test_model_choice_oracle_keeps_the_pinned_answer(name):
+    """The accepted set widens test(), never replaces it (angr-iqkyb)."""
+    solve = os.path.join(_resolve_examples_dir(name, EXAMPLES_DIR), name, "solve.py")
+    if not os.path.exists(solve):
+        pytest.skip(f"{name}: example checkout not available")
+    with open(solve) as f:
+        pinned = re.findall(r"^def test\(\):\n\s+assert \w+\(\) == '([^']+)'", f.read(), re.MULTILINE)
+    assert pinned and set(pinned) <= MODEL_CHOICE_ORACLES[name].accepted
+    assert len(MODEL_CHOICE_ORACLES[name].accepted) > 1

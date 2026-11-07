@@ -12,6 +12,15 @@ Only a bench whose entry function returns the found state's ``posix.dumps(0)``
 (possibly stripped) belongs here, and only an x86-64 Linux ELF that runs on
 the host. ``ekopartyctf2016_rev250`` already replays inside its own
 ``test()``; the synthetic ``cli_ctype_fprintf`` does too.
+
+The opposite gap is a ``test()`` stricter than its solve script: when the
+script's constraints admit several models, ``test()`` pins the one the Python
+engine's Z3 happened to return, and a Rust run that returns another valid model
+fails it. ``MODEL_CHOICE_ORACLES`` lists, per such bench, every answer the
+script's final state admits; ``run_single.py --test`` accepts any of them when
+``test()``'s own assert fails. An entry needs the evidence that both engines'
+final states admit exactly that set (a bead id), not just that Rust's answer
+differs.
 """
 
 from __future__ import annotations
@@ -44,6 +53,29 @@ REPLAY_ORACLES = {
 }
 
 REPLAY_TIMEOUT_SECS = 10
+
+
+@dataclass(frozen=True)
+class ModelChoiceSpec:
+    """Every answer ``entry()`` may return for a bench whose solve script is ambiguous."""
+
+    accepted: frozenset
+    entry: str = "main"
+
+
+MODEL_CHOICE_ORACLES = {
+    # angr-iqkyb: the final state leaves two values for text[330:400] on both
+    # engines (eval_upto gives the same two-element set); the flag hashes the
+    # whole text.
+    "hitcon2017_sakura": ModelChoiceSpec(
+        accepted=frozenset(
+            {
+                "hitcon{6c0d62189adfd27a12289890d5b89c0dc8098bc976ecc3f6d61ec0429cccae61}",
+                "hitcon{d5e2ff59e94d2a4c96a7904c2ac5be6587d78a9137ba57e3789429b37c1c7556}",
+            }
+        ),
+    ),
+}
 
 
 def host_can_replay() -> bool:
