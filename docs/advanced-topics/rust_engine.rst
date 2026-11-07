@@ -2107,6 +2107,8 @@ the rest fire read-only (mutations are ignored).
   store of the whole value (``dataHi:dataLo`` for ``cmpxchg16b``): it fires
   the pair once over that value unless the comparison is provably false,
   with the comparison as ``mem_write_condition`` (angr-vmi2l.175).
+  Its load is likewise one ``mem_read`` over the whole value, so an
+  override replaces both halves of a ``cmpxchg16b`` (angr-vmi2l.348).
 * ``dirty_result`` — a ``dirty`` BP_AFTER that assigns
   ``state.inspect.dirty_result`` replaces the dirty handler's return
   value before it is concretized and handed back to the interpreter.

@@ -54,8 +54,8 @@ impl<'a> VEXInterpreter<'a> {
     /// e.g. x86-64 cmpxchg16b). DCAS = oldHi/expdHi/dataHi all Some, single = all None.
     ///
     /// DCAS semantics (mirroring `_perform_vex_stmt_CAS` in
-    /// angr/engines/vex/light/light.py): load both halves at `addr` and
-    /// `addr + sizeof(expd_ty)`; compare both vs `(expd_hi, expd_lo)`; on match,
+    /// angr/engines/vex/light/light.py): load both halves as one widened value at
+    /// `addr` (the high half is the one at `addr + sizeof(expd_ty)`); compare both vs `(expd_hi, expd_lo)`; on match,
     /// write `(data_hi, data_lo)` back. Only little-endian is supported — the
     /// only real DCAS users (x86-64, ARM64) are LE; BE is rejected explicitly.
     pub(super) fn execute_cas_stmt(
@@ -110,25 +110,35 @@ impl<'a> VEXInterpreter<'a> {
             )));
         }
 
-        // Load current_lo at addr.
-        let load_lo_expr = IRExpr::Load {
+        // Python loads a DCAS as one value of the widened type (`hi:lo`) at
+        // `addr`, so `mem_read` fires once over it and a `mem_read_expr`
+        // override replaces both halves (angr-vmi2l.348).
+        let load_ty = match dcas_operands {
+            Some(_) => Self::cas_widened_type(half_ty)?,
+            None => half_ty,
+        };
+        let load_expr = IRExpr::Load {
             addr: Box::new(addr.clone()),
-            ty: half_ty,
+            ty: load_ty,
             endness,
         };
-        let current_lo = self.eval_expr_with_callbacks(callbacks, &load_lo_expr, &irsb.tyenv)?;
+        let current = self.eval_expr_with_callbacks(callbacks, &load_expr, &irsb.tyenv)?;
+        let half_bits = half_ty.bits();
+        let current_lo = match dcas_operands {
+            Some(_) => current.extract(half_bits - 1, 0),
+            None => current.clone(),
+        };
         let expd_lo_val = self.eval_expr_with_callbacks(callbacks, expd_lo, &irsb.tyenv)?;
         let data_lo_val = self.eval_expr_with_callbacks(callbacks, data_lo, &irsb.tyenv)?;
 
-        // For DCAS, also load the high half at addr + sizeof(half).
+        // For DCAS, the high half lives at addr + sizeof(half).
         let dcas = match dcas_operands {
             Some(old_hi_idx) => {
                 let addr_hi_expr = Self::cas_compute_addr_hi(addr, half_ty, irsb)?;
-                let (current_hi, expd_hi_val, data_hi_val) =
-                    self.cas_load_dcas_high(callbacks, &addr_hi_expr, cas, half_ty, irsb)?;
+                let (expd_hi_val, data_hi_val) = self.cas_eval_dcas_high(callbacks, cas, irsb)?;
                 Some(DcasState {
                     addr_hi_expr,
-                    current_hi,
+                    current_hi: current.extract(current.width() - 1, half_bits),
                     expd_hi_val,
                     data_hi_val,
                     old_hi_idx,
@@ -195,16 +205,27 @@ impl<'a> VEXInterpreter<'a> {
         })
     }
 
-    /// Load and evaluate the DCAS high half. Returns
-    /// `(current_hi, expd_hi_val, data_hi_val)`.
-    pub(super) fn cas_load_dcas_high(
+    /// The type Python's `_perform_vex_stmt_CAS` loads a DCAS of `half_ty`
+    /// halves as: twice the width, `V128` for 64-bit halves.
+    fn cas_widened_type(half_ty: IRType) -> Result<IRType, CbExecutionError> {
+        match half_ty {
+            IRType::I8 => Ok(IRType::I16),
+            IRType::I16 => Ok(IRType::I32),
+            IRType::I32 => Ok(IRType::I64),
+            IRType::I64 => Ok(IRType::V128),
+            _ => Err(CbExecutionError::InvalidIR(format!(
+                "DCAS half type {half_ty:?} has no widened type"
+            ))),
+        }
+    }
+
+    /// Evaluate the DCAS high-half operands. Returns `(expd_hi_val, data_hi_val)`.
+    pub(super) fn cas_eval_dcas_high(
         &mut self,
         callbacks: &dyn EngineHost,
-        addr_hi_expr: &IRExpr,
         cas: &CasArgs<'_>,
-        half_ty: IRType,
         irsb: &IRSB,
-    ) -> Result<(RustBV, RustBV, RustBV), CbExecutionError> {
+    ) -> Result<(RustBV, RustBV), CbExecutionError> {
         // DCAS-only path: the all-Some/all-None gate in `execute_cas_stmt` has
         // already established that expdHi/dataHi are present.
         let (Some(expd_hi), Some(data_hi)) = (cas.expd_hi, cas.data_hi) else {
@@ -212,15 +233,9 @@ impl<'a> VEXInterpreter<'a> {
                 "CAS: DCAS high half needs expdHi/dataHi".to_string(),
             ));
         };
-        let load_hi_expr = IRExpr::Load {
-            addr: Box::new(addr_hi_expr.clone()),
-            ty: half_ty,
-            endness: cas.endness,
-        };
-        let current_hi = self.eval_expr_with_callbacks(callbacks, &load_hi_expr, &irsb.tyenv)?;
         let expd_hi_val = self.eval_expr_with_callbacks(callbacks, expd_hi, &irsb.tyenv)?;
         let data_hi_val = self.eval_expr_with_callbacks(callbacks, data_hi, &irsb.tyenv)?;
-        Ok((current_hi, expd_hi_val, data_hi_val))
+        Ok((expd_hi_val, data_hi_val))
     }
 
     /// Perform the CAS writeback. Three cases on `cmp`:

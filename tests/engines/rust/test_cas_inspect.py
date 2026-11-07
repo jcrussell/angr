@@ -1,4 +1,4 @@
-"""A CAS writeback fires its ``mem_write`` BP as Python's guarded store does (angr-vmi2l.175).
+"""A CAS fires its ``mem_read`` / ``mem_write`` BPs as Python's load and guarded store do.
 
 Python's VEX engine performs a CAS as a load, a compare and one ``StoreG`` of the
 whole value (``dataHi:dataLo`` for a DCAS) guarded by the comparison, so
@@ -6,7 +6,11 @@ whole value (``dataHi:dataLo`` for a DCAS) guarded by the comparison, so
 ``mem_write_condition``, and a ``mem_write_expr`` override replaces the value.
 Rust stored the swap with no condition (a concrete value), or fired nothing at
 all (a symbolic one). Each case runs ``lock cmpxchg`` / ``lock cmpxchg16b`` on
-AMD64 and compares both engines.
+AMD64 and compares both engines (angr-vmi2l.175).
+
+Python also loads a DCAS as one ``V128`` value at the address, so ``mem_read``
+fires once over 128 bits and a ``mem_read_expr`` override replaces both halves;
+Rust loaded each half on its own (angr-vmi2l.348).
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ def _condition(cond):
     return cond.is_true()
 
 
-def _run(engine, code, setup, size, when=angr.BP_AFTER, inject=None):
+def _run(engine, code, setup, size, when=angr.BP_AFTER, inject=None, event="mem_write"):
     project = angr.load_shellcode(code + JMP_SELF, arch="AMD64", load_address=LOAD)
     state = project.factory.blank_state(addr=LOAD, add_options=OPTS)
     state.regs.rdi = BUF
@@ -42,24 +46,25 @@ def _run(engine, code, setup, size, when=angr.BP_AFTER, inject=None):
     hits = []
 
     def action(st):
-        expr = st.inspect.attrs.mem_write_expr
+        attrs = st.inspect.attrs
         hits.append(
             (
-                hex(st.solver.eval(st.inspect.attrs.mem_write_address)),
-                expr.size(),
-                _condition(st.inspect.attrs.mem_write_condition),
+                hex(st.solver.eval(getattr(attrs, f"{event}_address"))),
+                getattr(attrs, f"{event}_expr").size(),
+                _condition(getattr(attrs, f"{event}_condition")),
             )
         )
         if inject is not None:
-            st.inspect.attrs.mem_write_expr = inject
+            setattr(attrs, f"{event}_expr", inject)
 
-    state.inspect.b("mem_write", when=when, action=action)
+    state.inspect.b(event, when=when, action=action)
     mgr = RustExplorationManager(project, [state]) if engine == "rust" else project.factory.simulation_manager(state)
     mgr.explore(find=LOAD + len(code), n=10)
     assert len(mgr.found) == 1
     found = mgr.found[0]
     stored = found.solver.eval_upto(found.memory.load(BUF, size, endness="Iend_LE"), 3)
-    return hits, sorted(stored)
+    old = found.solver.eval_upto(found.regs.rdx.concat(found.regs.rax), 3)
+    return hits, sorted(stored), sorted(old)
 
 
 def _single(eax):
@@ -105,3 +110,19 @@ def test_dcas_writeback_fires_one_mem_write_like_python(rax):
     expected = _run("python", CMPXCHG16B, _double(rax), 16)
     assert _run("rust", CMPXCHG16B, _double(rax), 16) == expected
     assert [(addr, bits) for addr, bits, _ in expected[0]] == [(hex(BUF), 128)]
+
+
+@pytest.mark.parametrize("rax", [OLD, claripy.BVS("rax", 64)], ids=["match", "symbolic"])
+def test_dcas_load_fires_one_mem_read_like_python(rax):
+    expected = _run("python", CMPXCHG16B, _double(rax), 16, event="mem_read")
+    assert _run("rust", CMPXCHG16B, _double(rax), 16, event="mem_read") == expected
+    # Python fires the BP more than once for the one CAS load; every hit is the whole value.
+    assert {(addr, bits) for addr, bits, _ in expected[0]} == {(hex(BUF), 128)}
+
+
+def test_dcas_load_takes_an_injected_value_like_python():
+    # The injected value mismatches rdx:rax, so the CAS fails and loads it into rdx:rax.
+    inject = claripy.BVV(0x5EED << 64 | 0xF00D, 128)
+    expected = _run("python", CMPXCHG16B, _double(OLD), 16, inject=inject, event="mem_read")
+    assert _run("rust", CMPXCHG16B, _double(OLD), 16, inject=inject, event="mem_read") == expected
+    assert expected[2] == [0x5EED << 64 | 0xF00D]
