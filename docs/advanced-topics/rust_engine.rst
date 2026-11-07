@@ -1493,9 +1493,12 @@ Honored options
    * - ``APPROXIMATE_MEMORY_INDICES``
      - ``rust_manager.py::_phase_activate`` (forwarded to
        ``configure_concretization_strategies``)
-     - Passed as ``use_approx`` to ``configure_concretization_strategies``;
-       Rust adds an approximation strategy ahead of full Z3 enumeration
-       on symbolic loads. The concretizer is manager-wide, so this row, the
+     - Passed as ``use_approx`` to ``configure_concretization_strategies``
+       and recorded only. Python prepends ``exact=False`` Range / Single
+       strategies at the exact chain's own limits; the engine's Z3 solver
+       answers them exactly, as a plain claripy solver does, so the read and
+       write limits are unchanged (a ``HYBRID_SOLVER`` state's VSA
+       approximation has no Rust counterpart). The concretizer is manager-wide, so this row, the
        ``SYMBOLIC_WRITE_ADDRESSES`` and ``AVOID_MULTIVALUED_*`` rows and the
        ``read_strategies`` / ``write_strategies`` limits share the
        ``ZERO_FILL_UNCONSTRAINED_MEMORY`` scope: seeds that disagree raise,

@@ -1856,8 +1856,8 @@ class TestConcretizationOptionPropagation:
     def test_approximate_memory_indices_propagates_to_rust(self, fauxware_project):
         """Setting APPROXIMATE_MEMORY_INDICES on a state flips the Rust
         ``use_approximate`` flag once the state is loaded into the manager,
-        and the read range limit is bumped to the approximate minimum
-        (4096) because the sniffed default (1024) sits below it."""
+        and leaves the sniffed 1024/128 limits as they are: Python's
+        ``exact=False`` strategies use the same limits (angr-vmi2l.250)."""
         plain = fauxware_project.factory.entry_state()
         plain_mgr = RustExplorationManager(fauxware_project, [plain])
         assert plain_mgr._rust_mgr.get_concretization_config()["use_approximate"] == 0
@@ -1868,9 +1868,8 @@ class TestConcretizationOptionPropagation:
         approx_mgr = RustExplorationManager(fauxware_project, [approx])
         cfg = approx_mgr._rust_mgr.get_concretization_config()
         assert cfg["use_approximate"] == 1
-        # configure_strategies bumps read_range_limit to APPROXIMATE_MIN_RANGE
-        # (4096) when approximate is on and the sniffed limit is below it.
-        assert cfg["read_range_limit"] >= 4096
+        assert cfg["read_range_limit"] == 1024
+        assert cfg["write_range_limit"] == 128
 
     def test_symbolic_write_addresses_propagates_to_rust(self, fauxware_project):
         """Setting SYMBOLIC_WRITE_ADDRESSES on a state flips the Rust

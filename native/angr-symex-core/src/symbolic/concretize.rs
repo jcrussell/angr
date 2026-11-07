@@ -51,12 +51,6 @@ pub fn pin_fallback_addr(ctx: &SymContext, addr: &RustBV, chosen: u64) {
     ctx.assume_true(&pin);
 }
 
-/// Minimum range limit when `APPROXIMATE_MEMORY_INDICES` is enabled.
-///
-/// When the SimOption is on, both `read_range_limit` and `write_range_limit`
-/// are bumped to at least 4 KiB so a single page-sized buffer can be
-/// enumerated without falling back to the Any/Max strategies.
-const APPROXIMATE_MIN_RANGE: u64 = 4096;
 /// This determines which strategy chain to use (different limits and fallbacks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConcretizationMode {
@@ -179,8 +173,12 @@ pub struct AddressConcretizer {
     pub enable_stride_detection: bool,
     /// Minimum number of samples for stride detection (default: 4).
     pub stride_sample_count: usize,
-    /// Whether to use approximate memory indices (from APPROXIMATE_MEMORY_INDICES option).
-    /// When true, allows more aggressive concretization with potential approximation.
+    /// Whether APPROXIMATE_MEMORY_INDICES is on. Recorded only: it changes no
+    /// limit or strategy. Python prepends `Range(1024, exact=False)` to the
+    /// reads and `Single(exact=False)` or `Range(128, exact=False)` to the
+    /// writes, at the same limits as the exact chain, and the engine's one Z3
+    /// solver answers an `exact=False` query exactly, as a plain claripy
+    /// solver does (angr-vmi2l.250).
     pub use_approximate: bool,
     /// Whether SYMBOLIC_WRITE_ADDRESSES is enabled.
     /// When true, writes to symbolic addresses use Range strategy.
@@ -229,44 +227,11 @@ impl AddressConcretizer {
         Self::default()
     }
 
-    /// Raise the read range limit to `APPROXIMATE_MIN_RANGE` when it sits
-    /// below that floor. Shared by `configure` and `configure_strategies` so
-    /// the approximate-mode bump stays identical from both entry points.
-    #[inline]
-    fn apply_approximate_read_floor(&mut self) {
-        if self.read_range_limit < APPROXIMATE_MIN_RANGE {
-            self.read_range_limit = APPROXIMATE_MIN_RANGE;
-        }
-    }
-
-    /// Configure from Python sim_options (legacy interface).
-    ///
-    /// Unlike `configure_strategies` this entry point takes no write-range
-    /// parameter and deliberately leaves `write_range_limit` untouched, even
-    /// under `use_approximate` — callers that want the write range raised use
-    /// `configure_strategies`.
-    ///
-    /// # Arguments
-    /// * `use_approximate` - Whether APPROXIMATE_MEMORY_INDICES is enabled
-    /// * `range_limit` - Optional custom range limit (default: 1024)
-    pub fn configure(&mut self, use_approximate: bool, range_limit: Option<u64>) {
-        self.use_approximate = use_approximate;
-        if let Some(limit) = range_limit {
-            self.read_range_limit = limit;
-        }
-        // When approximate is enabled, we can be more aggressive with range
-        if use_approximate {
-            self.apply_approximate_read_floor();
-        }
-    }
-
     /// Configure from Python's full strategy configuration.
     ///
     /// Backs the `RustExplorationManager::configure_concretization_strategies`
     /// pymethod (`exploration/manager_methods.rs`), whose doc describes each
-    /// argument. A `None` range limit keeps the current value; under
-    /// `use_approximate` both limits are raised to at least
-    /// `APPROXIMATE_MIN_RANGE`.
+    /// argument. A `None` range limit keeps the current value.
     pub fn configure_strategies(
         &mut self,
         use_approximate: bool,
@@ -286,14 +251,6 @@ impl AddressConcretizer {
         }
         if let Some(limit) = write_range_limit {
             self.write_range_limit = limit;
-        }
-
-        // When approximate is enabled, be more aggressive with range limits
-        if use_approximate {
-            self.apply_approximate_read_floor();
-            if self.write_range_limit < APPROXIMATE_MIN_RANGE {
-                self.write_range_limit = APPROXIMATE_MIN_RANGE;
-            }
         }
     }
 

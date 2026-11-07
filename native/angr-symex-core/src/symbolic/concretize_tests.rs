@@ -99,44 +99,6 @@ fn test_default_config() {
 }
 
 #[test]
-fn test_configure() {
-    let mut concretizer = AddressConcretizer::default();
-
-    // Configure without approximate
-    concretizer.configure(false, Some(2048));
-    assert_eq!(concretizer.read_range_limit, 2048);
-    assert!(!concretizer.use_approximate);
-
-    // Configure with approximate - should increase range to at least 4096
-    concretizer.configure(true, None);
-    assert!(concretizer.use_approximate);
-    assert!(concretizer.read_range_limit >= 4096);
-}
-
-// angr-sqfj8.130: `configure` and `configure_strategies` now share the
-// approximate read-range floor. Pin the property that share must not change:
-// the legacy `configure` still leaves `write_range_limit` alone (it has no
-// write-range parameter), even under `use_approximate`.
-#[test]
-fn test_configure_applies_read_floor_and_leaves_write_range_untouched() {
-    let mut concretizer = AddressConcretizer::default();
-    let default_write = concretizer.write_range_limit;
-
-    concretizer.configure(false, Some(2048));
-    assert_eq!(concretizer.read_range_limit, 2048);
-    assert_eq!(concretizer.write_range_limit, default_write);
-
-    // The approximate floor bumps the read limit but not the write limit.
-    concretizer.configure(true, Some(512));
-    assert_eq!(concretizer.read_range_limit, 4096);
-    assert_eq!(concretizer.write_range_limit, default_write);
-
-    // A limit already above the floor is left as given.
-    concretizer.configure(true, Some(8192));
-    assert_eq!(concretizer.read_range_limit, 8192);
-}
-
-#[test]
 fn test_configure_strategies() {
     let mut concretizer = AddressConcretizer::default();
 
@@ -148,10 +110,12 @@ fn test_configure_strategies() {
     assert!(!concretizer.avoid_multivalued_reads);
     assert!(!concretizer.avoid_multivalued_writes);
 
-    // With approximate, limits should increase to at least 4096
+    // APPROXIMATE_MEMORY_INDICES is recorded but leaves both limits as given:
+    // Python's exact=False strategies use the same limits (angr-vmi2l.250).
     concretizer.configure_strategies(true, Some(512), Some(128), false, false, false);
-    assert!(concretizer.read_range_limit >= 4096);
-    assert!(concretizer.write_range_limit >= 4096);
+    assert!(concretizer.use_approximate);
+    assert_eq!(concretizer.read_range_limit, 512);
+    assert_eq!(concretizer.write_range_limit, 128);
 
     // Avoid-multivalued flags pass through.
     concretizer.configure_strategies(false, Some(1024), Some(128), false, true, true);
