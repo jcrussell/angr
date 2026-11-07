@@ -1,0 +1,14 @@
+error: method `merge_field_f` is never used
+ --> tests/ui/merge_policy_uncalled_generated.rs:9:5
+  |
+6 | #[derive(angr_symex_macros::MergePolicy)]
+  |          ------------------------------ method in this implementation
+...
+9 |     f: u64,
+  |     ^
+  |
+note: the lint level is defined here
+ --> tests/ui/merge_policy_uncalled_generated.rs:4:9
+  |
+4 | #![deny(dead_code)]
+  |         ^^^^^^^^^

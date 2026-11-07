@@ -40,6 +40,11 @@
 //! `inspect_dispatch_tests`, since a `tests/ui/` snapshot proves the rendering
 //! of each message but not that a second one survives alongside the first.
 //!
+//! One case pins a rustc lint, not a macro diagnostic:
+//! `merge_policy_uncalled_generated.rs` denies `dead_code` and never calls the
+//! generated `merge_field_f`, proving the lint reaches derive output — the
+//! guarantee `derive_merge_policy`'s "What the generated methods buy" rests on.
+//!
 //! The snapshots carry rustc's own rendering of the span, so they are
 //! toolchain-sensitive; that is safe here because `rust-toolchain.toml` pins
 //! the compiler. A snapshot diff immediately after a toolchain bump means

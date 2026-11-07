@@ -369,6 +369,9 @@ const MECHANICAL_MERGE_POLICIES: &[&str] = &["self_wins", "union", "max", "min",
 /// whose body *is* the policy. `merge` must call it — a private method nobody
 /// calls is `dead_code`, which CI's `-D warnings` turns into a build failure —
 /// so a field's declared policy and its merge line cannot drift apart.
+/// `tests/ui/merge_policy_uncalled_generated.rs` proves rustc reports that
+/// lint on the derive's output, so a span change that hid it would fail the
+/// `compile_fail` suite.
 ///
 /// # Requirements at the derive site
 ///
