@@ -10,10 +10,13 @@
 //!
 //! The concretization algorithm:
 //! 1. Fast path: If address is concrete, return Single
-//! 2. Try small enumeration (≤16 solutions)
+//! 2. Try small enumeration (≤16 solutions); a complete set whose span
+//!    exceeds the limit fails `Range` like any other (angr-vmi2l.249)
 //! 3. Get range [min, max] via solver
 //! 4. If range ≤ limit, enumerate all solutions
-//! 5. If range > limit, apply fallback: Any (reads) or Max (writes)
+//! 5. If range > limit, apply fallback: Any (reads) or Max (writes); a
+//!    stride grid never stands in for that fallback, since Python's `Range`
+//!    compares the span, not the cell count
 
 use crate::symbolic::{RustBV, SymContext, record_concretize_read, record_concretize_write};
 
@@ -169,7 +172,8 @@ pub struct AddressConcretizer {
     /// bounds only Rust's enumeration cost, never which paths survive.
     pub max_solutions: usize,
     /// Maximum number of elements for strided access (default: 16384).
-    /// If stride count exceeds this, falls back to TooLarge.
+    /// A grid over this count is refused, and the in-range set over
+    /// `max_solutions` it would have stood for is `Failed`.
     pub max_stride_count: u64,
     /// Whether to enable stride detection (default: true).
     pub enable_stride_detection: bool,
@@ -408,17 +412,10 @@ impl AddressConcretizer {
     ) -> ConcretizationResult {
         let result = if self.write_range_applies(multiwrite) {
             let ranged = self.concretize_with_mode(addr, ctx, ConcretizationMode::Write);
-            // A stride grid with more cells than `Range` could ever return is
-            // `unenumerable`'s abstraction of a set Python rejects, so it takes
-            // the Max step just as `TooLarge` does: the store dispatch writes
-            // every grid cell it is handed (angr-vmi2l.324).
-            let range_failed = match &ranged {
-                ConcretizationResult::TooLarge { .. } => true,
-                ConcretizationResult::Strided { count, .. } => {
-                    *count > self.write_range_limit.saturating_add(1)
-                }
-                _ => false,
-            };
+            // `concretize_internal` only returns a `Strided` grid whose span is
+            // within the limit, so `TooLarge` is the one "Range failed" shape
+            // (angr-vmi2l.324, angr-vmi2l.249).
+            let range_failed = matches!(ranged, ConcretizationResult::TooLarge { .. });
             if range_failed && self.write_fallback_max {
                 // Fallback: SimConcretizationStrategyMax - return maximum solution
                 self.max_solution(addr, ctx).unwrap_or(ranged)
@@ -520,6 +517,18 @@ impl AddressConcretizer {
                 let mut addrs: Vec<u64> = fast_solutions.iter().map(|&v| v as u64).collect();
                 addrs.sort_unstable();
 
+                // Python's `Range` checks the span before it enumerates, so a
+                // complete set this small still fails it when it is spread
+                // wider than the limit (angr-vmi2l.249).
+                let (min, max) = (addrs[0], addrs[addrs.len() - 1]);
+                if max.saturating_sub(min) > range_limit {
+                    return ConcretizationResult::TooLarge {
+                        min,
+                        max,
+                        limit: range_limit,
+                    };
+                }
+
                 if self.enable_stride_detection
                     && addrs.len() >= 2
                     && let Some(strided) = self.detect_stride_from_solutions(&addrs)
@@ -575,7 +584,14 @@ impl AddressConcretizer {
 
         let range_size = max.saturating_sub(min);
         if range_size > range_limit {
-            return self.unenumerable(addr, ctx, min, max, range_limit);
+            // `Range` fails here as it does in Python, so no stride grid: the
+            // reader pins one address with Any, the writer with Max
+            // (angr-vmi2l.249).
+            return ConcretizationResult::TooLarge {
+                min,
+                max,
+                limit: range_limit,
+            };
         }
 
         // Range is manageable — enumerate all solutions. Ask for one more than
@@ -632,32 +648,9 @@ impl AddressConcretizer {
         }
     }
 
-    /// Result for an address whose feasible set is bounded by `[min, max]` but
-    /// spans more than `limit`, so `Range` fails as it does in Python.
-    ///
-    /// Tries the stride abstraction first (`try_detect_stride` carries the
-    /// completeness gate (angr-lf108), so a grid it returns really does cover
-    /// every feasible address), else reports `TooLarge` so consumers take the
-    /// fully symbolic path instead of an incomplete address list.
-    fn unenumerable(
-        &self,
-        addr: &RustBV,
-        ctx: &SymContext,
-        min: u64,
-        max: u64,
-        limit: u64,
-    ) -> ConcretizationResult {
-        if self.enable_stride_detection
-            && let Some(strided) = self.try_detect_stride(addr, ctx, min, max)
-        {
-            return strided;
-        }
-        ConcretizationResult::TooLarge { min, max, limit }
-    }
-
     /// Try to detect a stride pattern by sampling solutions.
     ///
-    /// This is used when the address range is too large to enumerate,
+    /// This is used when the in-range feasible set is over `max_solutions`,
     /// but might have a regular stride pattern (e.g., arr\[i*4\]).
     fn try_detect_stride(
         &self,
@@ -693,9 +686,8 @@ impl AddressConcretizer {
                 // grid cell (min + (count-1)*stride) would be >= that cell +
                 // stride > max, contradicting a <= max. So a single modulo SAT
                 // check is a *complete* test — if it is satisfiable the grid is
-                // unsound and we fall back to TooLarge (matching Python's
-                // narrow-and-constrain semantics, which never disagrees with
-                // the constraint set).
+                // unsound and the caller reports `Failed`, which defers the
+                // access to Python's `Range`.
                 if self.stride_grid_excludes_feasible(addr, ctx, min, stride) {
                     return None;
                 }

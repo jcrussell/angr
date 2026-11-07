@@ -162,7 +162,7 @@ fn test_configure_strategies() {
 // angr-lf108: try_detect_stride's sampled-GCD grid can exclude feasible
 // addresses. `stride_grid_excludes_feasible` is the soundness gate — it must
 // return true exactly when some feasible address is off the `{ base+i*stride }`
-// grid, so try_detect_stride can fall back to TooLarge instead of emitting an
+// grid, so try_detect_stride can refuse the grid instead of emitting an
 // unsound Strided result.
 #[test]
 fn test_stride_grid_excludes_feasible_off_grid() {
@@ -467,7 +467,7 @@ fn ranged_addr(ctx: &SymContext, name: &str) -> RustBV {
     addr
 }
 
-/// Stride detection off, so `unenumerable` reports `TooLarge` rather than a
+/// Stride detection off, so the in-range tail reports `Failed` rather than a
 /// `Strided` grid: `[0x1000, 0x103f]` is a stride-1 run, and a grid the
 /// stride completeness gate accepts would be a *correct* answer that hides
 /// which branch produced it.
@@ -607,4 +607,66 @@ fn enumeration_fault_arms_and_disarms_with_its_guard() {
     let decided = ctx.solutions_checked(&addr, 4);
     assert!(!decided.undecided, "the guard must disarm on drop");
     assert_eq!(decided.values.len(), 4);
+}
+
+/// `base + i*stride` with `i < count`: a complete stride grid of `count`
+/// cells spanning `(count - 1) * stride` bytes.
+fn strided_index_addr(ctx: &SymContext, name: &str, stride: u128, count: u128) -> RustBV {
+    let i = ctx.new_bv(name, 64);
+    ctx.assume_true(&i.ult(&RustBV::concrete(count, 64)));
+    RustBV::concrete(0x5000_0000, 64).add(&i.mul(&RustBV::concrete(stride, 64)))
+}
+
+/// angr-vmi2l.249: Python's `Range` compares the span with the limit before it
+/// enumerates, so a set it fails falls to Any (reads) or Max (writes) whatever
+/// its size. Neither the 16-value fast-enum set (span 1920 > 1024 > 128) nor a
+/// stride grid over the limit (span 3996 > 1024) may stay a candidate set.
+#[test]
+fn a_set_spread_wider_than_the_range_limit_is_pinned_to_one_address() {
+    let mut concretizer = AddressConcretizer::new();
+    concretizer.symbolic_write_addresses = true;
+    for (stride, count) in [(128, 16), (4, 1000)] {
+        let ctx = SymContext::new_mock();
+        let addr = strided_index_addr(&ctx, "wide_idx", stride, count);
+        let last = 0x5000_0000 + (count - 1) * stride;
+        assert!(
+            matches!(
+                concretizer.concretize(&addr, &ctx),
+                ConcretizationResult::TooLarge { .. }
+            ),
+            "stride {stride}: the Range strategy must fail"
+        );
+        let ConcretizationResult::Single(read) = concretizer.concretize_read(&addr, &ctx) else {
+            panic!("stride {stride}: a read must take the Any pin");
+        };
+        assert_eq!(ctx.eval_upto(&addr, 2), vec![u128::from(read)]);
+
+        let ctx = SymContext::new_mock();
+        let addr = strided_index_addr(&ctx, "wide_idx", stride, count);
+        let write = concretizer.concretize_write(&addr, &ctx);
+        assert!(
+            matches!(write, ConcretizationResult::Single(a) if u128::from(a) == last),
+            "stride {stride}: a write must take the Max pin, got {write:?}"
+        );
+    }
+}
+
+/// The span check leaves an in-limit fast-enum set alone: 16 cells 64 bytes
+/// apart span 960 <= 1024, so a read keeps all of them as a stride grid.
+#[test]
+fn a_small_set_within_the_range_limit_keeps_every_address() {
+    let ctx = SymContext::new_mock();
+    let addr = strided_index_addr(&ctx, "narrow_idx", 64, 16);
+    let read = AddressConcretizer::new().concretize_read(&addr, &ctx);
+    assert!(
+        matches!(
+            read,
+            ConcretizationResult::Strided {
+                base: 0x5000_0000,
+                stride: 64,
+                count: 16
+            }
+        ),
+        "got {read:?}"
+    );
 }

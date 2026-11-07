@@ -29,7 +29,9 @@ pytestmark = pytest.mark.skipif(
 
 # Two mapped candidates for the symbolic store address. Both live on the
 # initial stack page, so neither is in a lazy region (which would make the
-# safe installer defer instead of installing Multi cells).
+# safe installer defer instead of installing Multi cells). Their span stays
+# within the write Range limit (128), or Range fails and Max pins one of them
+# (angr-vmi2l.249).
 _PAYLOAD = 0xCAFEBABE
 
 
@@ -40,7 +42,7 @@ def _multi_store_manager(project, sym_name):
     """
     state = project.factory.entry_state()
     sp = state.solver.eval(state.regs.sp)
-    candidates = (sp - 0x200, sp - 0x100)
+    candidates = (sp - 0x180, sp - 0x100)
 
     addr_sym = claripy.BVS(sym_name, 64)
     state.solver.add(claripy.Or(addr_sym == candidates[0], addr_sym == candidates[1]))
