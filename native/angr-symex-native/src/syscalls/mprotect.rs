@@ -87,8 +87,9 @@ impl NativeSyscall for NativeMprotectSyscall {
         // that must fit, so a region ending precisely at 2^64 (e.g. one
         // covering the final page) stays legal here instead of being rejected
         // by `mprotect` after `mmap` accepted it.
+        // The bound is the guest's top address, not 2^64 (angr-vmi2l.154).
         // overflow-ok: the length == 0 fast path returned above, so length >= 1.
-        if addr.checked_add(length - 1).is_none() {
+        if !super::mmap::last_byte_fits(state, addr, length - 1) {
             return Ok(SyscallOutcome::Continue { ret: u64::MAX });
         }
 

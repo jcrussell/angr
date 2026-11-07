@@ -80,6 +80,13 @@ pub trait Arch: Send + Sync {
         self.bits() / 8
     }
 
+    /// The highest guest address, `2^bits - 1`. A range whose last byte lies
+    /// above it maps memory no guest pointer reaches, so the range-taking
+    /// syscalls (`mmap`, `mprotect`) refuse it as Linux does (angr-vmi2l.154).
+    fn max_addr(&self) -> u64 {
+        u64::MAX >> (64 - self.bits())
+    }
+
     /// Get the size of the guest state in bytes.
     fn state_size(&self) -> usize;
 

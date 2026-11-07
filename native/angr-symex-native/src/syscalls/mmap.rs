@@ -105,8 +105,10 @@ fn range_collides(state: &RustSimState, addr: u64, size: u64) -> bool {
     // Overflow → treat as collision (fall back). Checked here rather than
     // leaning on `range_covering`'s saturating add: a wrapping request is a
     // caller error, not a range clamped to the top page.
+    // A hint crossing the guest's top address is a collision too, so Python's
+    // loop picks another address (angr-vmi2l.154).
     // overflow-ok: size == 0 returned above, so size >= 1 here.
-    if addr.checked_add(size - 1).is_none() {
+    if !last_byte_fits(state, addr, size - 1) {
         return true;
     }
     // `range_covering` is inclusive of the page holding the last byte, matching
@@ -116,6 +118,14 @@ fn range_collides(state: &RustSimState, addr: u64, size: u64) -> bool {
         // `.get()` is the one boundary crossing: `page_permissions` is part of
         // the raw-`u64` page API inside `memory/`.
         .any(|page| memory.page_permissions(page.get()).is_some())
+}
+
+/// Whether `addr + last_offset` is a guest address: representable in `u64`
+/// and at most `Arch::max_addr`. Shared by `range_collides`, `do_mmap`'s
+/// MAP_FIXED guard and `NativeMprotectSyscall`.
+pub(super) fn last_byte_fits(state: &RustSimState, addr: u64, last_offset: u64) -> bool {
+    addr.checked_add(last_offset)
+        .is_some_and(|last| last <= state.arch().max_addr())
 }
 
 /// Shared mmap implementation, called by all three flavors.
@@ -217,8 +227,11 @@ fn do_mmap(
     // 0` fast path returned above. Linux rejects an unrepresentable fixed
     // range with -EINVAL, so return -1 rather than falling back to Python,
     // whose `map_region` would wrap just as silently.
+    // The last byte must also fit the guest's address space: on a 32-bit arch
+    // a range crossing 2^32 maps pages no guest pointer reaches, and Linux
+    // returns -ENOMEM (angr-vmi2l.154).
     // overflow-ok: the length == 0 fast path returned above, so length >= 1.
-    if is_fixed && candidate.checked_add(length - 1).is_none() {
+    if is_fixed && !last_byte_fits(state, candidate, length - 1) {
         return Ok(SyscallOutcome::Continue { ret: u64::MAX });
     }
 
@@ -260,7 +273,11 @@ fn do_mmap(
                 Some(end)
             }
         });
-        match aligned {
+        // A base past the guest's top address is as unrepresentable as one
+        // past 2^64: the dispatcher would truncate the returned address on a
+        // 32-bit arch (angr-vmi2l.154). A region ending exactly at 2^bits
+        // leaves `base == max_addr + 1`, which has no next allocation either.
+        match aligned.filter(|&base| base <= state.arch().max_addr()) {
             Some(base) => Some(base),
             None => {
                 return Err(SyscallError::Other(format!(

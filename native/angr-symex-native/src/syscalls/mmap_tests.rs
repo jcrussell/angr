@@ -1163,3 +1163,70 @@ fn mmap2_oversized_length_is_rejected() {
     }
     assert_eq!(state.mmap_base(), DEFAULT_MMAP_BASE);
 }
+
+/// angr-vmi2l.154: on a 32-bit arch every guard bounds the last byte by
+/// `Arch::max_addr`, not 2^64, so no mapping reaches page 0x1_0000_0000.
+fn i386_state() -> RustSimState {
+    RustSimState::new("x86").expect("x86 state")
+}
+
+#[test]
+fn i386_map_fixed_crossing_two_to_the_32_returns_neg_one() {
+    let h = NativeMmapSyscall;
+    let mut state = i386_state();
+    let ret = h
+        .call(
+            &mut state,
+            &args(0xFFFF_F000, 0x2000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+        )
+        .expect("refused natively");
+    assert!(matches!(ret, SyscallOutcome::Continue { ret: u64::MAX }));
+    assert_eq!(state.memory().page_permissions(0xFFFF_F000 >> 12), None);
+    assert_eq!(state.memory().page_permissions(0x1_0000_0000 >> 12), None);
+}
+
+#[test]
+fn i386_map_fixed_final_page_succeeds() {
+    let h = NativeMmapSyscall;
+    let mut state = i386_state();
+    let ret = h
+        .call(
+            &mut state,
+            &args(0xFFFF_F000, 0x1000, 0x3, ANON_PRIVATE | MAP_FIXED, ANON_FD, 0),
+        )
+        .expect("ok");
+    assert!(matches!(ret, SyscallOutcome::Continue { ret: 0xFFFF_F000 }));
+    assert_eq!(
+        state.memory().page_permissions(0xFFFF_F000 >> 12),
+        Some(Permission::RW),
+    );
+}
+
+#[test]
+fn i386_hint_crossing_two_to_the_32_falls_back() {
+    let h = NativeMmapSyscall;
+    let mut state = i386_state();
+    h.call(
+        &mut state,
+        &args(0xFFFF_F000, 0x2000, 0x3, ANON_PRIVATE, ANON_FD, 0),
+    )
+    .expect_err("a hint past the top address must fall back");
+    assert_eq!(state.memory().page_permissions(0x1_0000_0000 >> 12), None);
+}
+
+#[test]
+fn i386_addr_zero_next_base_past_two_to_the_32_falls_back() {
+    let h = NativeMmapSyscall;
+    let mut state = i386_state();
+    let base = 0xFFFF_E000_u64;
+    state.set_mmap_base(base);
+    let err = h
+        .call(&mut state, &args(0, 0x1800, 0x3, ANON_PRIVATE, ANON_FD, 0))
+        .expect_err("a next base above 2^32 must fall back");
+    assert!(
+        format!("{err:?}").contains("unrepresentable"),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(state.mmap_base(), base);
+    assert_eq!(state.memory().page_permissions(base >> 12), None);
+}

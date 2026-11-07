@@ -365,3 +365,23 @@ fn handler_metadata() {
     assert_eq!(h.name(), "mprotect");
     assert_eq!(h.num_args(), 3);
 }
+
+/// angr-vmi2l.154: on i386 a range crossing 2^32 is refused even when the
+/// page above it is mapped, since no guest pointer reaches that page.
+#[test]
+fn i386_range_crossing_two_to_the_32_returns_neg_one() {
+    let h = NativeMprotectSyscall;
+    let mut state = RustSimState::new("x86").expect("x86 state");
+    state.map_memory(0xFFFF_F000, 0x2000, Permission::RW);
+    let args = vec![
+        RustBV::concrete(0xFFFF_F000, 32),
+        RustBV::concrete(0x2000, 32),
+        RustBV::concrete(0x5, 32),
+    ];
+    let outcome = h.call(&mut state, &args).expect("ok");
+    assert!(matches!(outcome, SyscallOutcome::Continue { ret: u64::MAX }));
+    assert_eq!(
+        state.memory().page_permissions(0xFFFF_F000 >> 12),
+        Some(Permission::RW),
+    );
+}
