@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Example: Using the Rust exploration engine for symbolic execution.
 
-This script demonstrates the main RustExplorationManager API using the
-fauxware binary from angr-examples.  It shows three usage patterns:
+This script demonstrates the Rust engine on the fauxware binary from
+angr-examples:
 
-1. Address-based find/avoid
-2. Callable predicates (find states whose stdout contains a string)
-3. Using exploration techniques (DFS, LengthLimiter)
+- Address-based find/avoid
+- Callable predicates (find states whose stdout contains a string)
+- An exploration technique (LengthLimiter)
+- Driving RustExplorationManager directly
 
 Requirements:
     pip install angr      # with Rust engine built (setuptools-rust)
@@ -24,6 +25,13 @@ import sys
 import angr
 
 
+def _accept_reject_addrs(proj):
+    """fauxware's "Welcome" (``accepted``) and "Go away" (``rejected``) functions."""
+    accepted = proj.loader.find_symbol("accepted").rebased_addr
+    rejected = proj.loader.find_symbol("rejected").rebased_addr
+    return accepted, rejected
+
+
 def example_address_find(binary_path):
     """Find a target address while avoiding another."""
     proj = angr.Project(binary_path, auto_load_libs=False)
@@ -32,14 +40,15 @@ def example_address_find(binary_path):
     # Create Rust-backed simulation manager via factory
     simgr = proj.factory.simulation_manager(state, engine="rust")
 
-    # Explore with address-based find/avoid
-    simgr.explore(find=0x400844, avoid=0x40084E)  # "Welcome" vs "Go away"
+    # Explore with address-based find/avoid: "Welcome" vs "Go away"
+    accepted, rejected = _accept_reject_addrs(proj)
+    simgr.explore(find=accepted, avoid=rejected)
 
     if simgr.found:
         found = simgr.found[0]
         # Extract the symbolic stdin that reaches the target
         stdin_data = found.posix.dumps(0)
-        print(f"[address] Input to reach 0x400844: {stdin_data!r}")
+        print(f"[address] Input to reach {accepted:#x}: {stdin_data!r}")
     else:
         print("[address] No solution found")
 
@@ -77,7 +86,8 @@ def example_with_techniques(binary_path):
 
     simgr.use_technique(LengthLimiter(max_length=200))
 
-    simgr.explore(find=0x400844, avoid=0x40084E, timeout=30)
+    accepted, rejected = _accept_reject_addrs(proj)
+    simgr.explore(find=accepted, avoid=rejected)
 
     if simgr.found:
         found = simgr.found[0]
@@ -93,10 +103,9 @@ def example_direct_api(binary_path):
     proj = angr.Project(binary_path, auto_load_libs=False)
     state = proj.factory.entry_state()
 
+    accepted, rejected = _accept_reject_addrs(proj)
     mgr = RustExplorationManager(proj, [state])
-    mgr.set_find_addresses([0x400844])
-    mgr.set_avoid_addresses([0x40084E])
-    mgr.run(max_steps=10000)
+    mgr.explore(find=accepted, avoid=rejected, max_steps=10000)
 
     for s in mgr.found:
         print(f"[direct] Found at {hex(s.addr)}, stdin: {s.posix.dumps(0)!r}")
