@@ -827,19 +827,25 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
 /// angr-vmi2l.307: the on-demand core's `check_assumptions` goes through
 /// `timed_check_assumptions`, so it counts against `CheckSite::UnsatCore`
 /// like every other Z3 check. The counter is process-global, but only this
-/// path bumps that site, so a parallel test cannot fake the delta.
+/// path bumps that site, so a parallel test cannot fake the delta. A sibling's
+/// `reset_solver_stats()` (`test_lineage_telemetry_surfaced`) can zero it inside the
+/// window, though, so retry: a reset only ever hides a bump, never fakes one.
 #[test]
 fn test_unsat_core_assumed_check_is_counted() {
     use crate::symbolic::stats::{CheckSite, Z3_CHECK_SITE_COUNT};
+    use std::sync::atomic::Ordering;
     let site = &Z3_CHECK_SITE_COUNT[CheckSite::UnsatCore as usize];
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_uca_counted_x", 8);
     ctx.assume_true(&x.eq(&RustBV::concrete(5, 8)));
     ctx.assume_true(&x.eq(&RustBV::concrete(6, 8)));
 
-    let before = site.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(!ctx.unsat_core_assumed(&[]).is_empty());
-    assert!(site.load(std::sync::atomic::Ordering::Relaxed) > before);
+    let counted = (0..4).any(|_| {
+        let before = site.load(Ordering::Relaxed);
+        assert!(!ctx.unsat_core_assumed(&[]).is_empty());
+        site.load(Ordering::Relaxed) > before
+    });
+    assert!(counted, "unsat_core_assumed never bumped CheckSite::UnsatCore");
 }
 
 /// angr-op0dn.14.2: a constraint imported from Python lands in BOTH constraint
