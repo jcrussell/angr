@@ -158,22 +158,18 @@ fn test_ite_dedup_strided_zero_collapses() {
 /// A `Multiple` write must hoist the disjunction: the counter bumps and the
 /// solver gains a constraint that restricts the addr's domain to the
 /// candidate set.
+///
+/// The counters are process-global. A parallel store can only raise them, but
+/// a sibling's `reset_solver_stats()` (`test_lineage_telemetry_surfaced`)
+/// landing between the two reads hides the bump, so the store is retried on a
+/// fresh context: a reset only ever hides a bump, never fakes one
+/// (angr-vmi2l.352).
 #[test]
 fn test_assert_address_disjunction_multiple_write_hoists() {
     use crate::symbolic::concretize::AddressConcretizer;
     use crate::symbolic::get_solver_stats;
 
-    let pre = get_solver_stats();
-    let pre_count = pre
-        .get("concretize_disjunction_count")
-        .copied()
-        .unwrap_or(0);
-    let pre_terms = pre
-        .get("concretize_disjunction_terms_total")
-        .copied()
-        .unwrap_or(0);
-
-    let ctx = SymContext::new_mock();
+    let read = |key: &str| get_solver_stats().get(key).copied().unwrap_or(0);
     // SYMBOLIC_WRITE_ADDRESSES on so the Range strategy applies; the default
     // Max-only chain resolves an unannotated symbolic address to one value and
     // hoists no disjunction (angr-9ke6b.194).
@@ -181,40 +177,47 @@ fn test_assert_address_disjunction_multiple_write_hoists() {
         symbolic_write_addresses: true,
         ..AddressConcretizer::new()
     };
-    let mut mem = SymbolicMemory::new(Endness::Little);
-    mem.map(0x1000, 0x1000, Permission::RWX);
 
-    // Two non-strided candidates so the concretizer returns Multiple, not
-    // Strided. 0x1000 and 0x1080 with a single anchor in between excludes
-    // strided detection.
-    let addr = RustBV::symbol("dj_addr", 64);
-    let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
-    let a1 = addr.eq(&RustBV::concrete(0x1080, 64));
-    let a2 = addr.eq(&RustBV::concrete(0x1300, 64));
-    ctx.assume_true(&a0.or(&a1).or(&a2));
-    assert!(ctx.is_sat());
+    let mut last = None;
+    let mut counted = false;
+    for _ in 0..4 {
+        let pre_count = read("concretize_disjunction_count");
+        let pre_terms = read("concretize_disjunction_terms_total");
 
-    let value = RustBV::concrete(0xCAFE_BABE, 32);
-    mem.store_symbolic_unified(addr.clone(), value, &ctx, &concretizer)
-        .expect("multi store must succeed");
+        let ctx = SymContext::new_mock();
+        let mut mem = SymbolicMemory::new(Endness::Little);
+        mem.map(0x1000, 0x1000, Permission::RWX);
 
-    let post = get_solver_stats();
-    let post_count = post.get("concretize_disjunction_count").copied().unwrap();
-    let post_terms = post
-        .get("concretize_disjunction_terms_total")
-        .copied()
-        .unwrap();
+        // Two non-strided candidates so the concretizer returns Multiple, not
+        // Strided. 0x1000 and 0x1080 with a single anchor in between excludes
+        // strided detection.
+        let addr = RustBV::symbol("dj_addr", 64);
+        let a0 = addr.eq(&RustBV::concrete(0x1000, 64));
+        let a1 = addr.eq(&RustBV::concrete(0x1080, 64));
+        let a2 = addr.eq(&RustBV::concrete(0x1300, 64));
+        ctx.assume_true(&a0.or(&a1).or(&a2));
+        assert!(ctx.is_sat());
+
+        let value = RustBV::concrete(0xCAFE_BABE, 32);
+        mem.store_symbolic_unified(addr.clone(), value, &ctx, &concretizer)
+            .expect("multi store must succeed");
+
+        let post_count = read("concretize_disjunction_count");
+        let post_terms = read("concretize_disjunction_terms_total");
+        last = Some((ctx, addr));
+        if post_count > pre_count && post_terms >= pre_terms.saturating_add(3) {
+            counted = true;
+            break;
+        }
+    }
     assert!(
-        post_count > pre_count,
-        "expected concretize_disjunction_count to increment (pre={pre_count}, post={post_count})"
-    );
-    assert!(
-        post_terms >= pre_terms + 3,
-        "expected at least 3 terms added (pre={pre_terms}, post={post_terms})"
+        counted,
+        "expected concretize_disjunction_count to increment and at least 3 terms added"
     );
 
     // After the hoist, addr is provably NOT 0x9999 (outside the candidate
     // set). Without the hoist Z3 would have permitted that branch.
+    let (ctx, addr) = last.expect("the loop runs at least once");
     let outside = addr.eq(&RustBV::concrete(0x9999, 64));
     assert!(
         !ctx.can_be_true(&outside),
