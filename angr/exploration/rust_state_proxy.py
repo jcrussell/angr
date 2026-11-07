@@ -3054,9 +3054,17 @@ class RustPosixProxy:
         # add_constraints. None for standalone construction.
         self._shared_ctx_getter = shared_ctx_getter
 
-    def dumps(self, fd):
-        """Dump file descriptor contents."""
+    def dumps(self, fd, **kwargs):
+        """Dump file descriptor contents.
+
+        ``kwargs`` are ``SimSystemPosix.dumps``'s eval keywords. fd 0 honours
+        ``extra_constraints``; output fds are concrete buffers and ignore
+        them, as the Python engine's concrete stdout does (angr-vmi2l.335).
+        """
         if fd == 0:
+            extra = tuple(kwargs.get("extra_constraints", ()))
+            if extra:
+                return self._eval_stdin_under(extra)
             # stdin — evaluate symbolic variables under constraints
             return self._eval_stdin()
         if fd == 1:
@@ -3106,6 +3114,46 @@ class RustPosixProxy:
             # ``owned_ctx`` was forked above in this same call, on this same
             # thread, so the owner id is simply the current thread.
             _release_owned_ctx(owned_ctx, threading.get_ident())
+
+    def _stdin_ast(self):
+        """The stdin stream as one claripy AST, laid out as ``_eval_stdin`` lays out its bytes; None when empty."""
+        if self._stdin_vars:
+            leaves = [var for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1])]
+        else:
+            leaves = list(self._mgr.get_stdin_seed_asts(self._state_id))
+            for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
+                sym = claripy.BVS(name, bits, explicit_name=True)
+                # A wider symbol (scanf %d) is laid out little-endian, as in _eval_rust_stdin.
+                leaves.append(sym.reversed if bits > 8 else sym)
+        if not leaves:
+            return None
+        return claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
+
+    def _eval_stdin_under(self, extra):
+        """``dumps(0, extra_constraints=extra)``: the whole stream solved as one model under ``extra``.
+
+        Raises on an unsatisfiable ``extra`` as ``SimSolver.eval`` does,
+        rather than returning ``b""``. A variable-length read keeps the
+        length the state's own constraints give it.
+        """
+        data = self._stdin_ast()
+        if data is None:
+            return b""
+        owned_ctx = None
+        try:
+            if self._shared_ctx_getter is not None:
+                solver_ctx = self._shared_ctx_getter()
+            else:
+                # Released on this thread below, as in _eval_stdin (angr-87e56).
+                solver_ctx = owned_ctx = self._mgr.fork_state_solver(self._state_id)
+            val = _with_extra_constraints(solver_ctx, solver_ctx.eval, data, extra=extra)
+        finally:
+            _release_owned_ctx(owned_ctx, threading.get_ident())
+        if val is None:
+            from angr.errors import SimUnsatError  # pylint: disable=import-outside-toplevel
+
+            raise SimUnsatError("RustPosixProxy.dumps(0): stdin has no model under extra_constraints")
+        return val.to_bytes(data.length // 8, "big")
 
     def _eval_rust_stdin(self):
         """``dumps(0)`` from the seeded stdin and the symbols native reads created in Rust.

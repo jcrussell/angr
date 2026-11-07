@@ -777,4 +777,10 @@ impl RustExplorationManager {
     pub fn eval_stdin_seed(&self, state_id: u64) -> Option<Vec<u8>> {
         self._eval_stdin_seed(state_id)
     }
+
+    /// fd 0's seeded content as one claripy AST per byte; `eval_stdin_seed`
+    /// unevaluated. Raises `ValueError` for an unknown state.
+    pub fn get_stdin_seed_asts(&self, py: Python<'_>, state_id: u64) -> PyResult<Vec<Py<PyAny>>> {
+        self._get_stdin_seed_asts(py, state_id)
+    }
 }

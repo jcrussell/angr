@@ -1370,6 +1370,29 @@ impl RustExplorationManager {
                 .collect(),
         )
     }
+
+    /// fd 0's seeded content as one claripy AST per byte, the unevaluated
+    /// form of `_eval_stdin_seed`, so a proxy's `posix.dumps(0,
+    /// extra_constraints=...)` can solve the seed and the stdin leaves as one
+    /// model (angr-vmi2l.335). Empty when nothing was seeded.
+    pub(crate) fn _get_stdin_seed_asts(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        self.with_state(state_id, |state| {
+            let Some(seed) = state.file_system_ref().fd_content_sym(0) else {
+                return Ok(Vec::new());
+            };
+            let claripy = crate::claripy_bridge::claripy_module(py)?;
+            seed.iter()
+                .map(|byte| {
+                    rustbv_to_claripy(py, byte, claripy.as_any())
+                        .map_err(|e| ast_export_err("stdin seed byte", e))
+                })
+                .collect()
+        })
+    }
 }
 
 /// Every `(name, width)` stdin leaf `state` recorded, in read order. A
