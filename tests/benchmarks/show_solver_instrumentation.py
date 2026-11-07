@@ -74,6 +74,7 @@ SITE_ORDER = [
     "min_search",
     "max_init",
     "max_search",
+    "unsat_core",
 ]
 
 

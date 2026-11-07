@@ -316,6 +316,7 @@ check_sites! {
         MinSearch => "min_search",
         MaxInit => "max_init",
         MaxSearch => "max_search",
+        UnsatCore => "unsat_core",
     }
 }
 

@@ -32,6 +32,7 @@ use super::SymContext;
 use super::ToZ3;
 
 use super::solver_build::*;
+use crate::symbolic::stats::CheckSite;
 use std::sync::atomic::Ordering;
 
 impl SymContext {
@@ -291,7 +292,9 @@ impl SymContext {
 
         // Only a decided Unsat produces a core; Sat and Unknown (timeout) alike
         // yield no core (angr-qwyti.3, invariant-z3-unknown-not-unsat).
-        if solver.check_assumptions(&trackers).decided() != Some(false) {
+        if timed_check_assumptions(&solver, &trackers, CheckSite::UnsatCore).decided()
+            != Some(false)
+        {
             return Vec::new();
         }
         let mut core: Vec<usize> = solver

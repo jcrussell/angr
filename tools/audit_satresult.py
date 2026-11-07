@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Grep gate: ban raw ``z3::SatResult::{Sat,Unsat}`` matches in Rust core code
-(bd angr-qwyti.3).
+"""Grep gate: ban raw ``z3::SatResult::{Sat,Unsat}`` matches and raw solver checks
+in Rust core code (bd angr-qwyti.3, angr-vmi2l.307).
 
 Interpreting a Z3 ``check()`` outcome must go through the single
 forcing-function ``SatOutcome::decided`` (in
@@ -11,9 +11,23 @@ angr-ph300.43 / angr-n0irt.1 bug class (see the ``invariant-z3-unknown-not-unsat
 memory): it fabricates extrema, permanently pins ``sat_cache=false``, and prunes
 feasible branches.
 
-This gate scans production Rust under ``native/angr/src/`` and fails when it
-finds a ``SatResult::Sat`` or ``SatResult::Unsat`` token outside two allowed
-contexts:
+This gate scans production Rust under the ``SCAN`` crates' code (comments and
+string literals blanked) and fails when it finds any of the ``BANNED`` shapes:
+
+  * a ``SatResult::Sat`` or ``SatResult::Unsat`` token;
+  * a ``SatResult::*`` / ``SatResult::{..}`` import or a ``SatResult as``
+    alias, which would bring the variants in under a name the first rule
+    cannot see (angr-vmi2l.307);
+  * ``.decided().unwrap_or(..)`` / ``.unwrap_or_default()``, which folds
+    ``None`` (Unknown) back into a boolean: the collapse ``decided`` exists to
+    prevent;
+  * a raw ``.check(`` / ``.check_assumptions(`` outside ``solver_build.rs``.
+    ``timed_check`` / ``timed_check_assumptions`` there count every check in
+    ``Z3_CHECK_COUNT`` / ``Z3_TIMEOUT_COUNT`` and the per-site stats, and a raw
+    check skips them (and can be matched against ``SatResult::Unknown``
+    without naming the banned variants).
+
+Two contexts are allowed:
 
   * a line (or the two lines above it) tagged ``// satresult-exempt`` — reserved
     for the ``SatOutcome`` impl and the per-variant stats counter in
@@ -22,12 +36,14 @@ contexts:
     where asserting a raw solver verdict is the point of the test.
 
 ``SatResult::Unknown`` on its own is always allowed — naming the timeout variant
-is never the bug; collapsing it into a sat/unsat boolean is.
+is never the bug; collapsing it into a sat/unsat boolean is. A pattern is
+matched over the whole blanked file, so a ``.decided()`` split from its
+``.unwrap_or(`` across lines still fires; the hit reports its first line.
 
 Usage::
 
     tools/audit_satresult.py            # gate: exit 1 on any violation
-    tools/audit_satresult.py --list     # list every SatResult::{Sat,Unsat} site
+    tools/audit_satresult.py --list     # list every banned site, exempt and test ones too
     tools/audit_satresult.py --self-test  # prove it can fail
 
 Pure stdlib; runs no symbolic execution.
@@ -42,7 +58,14 @@ from pathlib import Path
 
 # The scanner below is this gate's own; only root resolution is shared.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source_utils import ScanRootError, require_floor, rust_files, scan_roots, self_test_scan_roots
+from rust_source_utils import (
+    ScanRootError,
+    blank_noise,
+    require_floor,
+    rust_files,
+    scan_roots,
+    self_test_scan_roots,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCAN = {
@@ -57,7 +80,15 @@ EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: compile-time code gene
 MIN_FILES = 400
 
 # Only the boolean-collapsing variants are banned; Unknown is fine to name.
-BANNED = re.compile(r"SatResult::(Sat|Unsat)\b")
+BANNED = re.compile(
+    r"SatResult::(?:Sat|Unsat)\b"
+    r"|SatResult::\s*[*{]"
+    r"|\bSatResult\s+as\s+\w"
+    r"|\.decided\(\)\s*\.unwrap_or(?:_default)?\("
+)
+# The only file allowed to call the solver directly: its timed wrappers.
+RAW_CHECK = re.compile(r"\.check(?:_assumptions)?\(")
+RAW_CHECK_HOME = "solver_build.rs"
 EXEMPT_TAG = "satresult-exempt"
 # The rationale tag sits on the match arm's own line or just above it.
 EXEMPT_LOOKBACK = 2
@@ -84,12 +115,14 @@ def scan_text(path: Path, text: str, list_all: bool) -> list[tuple[Path, int, st
     if not list_all and _is_test_file(path):
         return hits
     lines = text.splitlines()
-    for idx, line in enumerate(lines):
-        if not BANNED.search(line):
-            continue
+    code = blank_noise(text)
+    starts = [m.start() for m in BANNED.finditer(code)]
+    if path.name != RAW_CHECK_HOME:
+        starts.extend(m.start() for m in RAW_CHECK.finditer(code))
+    for idx in sorted({code.count("\n", 0, pos) for pos in starts}):
         if not list_all and _tagged(lines, idx):
             continue
-        hits.append((path, idx + 1, line.strip()))
+        hits.append((path, idx + 1, lines[idx].strip()))
     return hits
 
 
@@ -138,11 +171,39 @@ impl SatOutcome for z3::SatResult {
 fn timeout_only(r: z3::SatResult) -> bool {
     r == z3::SatResult::Unknown
 }
+use z3::SatResult::*;
+use z3::SatResult::{Sat, Unsat};
+use z3::{SatResult as R, Solver};
+fn collapse(s: &z3::Solver) -> bool {
+    timed_check(s, CheckSite::Eval).decided().unwrap_or(false)
+        || timed_check(s, CheckSite::Eval)
+            .decided()
+            .unwrap_or_default()
+}
+fn unknown_only(s: &z3::Solver, t: &[z3::ast::Bool]) -> bool {
+    !matches!(s.check_assumptions(t), z3::SatResult::Unknown)
+}
+fn decided_ok(s: &z3::Solver) -> Option<bool> {
+    // a comment naming z3::SatResult::Sat and solver.check() is prose
+    let _ = "z3::SatResult::Unsat";
+    timed_check(s, CheckSite::Eval).decided()
+}
 """
 _SELF_TEST_EXPECTED = [
+    (2, "match solver.check() {"),
     (3, "z3::SatResult::Sat => true,"),
     (8, "r == z3::SatResult::Unsat"),
+    (26, "use z3::SatResult::*;"),
+    (27, "use z3::SatResult::{Sat, Unsat};"),
+    (28, "use z3::{SatResult as R, Solver};"),
+    (30, "timed_check(s, CheckSite::Eval).decided().unwrap_or(false)"),
+    (32, ".decided()"),
+    (36, "!matches!(s.check_assumptions(t), z3::SatResult::Unknown)"),
 ]
+# The timed wrappers' home may call the solver directly: the same fixture
+# there loses only its raw-check hits.
+_SELF_TEST_RAW_CHECK_HOME = Path("native/angr-symex-core/src/symbolic/solver_build.rs")
+_SELF_TEST_HOME_EXPECTED = [hit for hit in _SELF_TEST_EXPECTED if hit[0] not in (2, 36)]
 _SELF_TEST_PROD = Path("native/angr-symex-core/src/symbolic/fixture.rs")
 _SELF_TEST_TEST_PATHS = (
     Path("native/angr-symex-core/src/symbolic/fixture_tests.rs"),
@@ -161,6 +222,9 @@ def self_test() -> int:
     got = [(ln, code) for _, ln, code in scan_text(_SELF_TEST_PROD, _SELF_TEST_SRC, list_all=False)]
     if got != _SELF_TEST_EXPECTED:
         failures.append(f"production path: expected {_SELF_TEST_EXPECTED}\n  got      {got}")
+    got_home = [(ln, code) for _, ln, code in scan_text(_SELF_TEST_RAW_CHECK_HOME, _SELF_TEST_SRC, list_all=False)]
+    if got_home != _SELF_TEST_HOME_EXPECTED:
+        failures.append(f"{RAW_CHECK_HOME}: expected {_SELF_TEST_HOME_EXPECTED}\n  got      {got_home}")
     for test_path in _SELF_TEST_TEST_PATHS:
         got_test = scan_text(test_path, _SELF_TEST_SRC, list_all=False)
         if got_test:
@@ -173,7 +237,9 @@ def self_test() -> int:
             print(f"  {f}")
         return 1
     print(
-        "self-test OK: raw SatResult::Sat / ::Unsat flagged; satresult-exempt "
+        "self-test OK: raw SatResult::Sat / ::Unsat, glob/group/alias imports, "
+        "decided().unwrap_or(..) collapses (also split across lines) and raw "
+        "checks outside solver_build.rs flagged; comments and strings, satresult-exempt "
         "(inline and lookback), SatResult::Unknown and *_tests paths pass; "
         "an unclassified member, a missing root and a low file count fail"
     )
@@ -185,7 +251,7 @@ def main() -> int:
     ap.add_argument(
         "--list",
         action="store_true",
-        help="list every SatResult::{Sat,Unsat} site (including exempt/test)",
+        help="list every banned site (including exempt/test)",
     )
     ap.add_argument("--self-test", action="store_true", help="prove the detector fires on a synthetic raw match")
     args = ap.parse_args()
@@ -202,15 +268,16 @@ def main() -> int:
     if args.list:
         for rel, ln, code in hits:
             print(f"{rel}:{ln}: {code}")
-        print(f"\n{len(hits)} SatResult::{{Sat,Unsat}} site(s) total.")
+        print(f"\n{len(hits)} banned site(s) total.")
         return 0
 
     if hits:
         print(
-            "ERROR: raw SatResult::{Sat,Unsat} match outside SatOutcome::decided "
-            "(angr-qwyti.3).\n"
-            "Route the check through `.decided()` (Some(true)=Sat, Some(false)="
-            "Unsat, None=Unknown),\n"
+            "ERROR: raw SatResult::{Sat,Unsat} match, SatResult glob/alias import, "
+            "decided() collapse or raw solver check (angr-qwyti.3, angr-vmi2l.307).\n"
+            "Check through `timed_check` / `timed_check_assumptions` and route the "
+            "result through `.decided()` (Some(true)=Sat, Some(false)=Unsat, "
+            "None=Unknown), deciding None explicitly,\n"
             "or, for a site that must distinguish all three, tag the line "
             "`// satresult-exempt: <reason>`.\n",
             file=sys.stderr,
@@ -219,7 +286,7 @@ def main() -> int:
             print(f"  {rel}:{ln}: {code}", file=sys.stderr)
         return 1
 
-    print("OK: no raw SatResult::{Sat,Unsat} matches outside the helper.")
+    print("OK: no raw SatResult::{Sat,Unsat} match, decided() collapse or raw check outside the helpers.")
     return 0
 
 

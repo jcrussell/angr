@@ -327,7 +327,8 @@ Counter cheat-sheet relevant to per-context solver behavior:
 * ``z3_site_<name>_count`` / ``z3_site_<name>_time_ns`` —
   per-call-site time attribution. Sites: ``satisfiable``,
   ``branch_true``, ``branch_false``, ``eval``, ``eval_upto``,
-  ``min_init``, ``min_search``, ``max_init``, ``max_search``.
+  ``min_init``, ``min_search``, ``max_init``, ``max_search``,
+  ``unsat_core``.
 
 Counters are process-wide ``AtomicU64`` statics, so
 ``mgr.reset_solver_stats()`` zeros them across every active

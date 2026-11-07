@@ -954,7 +954,7 @@ The returned dict includes:
 * ``z3_site_<name>_count`` / ``z3_site_<name>_time_ns`` — per-call-site
   breakdown. Sites include ``satisfiable``, ``branch_true``,
   ``branch_false``, ``eval``, ``eval_upto``, ``min_init``,
-  ``min_search``, ``max_init``, ``max_search``.
+  ``min_search``, ``max_init``, ``max_search``, ``unsat_core``.
 
 Counters are global (shared across ``SymContext`` instances). Call
 ``mgr.reset_solver_stats()`` to zero them at the start of a measured

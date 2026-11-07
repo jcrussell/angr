@@ -143,6 +143,25 @@ fn enum_fault_fires(site: CheckSite) -> bool {
 /// Timed wrapper around solver.check() — records count, total time, and per-site stats.
 #[inline]
 pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
+    timed(site, || solver.check())
+}
+
+/// [`timed_check`] for a check under assumption literals, so it lands in the
+/// same counters (angr-vmi2l.307).
+#[inline]
+pub(crate) fn timed_check_assumptions(
+    solver: &z3::Solver,
+    assumptions: &[z3::ast::Bool],
+    site: CheckSite,
+) -> z3::SatResult {
+    timed(site, || solver.check_assumptions(assumptions))
+}
+
+/// Run `check` and record it against `site`: the one place a Z3 check
+/// outcome is counted. `tools/audit_satresult.py` flags a raw
+/// `.check(` / `.check_assumptions(` anywhere else in this file's crate set.
+#[inline]
+fn timed(site: CheckSite, check: impl FnOnce() -> z3::SatResult) -> z3::SatResult {
     let start = std::time::Instant::now();
     // Test-only stand-in for a Z3 resource abort (see
     // `stop_enumeration_after_for_test`). The real check is skipped so the
@@ -152,10 +171,10 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
     let result = if enum_fault_fires(site) {
         z3::SatResult::Unknown
     } else {
-        solver.check()
+        check()
     };
     #[cfg(not(test))]
-    let result = solver.check();
+    let result = check();
     let elapsed_ns = crate::elapsed_ns(start);
     Z3_CHECK_COUNT.fetch_add(1, Ordering::Relaxed);
     Z3_CHECK_TIME_NS.fetch_add(elapsed_ns, Ordering::Relaxed);

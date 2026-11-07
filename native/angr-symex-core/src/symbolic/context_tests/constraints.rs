@@ -824,6 +824,24 @@ fn test_unsat_core_assumed_names_untracked_engine_constraints() {
     assert!(!core.contains(&2), "innocent constraint blamed: {core:?}");
 }
 
+/// angr-vmi2l.307: the on-demand core's `check_assumptions` goes through
+/// `timed_check_assumptions`, so it counts against `CheckSite::UnsatCore`
+/// like every other Z3 check. The counter is process-global, but only this
+/// path bumps that site, so a parallel test cannot fake the delta.
+#[test]
+fn test_unsat_core_assumed_check_is_counted() {
+    use crate::symbolic::stats::{CheckSite, Z3_CHECK_SITE_COUNT};
+    let site = &Z3_CHECK_SITE_COUNT[CheckSite::UnsatCore as usize];
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_uca_counted_x", 8);
+    ctx.assume_true(&x.eq(&RustBV::concrete(5, 8)));
+    ctx.assume_true(&x.eq(&RustBV::concrete(6, 8)));
+
+    let before = site.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(!ctx.unsat_core_assumed(&[]).is_empty());
+    assert!(site.load(std::sync::atomic::Ordering::Relaxed) > before);
+}
+
 /// angr-op0dn.14.2: a constraint imported from Python lands in BOTH constraint
 /// lists — `_add_constraints_to_state`'s Z3-ptr fast path calls
 /// `add_constraint_raw` (which logs it as a residual `non_bv_assertion`) and
