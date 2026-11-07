@@ -362,6 +362,21 @@ impl MemoryPage {
         self.uninit_bitmap.any_set()
     }
 
+    /// The maximal runs of uninitialized bytes on this page, as page-local
+    /// `(offset, len)` pairs, ascending.
+    pub fn uninit_runs(&self) -> Vec<(u16, u16)> {
+        let mut runs: Vec<(u16, u16)> = Vec::new();
+        for off in self.uninit_bitmap.set_offsets() {
+            match runs.last_mut() {
+                // overflow-ok: a run ends inside the page, so `start + len`
+                // and `len + 1` are at most PAGE_SIZE.
+                Some((start, len)) if *start + *len == off => *len += 1,
+                _ => runs.push((off, 1)),
+            }
+        }
+        runs
+    }
+
     /// Whether byte `offset` is uninitialized.
     #[inline]
     pub fn is_uninit(&self, offset: u16) -> bool {

@@ -267,10 +267,15 @@ impl RustExplorationManager {
     /// symbolic AST verbatim — never concretizes via the solver. Used by
     /// `RustMemoryProxy.load` when the gate is on so symbolic libc
     /// SimProcedures (strlen/strchr/memchr/...) see real symbolic bytes
-    /// instead of an arbitrary solver witness.
+    /// instead of an arbitrary solver witness. A never-written byte reads as
+    /// a filler it mints and keeps (angr-mx00p.132.81).
     /// See `state_api::_get_state_memory_ast` for the body.
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "mints fillers for never-written bytes on one state_id-scoped state's own \
+                  memory; does not mutate exploration config or the active stash."
+    )]
     pub fn get_state_memory_ast(
-        &self,
+        &mut self,
         py: Python<'_>,
         state_id: u64,
         addr: u64,

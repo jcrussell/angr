@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from angr import claripy, sim_options
 from angr.errors import SimMemoryError, SimUnsatError
+from angr.exploration._constants import PAGE_SIZE
 from angr.exploration._fallback import suppress_recoverable
 from angr.exploration.rust_state_binding import RustStateBinding
 from angr.state_plugins.history import SimStateHistory
@@ -2283,6 +2284,7 @@ class RustStateExportMixin:
         # maps the missing page with Rust's permissions and writes with
         # ``priv`` (angr-mx00p.132.73).
         strict = sim_options.STRICT_PAGE_ACCESS in state.options
+        uninit = self._snapshot_uninit_runs(snapshot)
         for i in range(snapshot.page_count()):
             page = snapshot.get_page(i)
             if page is None:
@@ -2295,8 +2297,18 @@ class RustStateExportMixin:
                 # A BVV stored with the arch's (little) endness would reverse
                 # the whole page (angr-mx00p.90).
                 data = bytes(data)
-                state.memory.store(page_addr, data, inspect=False, priv=strict)
-                if not symbolic_offsets:
+                runs = uninit.get(page_addr)
+                if runs is None:
+                    state.memory.store(page_addr, data, inspect=False, priv=strict)
+                else:
+                    # A never-written byte stays unstored, so a Python load
+                    # fills it as Rust's would (angr-mx00p.132.81).
+                    pos = 0
+                    for start, size in [*runs, (len(data), 0)]:
+                        if start > pos:
+                            state.memory.store(page_addr + pos, data[pos:start], inspect=False, priv=strict)
+                        pos = start + size
+                if not symbolic_offsets and runs is None:
                     self._share_identical_page(state.memory, page_addr, data)
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
@@ -2317,6 +2329,15 @@ class RustStateExportMixin:
                 # memory at this page is left at its blank-state default,
                 # so loads return zeros instead of Rust's values.
                 l.warning(f"Failed to load page at 0x{page_addr:x}: {e}")
+
+    @staticmethod
+    def _snapshot_uninit_runs(snapshot) -> dict:
+        """``{page_addr: [(page_offset, size), ...]}`` for the snapshot's never-written bytes, ascending per page."""
+        uninit: dict = {}
+        for addr, size in snapshot.uninit_runs():
+            page_addr = addr & ~(PAGE_SIZE - 1)
+            uninit.setdefault(page_addr, []).append((addr - page_addr, size))
+        return uninit
 
     def _share_identical_page(self, memory, page_addr: int, data: bytes) -> None:
         """Swap the page ``data`` was just stored to for an identical one an earlier export built.

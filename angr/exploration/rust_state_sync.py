@@ -752,12 +752,7 @@ class RustStateSyncMixin:
                                 angr_state, sp_page, page_size, sd, symbolic_regions, concrete
                             )
                         rust_state.map_memory_data(sp_page, bytes(concrete), 6)
-                        if "ZERO_FILL_UNCONSTRAINED_MEMORY" not in angr_state.options:
-                            # concrete_load reads a never-written byte as zero;
-                            # Python's load mints a fill symbol for it, so Rust
-                            # must too (angr-mx00p.132.58).
-                            for start, size in self._ultrapage_uninit_runs(page_obj, sp_page, page_size):
-                                rust_state.mark_memory_uninit(sp_page + start, size)
+                        self._mark_uninit_bytes(angr_state, rust_state, page_obj, sp_page, page_size)
                         used_fast_path = True
 
             if not used_fast_path:
@@ -810,6 +805,18 @@ class RustStateSyncMixin:
                         symbolic_regions.append((addr, val))
                     else:
                         concrete[start_offset + byte_off] = angr_state.solver.eval(val)
+
+    @classmethod
+    def _mark_uninit_bytes(cls, angr_state, rust_state, page_obj, page_addr: int, page_size: int) -> None:
+        """Mark the never-written bytes of a page just mapped from ``concrete_load`` as uninitialized in Rust.
+
+        concrete_load reads a never-written byte as zero; Python's load mints a fill symbol for it, so Rust must too
+        (angr-mx00p.132.58, angr-mx00p.132.81).
+        """
+        if "ZERO_FILL_UNCONSTRAINED_MEMORY" in angr_state.options:
+            return
+        for start, size in cls._ultrapage_uninit_runs(page_obj, page_addr, page_size):
+            rust_state.mark_memory_uninit(page_addr + start, size)
 
     @staticmethod
     def _ultrapage_uninit_runs(page_obj, page_addr: int, page_size: int) -> list:
@@ -999,6 +1006,7 @@ class RustStateSyncMixin:
                             concrete = None
                     if concrete is not None and len(concrete) == page_size:
                         rust_state.map_memory_data(page_addr, concrete, perms)
+                        self._mark_uninit_bytes(angr_state, rust_state, page_obj, page_addr, page_size)
                 # Else: store_concrete_automap_internal will auto-allocate
                 # this page on first write via add_lazy_region tracking.
                 lazy_batch.append((page_addr, page_size))

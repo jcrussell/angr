@@ -31,3 +31,27 @@ def test_compare_states_with_a_rust_export(rust_side):
     assert proj.analyses.CongruencyCheck(throw=True).compare_states(sl, sr)
     # Comparing reads copies: the export stays a view of its Rust state.
     assert isinstance(export.memory, RustMemoryProxy)
+
+
+@pytest.mark.parametrize("zero_fill", [False, True])
+def test_imported_partly_written_page_reads_unset_bytes_as_python_does(zero_fill):
+    """A page Python wrote one byte of, imported into Rust, reads its other bytes as fills (angr-mx00p.132.81).
+
+    Without ``ZERO_FILL_UNCONSTRAINED_MEMORY`` Python mints a fill for an unwritten byte, so the live export and its
+    detached copy must too; with it, both read zero.
+    """
+    proj = angr.Project(FAUXWARE, auto_load_libs=False)
+    opts = {angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY} if zero_fill else set()
+    state = proj.factory.entry_state(add_options=opts)
+    state.memory.store(0x50000F30, b"\x41")
+    simgr = proj.factory.simgr(state, engine="rust")
+    simgr.explore(find=AUTHENTICATED)
+    export = simgr.found[0]
+    assert isinstance(export.memory, RustMemoryProxy)
+    plain = export._plain_copy()
+
+    for read in (export.memory.load(0x50000308, 8), plain.memory.load(0x50000310, 8)):
+        assert read.symbolic == (not zero_fill)
+    assert plain.memory.load(0x50000F30, 1).concrete_value == 0x41
+    # A minted fill stays: the second read is the first one's value.
+    assert export.memory.load(0x50000308, 8) is export.memory.load(0x50000308, 8)

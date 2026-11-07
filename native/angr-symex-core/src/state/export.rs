@@ -33,6 +33,10 @@ pub struct StateExport {
     registers_raw: Vec<u8>,
     /// Memory pages: (addr, data, permissions, symbolic_offsets).
     memory_pages: Vec<PageData>,
+    /// Runs of never-written bytes on the exported pages, as `(addr, len)`:
+    /// their page bytes read zero, but a load mints a filler for them
+    /// (angr-mx00p.132.81).
+    uninit_runs: Vec<(u64, u64)>,
     /// Number of constraints in the solver.
     pub constraint_count: usize,
     /// Basic block history.
@@ -159,6 +163,12 @@ impl StateExport {
         self.memory_pages
             .get(index)
             .map(|p| (p.0, p.1.clone(), p.2, p.3.clone()))
+    }
+
+    /// The runs of never-written bytes on the exported pages, as
+    /// `(addr, len)`, ascending within each page.
+    pub fn uninit_runs(&self) -> Vec<(u64, u64)> {
+        self.uninit_runs.clone()
     }
 
     /// Get all memory page addresses.
@@ -288,11 +298,19 @@ impl RustSimState {
 
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
+        let mut uninit_runs: Vec<(u64, u64)> = Vec::new();
         for (page_num, page) in self.memory.pages().iter() {
             let page_addr = crate::memory::PageIndex::from_raw(*page_num).base_addr();
             let data = page.load_concrete(0, crate::memory::PAGE_SIZE as u16);
             let permissions = page.permissions().to_bits();
             let symbolic_offsets = page.symbolic_offsets();
+            if page.has_uninit() {
+                uninit_runs.extend(page.uninit_runs().into_iter().map(|(off, len)| {
+                    // overflow-ok: `off` is a page offset, so the sum stays
+                    // on the page.
+                    (page_addr + u64::from(off), u64::from(len))
+                }));
+            }
 
             memory_pages.push((page_addr, data, permissions, symbolic_offsets));
         }
@@ -321,6 +339,7 @@ impl RustSimState {
             arch_name: self.arch.name().to_string(),
             registers_raw,
             memory_pages,
+            uninit_runs,
             constraint_count,
             history: self.history.iter().copied().collect(),
             named_registers,

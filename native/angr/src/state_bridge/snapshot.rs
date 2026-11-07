@@ -112,6 +112,11 @@ impl ExplorationStateSnapshot {
         self.inner.get_page(index)
     }
 
+    /// See [`StateExport::uninit_runs`].
+    pub fn uninit_runs(&self) -> Vec<(u64, u64)> {
+        self.inner.uninit_runs()
+    }
+
     /// See [`StateExport::page_addresses`].
     pub fn page_addresses(&self) -> Vec<u64> {
         self.inner.page_addresses()

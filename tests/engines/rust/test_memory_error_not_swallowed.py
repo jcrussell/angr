@@ -33,6 +33,9 @@ class _OneBlankPage:
     def get_page(self, _i):
         return (0x10000, bytes(0x1000), 7, [])
 
+    def uninit_runs(self):
+        return []
+
 
 def _raising(exc):
     def store(*_args, **_kwargs):

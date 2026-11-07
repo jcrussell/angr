@@ -737,28 +737,14 @@ impl<'a> VEXInterpreter<'a> {
         addr_concrete: u64,
         size: usize,
     ) {
-        let Some(rust_mem) = self.rust_memory.as_ref() else {
-            return;
-        };
-        let runs = rust_mem.uninit_runs(addr_concrete, size as u64);
-        if runs.is_empty() || !self.store_buffers_empty() {
+        if !self.store_buffers_empty() {
             return;
         }
-        for (run_addr, run_len) in runs {
-            let bits = (run_len * 8) as u32;
-            let name = crate::memory::mem_filler_name(run_addr, bits);
-            let filler = RustBV::symbol(&name, bits);
-            let Some(rust_mem) = self.rust_memory.as_mut() else {
-                return;
-            };
-            if let Err(e) = rust_mem.store_concrete(run_addr, filler.clone()) {
-                // SILENT(cat-b): the run lies on a mapped page Rust owns, so
-                // only a write-protected page refuses; the load then reads
-                // the page's zero, its reading before angr-vmi2l.325.
-                log::debug!("uninit filler store at {run_addr:#x} failed: {e:?}");
-                continue;
-            }
-            rust_mem.record_filler(run_addr, name.clone(), bits);
+        let Some(rust_mem) = self.rust_memory.as_mut() else {
+            return;
+        };
+        let minted = rust_mem.fill_uninit(addr_concrete, size as u64);
+        for (name, bits, filler) in minted {
             self.dispatch_symbolic_variable_inspect(callbacks, &name, bits, &filler);
         }
     }

@@ -37,6 +37,9 @@ class _Snapshot:
     def get_page(self, i):
         return self._pages[i]
 
+    def uninit_runs(self):
+        return []
+
 
 @pytest.fixture
 def project():

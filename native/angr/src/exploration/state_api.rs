@@ -953,7 +953,7 @@ impl RustExplorationManager {
     /// state's value is reversed here; `_set_state_memory_ast` is the inverse
     /// (angr-mx00p.136.32).
     pub(crate) fn _get_state_memory_ast(
-        &self,
+        &mut self,
         py: Python<'_>,
         state_id: u64,
         addr: u64,
@@ -964,15 +964,24 @@ impl RustExplorationManager {
         // `Vec` reservation — same caller, same refusal.
         crate::symbolic::check_concrete_load_size("get_state_memory_ast", size)
             .map_err(PyValueError::new_err)?;
-        self.with_state(state_id, |state| match state.memory_load(addr, size) {
-            Ok(bv) => {
-                let bv = lsb_first(state, bv);
-                let claripy = crate::claripy_bridge::claripy_module(py)?;
-                let ast = rustbv_to_claripy(py, &bv, claripy.as_any())
-                    .map_err(|e| ast_export_err(&format!("memory 0x{addr:x} size {size}"), e))?;
-                Ok(Some(ast))
+        self.with_state_mut(state_id, |state| {
+            // A never-written byte on a mapped page reads as a fresh filler,
+            // which stays in the state, as a Python `DefaultMemory` load
+            // stores its fill (angr-mx00p.132.81). No host is in reach here,
+            // so the symbolic_variable inspect the interpreter fires for a
+            // filler does not fire.
+            state.memory_mut().fill_uninit(addr, u64::from(size));
+            match state.memory_load(addr, size) {
+                Ok(bv) => {
+                    let bv = lsb_first(state, bv);
+                    let claripy = crate::claripy_bridge::claripy_module(py)?;
+                    let ast = rustbv_to_claripy(py, &bv, claripy.as_any()).map_err(|e| {
+                        ast_export_err(&format!("memory 0x{addr:x} size {size}"), e)
+                    })?;
+                    Ok(Some(ast))
+                }
+                Err(_) => Ok(None),
             }
-            Err(_) => Ok(None),
         })
     }
 

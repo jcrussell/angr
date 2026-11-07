@@ -1321,6 +1321,34 @@ impl SymbolicMemory {
         runs
     }
 
+    /// Mint and store a filler over each run of never-written bytes in
+    /// `[addr, addr + size)`, as Python's `DefaultFillerMixin` does per gap,
+    /// and record it (see `SymbolicMemory::fillers`). Returns the fillers
+    /// stored, as `(name, bits, value)`, so a caller with a host can fire the
+    /// symbolic_variable inspect for each.
+    pub fn fill_uninit(
+        &mut self,
+        addr: impl Into<Address>,
+        size: u64,
+    ) -> Vec<(String, u32, RustBV)> {
+        let mut minted = Vec::new();
+        for (run_addr, run_len) in self.uninit_runs(addr, size) {
+            let bits = (run_len * 8) as u32;
+            let name = mem_filler_name(run_addr, bits);
+            let filler = RustBV::symbol(&name, bits);
+            if let Err(e) = self.store_concrete(run_addr, filler.clone()) {
+                // SILENT(cat-b): the run lies on a mapped page, so only a
+                // write-protected page refuses; the load then reads the
+                // page's zero, its reading before angr-vmi2l.325.
+                log::debug!("uninit filler store at {run_addr:#x} failed: {e:?}");
+                continue;
+            }
+            self.record_filler(run_addr, name.clone(), bits);
+            minted.push((name, bits, filler));
+        }
+        minted
+    }
+
     /// Auto-map a zero page for an unmapped address in a lazy region.
     ///
     /// # DEPRECATION WARNING
