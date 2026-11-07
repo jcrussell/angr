@@ -2028,7 +2028,19 @@ class SimCCSystemVAMD64(SimCC):
             else:
                 raise NotImplementedError("Bug. Report to @rhelmot")
 
-        return refine_locs_with_struct_type(self.arch, mapped_classes, ty)
+        loc = refine_locs_with_struct_type(self.arch, mapped_classes, ty)
+        if (
+            isinstance(ty, (SimTypeReg, SimTypeNum))
+            and not isinstance(ty, SimTypeFloat)
+            and type(loc) is SimRegArg
+            and loc.size < self.arch.bytes
+        ):
+            # A narrow scalar clears the rest of rax, as SimCC.return_val's refine does on every other ABI
+            # and as a 32-bit register write does on the hardware. refine_locs_with_struct_type passes an
+            # explicit offset, which drops clear_entire_reg, so without this an int return kept rax's old
+            # upper bits (angr-mx00p.132.83).
+            loc = SimRegArg(loc.reg_name, loc.size, loc.reg_offset, loc.is_fp, clear_entire_reg=True)
+        return loc
 
     def return_in_implicit_outparam(self, ty):
         if isinstance(ty, SimTypeBottom):

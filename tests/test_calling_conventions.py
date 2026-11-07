@@ -131,6 +131,23 @@ class TestCallingConvention(TestCase):
             with self.assertRaises(AngrTypeError):
                 cc.return_val(unsized)
 
+    def test_SystemVAMD64_narrow_int_return_clears_the_upper_rax_bits(self):
+        # Every other 64-bit ABI clears the whole return register before a narrow scalar return;
+        # SysV AMD64 used to keep rax's old upper half (angr-mx00p.132.83).
+        p = load_shellcode(b"\x90", arch="amd64")
+        state = p.factory.blank_state()
+        cc = SimCCSystemVAMD64(p.arch)
+        for ty, val in ((SimTypeInt(), 0xB), (SimTypeChar(), 0x41)):
+            state.regs.rax = claripy.BVV(-1, 64)
+            cc.set_return_val(state, claripy.BVV(val, ty.with_arch(p.arch).size), ty)
+            assert state.solver.eval(state.regs.rax) == val
+
+        # a struct of two ints packs both into rax, so neither field write may clear it
+        pair = SimStruct({"a": SimTypeInt(), "b": SimTypeInt()}).with_arch(p.arch)
+        state.regs.rax = claripy.BVV(-1, 64)
+        cc.set_return_val(state, {"a": claripy.BVV(1, 32), "b": claripy.BVV(2, 32)}, pair)
+        assert state.solver.eval(state.regs.rax) == 0x2_0000_0001
+
     def test_SystemVAMD64_flatten_int(self):
         arch = archinfo.arch_from_id("amd64")
         cc = SimCCSystemVAMD64(arch)
