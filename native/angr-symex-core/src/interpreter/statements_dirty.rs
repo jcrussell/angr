@@ -84,6 +84,21 @@ fn dirty_guard_false_poison(name: &str, bits: u32) -> Result<RustBV, CbExecution
     Ok(RustBV::concrete(DIRTY_GUARD_FALSE_PATTERN, bits))
 }
 
+/// A dirty call's result-temp value: `value` itself when the guard was
+/// decided true, else `ITE(guard, value, poison)` — the guard-false poison
+/// [`dirty_guard_false_poison`] writes for a decided-false guard.
+fn guarded_result(
+    guard: Option<&RustBV>,
+    value: RustBV,
+    name: &str,
+    bits: u32,
+) -> Result<RustBV, CbExecutionError> {
+    match guard {
+        None => Ok(value),
+        Some(guard_val) => Ok(guard_val.ite(&value, &dirty_guard_false_poison(name, bits)?)),
+    }
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Execute an `IRStmt::Dirty` call: guard handling, native dirty-helper
     /// dispatch, and the Python-callback / fresh-symbolic fallbacks.
@@ -97,9 +112,11 @@ impl<'a> VEXInterpreter<'a> {
         dirty: &angr_vex::ir::IRDirty,
         irsb: &IRSB,
     ) -> Result<StmtResult, CbExecutionError> {
-        if self.dirty_guard_phase(callbacks, dirty, irsb)? == DirtyGuard::Skipped {
-            return Ok(StmtResult::Continue);
-        }
+        let guard = match self.dirty_guard_phase(callbacks, dirty, irsb)? {
+            DirtyGuard::Skipped => return Ok(StmtResult::Continue),
+            DirtyGuard::Run => None,
+            DirtyGuard::Guarded(guard_val) => Some(guard_val),
+        };
 
         // The new CR0 lands in Python's `state.globals`, out of sight of the
         // native `x86g_use_seg_selector` gate, so close it for good.
@@ -120,23 +137,31 @@ impl<'a> VEXInterpreter<'a> {
             )));
         }
 
-        let arg_vals = self.dirty_arg_values(callbacks, dirty, &irsb.tyenv)?;
+        let arg_vals = self.dirty_arg_values(callbacks, dirty, &irsb.tyenv, guard.is_none())?;
         let ret_ty_bits = dirty_ret_ty_bits(dirty, irsb)?;
 
         if let Some(args) = arg_vals.as_deref()
-            && self.dirty_native_dispatch(dirty, args, ret_ty_bits)?
+            && self.dirty_native_dispatch(dirty, args, ret_ty_bits, guard.as_ref())?
         {
             return Ok(StmtResult::Continue);
         }
 
-        self.dirty_python_dispatch(callbacks, dirty, arg_vals.as_deref(), ret_ty_bits)
+        self.dirty_python_dispatch(
+            callbacks,
+            dirty,
+            arg_vals.as_deref(),
+            ret_ty_bits,
+            guard.as_ref(),
+        )
     }
 
     /// Phase 1: classify `dirty`'s guard and act on the two decided cases.
     ///
     /// Returns [`DirtyGuard::Skipped`] when the call must not run — the caller
     /// continues to the next statement; the result temp (if any) has already
-    /// been defined here.
+    /// been defined here. A guard that can go either way is
+    /// [`DirtyGuard::Guarded`], or `NeedPythonFallback` when the helper has an
+    /// effect the result-temp `ITE` cannot condition.
     fn dirty_guard_phase(
         &mut self,
         callbacks: &dyn EngineHost,
@@ -169,16 +194,19 @@ impl<'a> VEXInterpreter<'a> {
             }
             // Guard must be true - run it unconditionally.
             GuardClass::Always => Ok(DirtyGuard::Run),
+            // Both feasible. VEX's semantics are `tmp = ITE(guard, ret,
+            // 0x55..)` with every effect under the guard. Pinning the guard
+            // true dropped every guard-false state (angr-vmi2l.171), so only
+            // the result temp is conditioned here; a helper with a memory or
+            // guest-state effect routes the block to Python.
             GuardClass::Symbolic => {
-                // Both feasible: we can't fork mid-block, so pin the guard
-                // true and run the call. Loses the not-taken branch but
-                // matches angr's existing dirty-helper concretization.
-                log::debug!(
-                    "dirty call '{}': symbolic guard concretized to taken branch",
-                    dirty.cee.name
-                );
-                self.ctx.assume_true(&guard_val);
-                Ok(DirtyGuard::Run)
+                if dirty.mFx != DirtyFx::None || dirty.nFxState != 0 {
+                    return Err(CbExecutionError::NeedPythonFallback(format!(
+                        "dirty call '{}': symbolic guard over a helper with effects",
+                        dirty.cee.name
+                    )));
+                }
+                Ok(DirtyGuard::Guarded(guard_val))
             }
         }
     }
@@ -191,17 +219,26 @@ impl<'a> VEXInterpreter<'a> {
     /// consistent. `None` means the solver could not produce a concrete value
     /// for some arg (e.g. an UNSAT path); both dispatch paths have their own
     /// fallback policy for that, so this is not an error here.
+    ///
+    /// `may_pin` is false under a symbolic guard: a pin would constrain the
+    /// guard-false states too, so a symbolic arg routes to Python instead.
     fn dirty_arg_values(
         &mut self,
         callbacks: &dyn EngineHost,
         dirty: &angr_vex::ir::IRDirty,
         tyenv: &angr_vex::ir::TypeEnv,
+        may_pin: bool,
     ) -> Result<Option<Vec<u64>>, CbExecutionError> {
         let mut arg_vals: Vec<u64> = Vec::with_capacity(dirty.args.len());
         for arg in &dirty.args {
             let val = self.eval_expr_with_callbacks(callbacks, arg, tyenv)?;
             if let Some(concrete) = val.as_u64() {
                 arg_vals.push(concrete);
+            } else if !may_pin {
+                return Err(CbExecutionError::NeedPythonFallback(format!(
+                    "dirty call '{}': symbolic arg under a symbolic guard",
+                    dirty.cee.name
+                )));
             } else if let Some(concrete) = self.concretize_and_pin(&val) {
                 arg_vals.push(concrete);
             } else {
@@ -224,10 +261,17 @@ impl<'a> VEXInterpreter<'a> {
         dirty: &angr_vex::ir::IRDirty,
         arg_vals: &[u64],
         ret_ty_bits: u32,
+        guard: Option<&RustBV>,
     ) -> Result<bool, CbExecutionError> {
         let Some(result) = self.dirty_dispatch.try_call(&dirty.cee.name, arg_vals) else {
             return Ok(false);
         };
+        if guard.is_some() && !result.reg_writes.is_empty() {
+            return Err(CbExecutionError::NeedPythonFallback(format!(
+                "dirty call '{}': register writes under a symbolic guard",
+                dirty.cee.name
+            )));
+        }
 
         log::trace!(
             "Native dirty call: {} (args: {:?})",
@@ -240,6 +284,7 @@ impl<'a> VEXInterpreter<'a> {
             && let Some(return_value) = result.return_value
         {
             let value = RustBV::concrete(return_value as u128, ret_ty_bits);
+            let value = guarded_result(guard, value, &dirty.cee.name, ret_ty_bits)?;
             self.write_tmp(tmp, value)?;
         }
 
@@ -265,6 +310,7 @@ impl<'a> VEXInterpreter<'a> {
         dirty: &angr_vex::ir::IRDirty,
         arg_vals: Option<&[u64]>,
         ret_ty_bits: u32,
+        guard: Option<&RustBV>,
     ) -> Result<StmtResult, CbExecutionError> {
         // No native handler matched and Python has no `dirty_call` callback
         // registered either, so nobody in this process models the helper.
@@ -294,6 +340,7 @@ impl<'a> VEXInterpreter<'a> {
                 // `IRType::bits` never yields 0, so the 0 sentinel means
                 // "no result temp" and cannot be reached inside this arm.
                 let stub = RustBV::symbol(format!("dirty_{}_stub", dirty.cee.name), ret_ty_bits);
+                let stub = guarded_result(guard, stub, &dirty.cee.name, ret_ty_bits)?;
                 self.write_tmp(tmp, stub)?;
             }
             return Ok(StmtResult::Continue);
@@ -344,6 +391,7 @@ impl<'a> VEXInterpreter<'a> {
                 // Convert the little-endian callback bytes to a concrete value.
                 bytes_to_bv(&reply.bytes, ret_ty_bits)
             };
+            let result = guarded_result(guard, result, &dirty.cee.name, ret_ty_bits)?;
 
             self.write_tmp(tmp, result)?;
         }
@@ -356,10 +404,12 @@ impl<'a> VEXInterpreter<'a> {
 ///
 /// A bool would read as `if self.dirty_guard_phase(..)? { return ... }` at the
 /// one call site, where neither polarity is obviously the skip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DirtyGuard {
-    /// The guard is absent, always-true, or was pinned true — execute the call.
+    /// The guard is absent or always-true — execute the call.
     Run,
+    /// The guard can go either way — execute the call and write its result
+    /// temp through [`guarded_result`] with this guard value.
+    Guarded(RustBV),
     /// The guard cannot be true; the result temp has been poisoned and the
     /// statement is done.
     Skipped,

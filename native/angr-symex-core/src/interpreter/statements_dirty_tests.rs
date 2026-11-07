@@ -6,7 +6,8 @@
 //! `InvalidIR` result-temp validation) and the false-guard poison-write
 //! contract of `VEXInterpreter::dirty_guard_phase`, plus the memory-effect
 //! routing and symbolic-result conversion of `handle_dirty_call` /
-//! `dirty_python_dispatch` (angr-vmi2l.170). Shared helpers live in
+//! `dirty_python_dispatch` (angr-vmi2l.170) and the symbolic-guard `ITE`
+//! (angr-vmi2l.171). Shared helpers live in
 //! `statements_tests_support.rs`.
 
 use super::*;
@@ -338,6 +339,85 @@ fn effect_free_dirty_call_still_reaches_the_callback() {
         *host.dirty_calls.borrow(),
         ["x86g_dirtyhelper_storeF80le".to_string()]
     );
+}
+
+/// A guarded dirty call over a symbolic tmp guard: `t0` is the I1 guard, `t1`
+/// the I64 result temp.
+fn symbolic_guard_dirty(m_fx: angr_vex::ir::DirtyFx, n_fx_state: u32) -> angr_vex::ir::IRDirty {
+    angr_vex::ir::IRDirty {
+        cee: angr_vex::ir::IRCallee {
+            name: "amd64g_dirtyhelper_NOT_A_REAL_HELPER".to_string(),
+            addr: 0,
+            mcx_mask: 0,
+        },
+        guard: Some(Box::new(IRExpr::RdTmp(0))),
+        tmp: Some(1),
+        mFx: m_fx,
+        mAddr: None,
+        mSize: 0,
+        nFxState: n_fx_state,
+        args: vec![],
+    }
+}
+
+/// angr-vmi2l.171: a symbolic guard used to be pinned true, so every
+/// guard-false state was dropped. VEX's semantics are
+/// `tmp = ITE(guard, ret, 0x55..)`: the guard stays free and each side of it
+/// reads its own value.
+#[test]
+fn dirty_call_with_symbolic_guard_writes_an_ite_and_keeps_both_sides() {
+    let ctx = SymContext::new();
+    let mut interp = new_interp(&ctx);
+    let irsb = make_irsb_with_temps(0x3000, &[IRType::I1, IRType::I64]);
+    interp.temps.resize(irsb.tyenv.types.len(), None);
+    let guard = RustBV::symbol("dirty_guard", 1);
+    interp.temps[0] = Some(guard.clone());
+    let host = TestHost {
+        dirty_result: Some(RustBV::concrete(7, 64)),
+        ..TestHost::default()
+    };
+    let dirty = symbolic_guard_dirty(angr_vex::ir::DirtyFx::None, 0);
+    let res = interp.execute_stmt_with_callbacks(&host, &IRStmt::Dirty(dirty), &irsb);
+    assert!(res.is_ok(), "symbolic-guard dirty call failed");
+    assert!(
+        ctx.can_be_false(&guard),
+        "the guard-false states must survive the call"
+    );
+    let written = interp.temps[1].clone().expect("result tmp must be defined");
+    let one = RustBV::concrete(1, 1);
+    let zero = RustBV::concrete(0, 1);
+    for (side, expected) in [(&one, 7u64), (&zero, 0x5555_5555_5555_5555)] {
+        assert!(
+            !ctx.can_be_true(&guard.eq(side).and(&written.eq(&RustBV::concrete(expected as u128, 64)).not())),
+            "guard == {side:?} must read {expected:#x}"
+        );
+    }
+}
+
+/// angr-vmi2l.171: the `ITE` conditions only the result temp, so a helper
+/// with a memory or guest-state effect under a symbolic guard routes the
+/// block to Python before it runs.
+#[test]
+fn dirty_call_with_symbolic_guard_and_effects_routes_to_python() {
+    use angr_vex::ir::DirtyFx;
+    for (m_fx, n_fx_state) in [(DirtyFx::Read, 0), (DirtyFx::None, 1)] {
+        let ctx = SymContext::new();
+        let mut interp = new_interp(&ctx);
+        let irsb = make_irsb_with_temps(0x3000, &[IRType::I1, IRType::I64]);
+        interp.temps.resize(irsb.tyenv.types.len(), None);
+        interp.temps[0] = Some(RustBV::symbol("dirty_guard_fx", 1));
+        let host = TestHost {
+            dirty_result: Some(RustBV::concrete(7, 64)),
+            ..TestHost::default()
+        };
+        let dirty = symbolic_guard_dirty(m_fx, n_fx_state);
+        let res = interp.execute_stmt_with_callbacks(&host, &IRStmt::Dirty(dirty), &irsb);
+        assert!(
+            matches!(res, Err(CbExecutionError::NeedPythonFallback(_))),
+            "{m_fx:?}/{n_fx_state}: must route to Python"
+        );
+        assert!(host.dirty_calls.borrow().is_empty(), "the callback must not run");
+    }
 }
 
 /// angr-vmi2l.170: a symbolic callback result is the host's own value, not a
