@@ -146,6 +146,7 @@ crate::declare_proc! {
         // Find '=' separator
         if let Some(eq_pos) = s.iter().position(|&b| b == b'=') {
             let key = s[..eq_pos].to_vec();
+            // overflow-ok: `eq_pos` is a position in `s`, so `eq_pos + 1 <= s.len()`.
             let value = s[eq_pos + 1..].to_vec();
             state.setenv(key, value);
         }

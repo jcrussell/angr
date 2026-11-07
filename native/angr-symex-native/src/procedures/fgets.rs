@@ -92,6 +92,7 @@ pub(crate) fn store_symbolic_line(
         let nl = RustBV::concrete(b'\n' as u128, 8);
         let nul = RustBV::concrete(0, 8);
 
+        // overflow-ok: `read_count < size <= MAX_FGETS_SIZE` (or MAX_GETS_SIZE).
         let mut constraints: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         // 0 <= real_size <= size-1 (lower bound is implicit for unsigned).
         constraints.push(real_size.ule(&arch_word(state, read_count)));
@@ -103,8 +104,10 @@ pub(crate) fn store_symbolic_line(
         // is justified by running out of space, EOF, or being the newline.
         for (i, byte) in sym_bytes.iter().enumerate() {
             let idx = i as u64;
+            // overflow-ok: `idx` enumerates `sym_bytes`, so it is far below u64::MAX.
             let cond = arch_word(state, idx + 1).ne(&real_size);
             let then_b = byte.ne(&nl);
+            // overflow-ok: `idx` enumerates `sym_bytes`, so it is far below u64::MAX.
             let else_b = if idx + 2 == size {
                 // i+2 == size is a concrete tautology for the last byte.
                 RustBV::concrete(1, 1)
@@ -116,6 +119,7 @@ pub(crate) fn store_symbolic_line(
 
         // Emulate Python's `store(dst, data, size=real_size)` + NUL at
         // dst+real_size: byte p is the NUL exactly when real_size == p.
+        // overflow-ok: `read_count < size <= MAX_FGETS_SIZE` (or MAX_GETS_SIZE).
         let mut store_bytes: Vec<RustBV> = Vec::with_capacity(read_count as usize + 1);
         for (p, byte) in sym_bytes.iter().enumerate() {
             let at = arch_word(state, p as u64).eq(&real_size);

@@ -94,6 +94,7 @@ impl<'a> VEXInterpreter<'a> {
             let idx = self.concrete_memory.partition_point(|r| r.base <= addr);
             if idx > 0 {
                 // Check the region just before this index
+                // overflow-ok: `idx > 0` checked above.
                 let region = &self.concrete_memory[idx - 1];
                 if let Some(data) = region.read(addr, size) {
                     return Some(data);

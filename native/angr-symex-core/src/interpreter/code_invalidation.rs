@@ -42,6 +42,7 @@ impl<'a> VEXInterpreter<'a> {
         if size == 0 {
             return;
         }
+        // overflow-ok: `size == 0` returned above.
         let end = addr.saturating_add(size as u64 - 1);
         Arc::make_mut(&mut self.dirtied_code_pages)
             .extend(crate::memory::PageIndex::range_covering(addr, size as u64));

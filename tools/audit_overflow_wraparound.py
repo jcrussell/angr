@@ -38,11 +38,15 @@ Two detectors, over any non-test ``.rs`` file under
 ``native/angr-symex-core/src/{arch,interpreter,memory,state,symbolic}/`` and all of ``native/angr-bv/src/``:
 
 1. :data:`BINOP_RE` -- a bare ``+`` or ``-`` (not ``+=``/``-=``/``->``, not
-   unary) whose left or right operand is a simple identifier / dotted field
-   access (or, on the right, a numeric literal) whose last ``_``-separated
-   component is one of :data:`NAME_COMPONENTS`.
+   unary), possibly wrapped onto the next line, whose left or right operand
+   is an identifier / dotted field access / one-level parenthesized
+   expression, optionally cast with ``as <ty>``, with any ``_``-separated
+   component (case-insensitive, plural allowed) in :data:`NAME_COMPONENTS`.
+   A site whose operands are all ``SCREAMING_CASE`` constants or literals is
+   skipped (:func:`_is_const`).
 2. :data:`COMPOUND_RE` -- a compound assignment ``lhs += rhs`` / ``lhs -= rhs``
-   whose *destination* name ends in one of :data:`COMPOUND_NAME_COMPONENTS`
+   whose *destination* name (``self.offsets[i]`` is judged as ``offsets``)
+   ends in one of :data:`COMPOUND_NAME_COMPONENTS`
    (:data:`NAME_COMPONENTS` minus ``count``). Detector 1's ``(?![=>])``
    lookahead steps over ``+=``/``-=`` by construction, so before this existed
    a stepped address such as ``page_addr += PAGE_SIZE`` was invisible
@@ -54,6 +58,8 @@ Two detectors, over any non-test ``.rs`` file under
 A site is exempt when the marker :data:`EXEMPT_RE` -- ``overflow-ok:``
 followed by a rationale -- appears within the scan window: the site's own
 line (so a trailing comment works) or either of the **two** lines above it.
+A site's line is the operator's, so for a wrapped expression it is the
+continuation line carrying the ``+``/``-``.
 A rationale longer than that must keep ``overflow-ok:`` on one of those two
 lines, or the site stays a GAP -- the escape hatch for arithmetic that only *looks*
 address-shaped (e.g. a bounds-checked ``usize`` loop counter that can never
@@ -140,6 +146,11 @@ NAME_COMPONENTS = frozenset(
         "end",
         "brk",
         "stride",
+        "sp",
+        "pc",
+        "pos",
+        "idx",
+        "index",
     }
 )
 
@@ -155,12 +166,17 @@ _NUM = r"\d[\w]*"
 # out of scope: `[^()]` keeps the alternation linear, and the recurring
 # real-world shape is one level (angr-5mnx3.53).
 _PAREN = r"(?<![A-Za-z0-9_])\([^()\n]*\)"
-_OPERAND = rf"(?:{_PAREN}|{_TOKEN}|{_NUM})"
+# An operand may carry an `as <ty>` cast: in `addr as usize + 1` the value
+# being added to is `addr`, not the type name `usize` (angr-vmi2l.305).
+_CAST = rf"(?:\s+as\s+{_IDENT})?"
+_OPERAND = rf"(?:{_PAREN}|{_TOKEN}|{_NUM}){_CAST}"
 
 # Detector 1: a bare `+`/`-` between two operands. The lookahead after the
 # operator excludes `+=`/`-=`/`->`; there is no lhs-adjacency requirement for
-# unary minus since OPERAND must immediately precede the operator.
-BINOP_RE = re.compile(rf"(?P<lhs>{_OPERAND})[ \t]*(?P<op>[+-])(?![=>])[ \t]*(?P<rhs>{_OPERAND})")
+# unary minus since OPERAND must immediately precede the operator. `\s*`
+# rather than `[ \t]*` so rustfmt's wrapped `region_start\n    + region_len`
+# matches too (angr-vmi2l.305).
+BINOP_RE = re.compile(rf"(?P<lhs>{_OPERAND})\s*(?P<op>[+-])(?![=>])\s*(?P<rhs>{_OPERAND})")
 
 # Detector 2: compound assignment, `addr += delta` / `addr -= delta`. Detector
 # 1's `(?![=>])` lookahead deliberately steps over these, which made a
@@ -171,7 +187,10 @@ BINOP_RE = re.compile(rf"(?P<lhs>{_OPERAND})[ \t]*(?P<op>[+-])(?![=>])[ \t]*(?P<
 # `wrapping_add_assign`, so the safe spelling is a plain assignment whose RHS
 # is a method call (`addr = addr.wrapping_add(delta)`), which neither detector
 # matches.
-COMPOUND_RE = re.compile(rf"(?P<lhs>{_TOKEN})[ \t]*(?P<op>[+-])=[ \t]*(?P<rhs>{_OPERAND})")
+#
+# The destination may be indexed (`self.offsets[i] += chunk_len`): one level
+# of `[...]`, judged by the collection's name (angr-vmi2l.305).
+COMPOUND_RE = re.compile(rf"(?P<lhs>{_TOKEN}(?:\[[^\[\]\n]*\])?)\s*(?P<op>[+-])=\s*(?P<rhs>{_OPERAND})")
 
 # Detector 2 keys on the *destination* name only, and on its last
 # `_`-separated component rather than any component. In `a += b` the LHS is
@@ -201,10 +220,22 @@ def _iter_source_files(repo_root: Path = REPO_ROOT) -> list[Path]:
 
 
 def _core_name(operand: str) -> str | None:
-    """Last dotted segment of an operand, or None for a numeric literal."""
+    """Lower-cased last dotted segment of an operand, or None for a numeric literal.
+
+    An ``as <ty>`` cast and an ``[index]`` are stripped first, and the name is
+    lower-cased so a ``PAGE_SIZE`` constant splits the same way a
+    ``page_size`` local does.
+    """
+    operand = re.sub(r"\s+as\s+\w+$", "", operand)
+    operand = re.sub(r"\[[^\[\]]*\]$", "", operand)
     if operand[0].isdigit():
         return None
-    return operand.rsplit(".", 1)[-1]
+    return operand.rsplit(".", 1)[-1].lower()
+
+
+def _shaped(component: str, components: frozenset[str]) -> bool:
+    """``component`` is in ``components``, or is a plural of one (``offsets``)."""
+    return component in components or (component.endswith("s") and component[:-1] in components)
 
 
 def _is_addr_shaped(operand: str) -> bool:
@@ -219,7 +250,23 @@ def _is_addr_shaped(operand: str) -> bool:
     name = _core_name(operand)
     if name is None:
         return False
-    return bool(NAME_COMPONENTS.intersection(name.split("_")))
+    return any(_shaped(c, NAME_COMPONENTS) for c in name.split("_"))
+
+
+_CONST_NAME_RE = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def _is_const(operand: str) -> bool:
+    """Every name in ``operand`` is a ``SCREAMING_CASE`` constant (or a literal).
+
+    Lower-casing in :func:`_core_name` makes ``PAGE_SIZE`` address-shaped, but
+    ``PAGE_SIZE - 1`` between two constants is const-evaluated: rustc's
+    deny-by-default ``arithmetic_overflow`` lint (a hard error in a ``const``
+    item) rejects a wrap at compile time, so it can never wrap silently.
+    ``Type::`` path prefixes are dropped, so ``InspectEvent::COUNT`` counts.
+    """
+    operand = re.sub(rf"(?:{_IDENT}::)+", "", re.sub(r"\s+as\s+\w+$", "", operand))
+    return all(_CONST_NAME_RE.fullmatch(tok) for tok in re.findall(_IDENT, operand))
 
 
 def _normalize(text: str) -> str:
@@ -232,7 +279,7 @@ def _is_accumulator_shaped(operand: str) -> bool:
     name = _core_name(operand)
     if name is None:
         return False
-    return name.rsplit("_", 1)[-1].lower() in COMPOUND_NAME_COMPONENTS
+    return _shaped(name.rsplit("_", 1)[-1], COMPOUND_NAME_COMPONENTS)
 
 
 def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool]]:
@@ -253,9 +300,13 @@ def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool]]:
         if compound:
             if not _is_accumulator_shaped(m.group("lhs")):
                 continue
-        elif not (_is_addr_shaped(m.group("lhs")) or _is_addr_shaped(m.group("rhs"))):
-            continue
-        lineno = src.count("\n", 0, m.start()) + 1
+        else:
+            lhs, rhs = m.group("lhs"), m.group("rhs")
+            if not (_is_addr_shaped(lhs) or _is_addr_shaped(rhs)) or (_is_const(lhs) and _is_const(rhs)):
+                continue
+        # The operator's line, not the lhs's: for a wrapped expression that is
+        # the continuation line, and the exempt window below is relative to it.
+        lineno = src.count("\n", 0, m.start("op")) + 1
         window = raw_lines[max(0, lineno - 3) : lineno]
         exempt = any(EXEMPT_RE.search(line) for line in window)
         shape = _normalize(m.group(0))
@@ -279,7 +330,12 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
 # of angr-fs8kb.52), and four must-NOT-fire controls: `->`, a call whose
 # *arguments* are address-shaped but whose result is not described by them, a
 # statistics counter incremented with `+=`, and a `+=` whose address-shaped
-# name is on the *right* (the accumulator is a plain total).
+# name is on the *right* (the accumulator is a plain total). Then the
+# angr-vmi2l.305 shapes, each invisible before: a rustfmt-wrapped binop (and
+# its exempt twin, whose marker sits below the lhs line, so it is honoured
+# only because the flagged line is the operator's), `sp` as a name, an
+# `as usize` cast on the lhs, a SCREAMING_CASE `PAGE_SIZE` operand, an indexed
+# `+=` destination, and a constants-only control.
 _SELF_TEST_SRC = """
 impl Thing {
     fn safe_wrapping(&self, addr: u64, offset: u64) -> u64 {
@@ -317,6 +373,32 @@ impl Thing {
     fn arrow_return(&self) -> u64 {
         0
     }
+    fn wrapped_region_end(&self, region_start: u64, region_len: u64) -> u64 {
+        let end = region_start
+            + region_len;
+        end
+    }
+    fn wrapped_exempt(&self, region_start: u64, region_len: u64) -> u64 {
+        region_start
+            // overflow-ok: the marker sits between the lhs and the operator.
+            + region_len
+    }
+    fn sp_step(&self, mut sp: u64) -> u64 {
+        sp -= 8;
+        sp + 8
+    }
+    fn cast_operand(&self, addr: u64) -> usize {
+        addr as usize + 1
+    }
+    fn const_named_rhs(&self, aligned: u64) -> u64 {
+        aligned + PAGE_SIZE
+    }
+    fn indexed_compound(&mut self, i: usize, chunk_len: u64) {
+        self.offsets[i] += chunk_len;
+    }
+    fn const_only(&self) -> u64 {
+        (1 << Event::COUNT) - PAGE_SIZE as u64
+    }
 }
 """
 
@@ -326,6 +408,13 @@ _SELF_TEST_EXPECTED = [
     ("paren_align_up", "(new_base&!PAGE_MASK)+PAGE_SIZE", False),
     ("compound_page_walk", "page_addr+=PAGE_SIZE", False),
     ("compound_exempt", "offset+=1", True),
+    ("wrapped_region_end", "region_start+region_len", False),
+    ("wrapped_exempt", "region_start+region_len", True),
+    ("sp_step", "sp-=8", False),
+    ("sp_step", "sp+8", False),
+    ("cast_operand", "addrasusize+1", False),
+    ("const_named_rhs", "aligned+PAGE_SIZE", False),
+    ("indexed_compound", "self.offsets[i]+=chunk_len", False),
 ]
 
 
@@ -352,7 +441,7 @@ def self_test() -> int:
         for f in root_failures:
             print(f"  {f}")
         return 1
-    print(f"self-test OK: {len(got)} sites classified as expected (3 gaps, 2 documented-exempt, 6 clean controls)")
+    print(f"self-test OK: {len(got)} sites classified as expected")
     return 0
 
 

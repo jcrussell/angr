@@ -102,6 +102,7 @@ macro_rules! declare_proc {
                     let $arg = $crate::declare_proc!(
                         @extract $kind, args, _idx, stringify!($arg)
                     )?;
+                    // overflow-ok: counts the proc's declared arguments, a compile-time list.
                     _idx += 1;
                 )*
                 let _ = _idx;

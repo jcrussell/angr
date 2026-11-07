@@ -97,6 +97,7 @@ fn next_arg(args: &[RustBV], arg_idx: &mut usize, what: &str) -> Result<u64, Pro
         return Err(ProcedureError::SymbolicArgument(what.to_string()));
     }
     let val = extract_concrete_arg(&args[*arg_idx], &format!("arg{}", *arg_idx))?;
+    // overflow-ok: `*arg_idx < args.len()` was checked above.
     *arg_idx += 1;
     Ok(val)
 }

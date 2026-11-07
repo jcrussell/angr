@@ -170,6 +170,7 @@ fn do_scanf(
                 ProcedureError::Other(format!("scanf: no pointer argument {arg_idx}"))
             })?;
             let ptr = extract_concrete_arg(arg, &format!("scanf arg {arg_idx}"))?;
+            // overflow-ok: `ptr_args.get(arg_idx)` succeeded, so `arg_idx < ptr_args.len()`.
             arg_idx += 1;
             Some(ptr)
         };

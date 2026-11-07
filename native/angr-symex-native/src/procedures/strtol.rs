@@ -163,6 +163,7 @@ fn read_subject_bytes(state: &RustSimState, addr: u64) -> Result<Vec<RustBV>, Pr
 /// digits. Same backtrack corollary as `strtod.rs::floating_prefix_len`
 /// (bd angr-6cp06.2).
 fn hex_prefix_has_digit(bytes: &[RustBV], idx: usize) -> bool {
+    // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
     match bytes.get(idx + 2) {
         // Past end: "0x" alone converts as the single digit `0`.
         None => false,
@@ -209,6 +210,7 @@ fn parse_concrete_prefix(
     // there is no Python behaviour to mirror here.
     while idx < bytes.len() {
         match bytes[idx].as_u64() {
+            // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
             Some(b) if is_c_space(b as u8) => idx += 1,
             _ => break,
         }
@@ -225,8 +227,10 @@ fn parse_concrete_prefix(
     if let Some(b) = bytes[idx].as_u64() {
         if (b as u8) == b'-' {
             negative = true;
+            // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
             idx += 1;
         } else if (b as u8) == b'+' {
+            // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
             idx += 1;
         }
     }
@@ -239,6 +243,7 @@ fn parse_concrete_prefix(
     // octal / hex / decimal.
     if base_arg == 0 || base_arg == 16 {
         let lead = &bytes[idx];
+        // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
         let next = bytes.get(idx + 1);
         let lead_symbolic = lead.as_u64().is_none();
         let next_symbolic = next.is_some_and(|n| n.as_u64().is_none());
@@ -258,6 +263,7 @@ fn parse_concrete_prefix(
         match bytes[idx].as_u64() {
             Some(b) if (b as u8) == b'0' => {
                 match bytes
+                    // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
                     .get(idx + 1)
                     .and_then(super::super::symbolic::RustBV::as_u64)
                 {
@@ -265,10 +271,12 @@ fn parse_concrete_prefix(
                         if ((n as u8) == b'x' || (n as u8) == b'X')
                             && hex_prefix_has_digit(bytes, idx) =>
                     {
+                        // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
                         idx += 2;
                         16
                     }
                     Some(_) => {
+                        // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
                         idx += 1;
                         8
                     }
@@ -288,12 +296,14 @@ fn parse_concrete_prefix(
         if let (Some(b0), Some(b1)) = (
             bytes[idx].as_u64(),
             bytes
+                // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
                 .get(idx + 1)
                 .and_then(super::super::symbolic::RustBV::as_u64),
         ) && (b0 as u8) == b'0'
             && ((b1 as u8) == b'x' || (b1 as u8) == b'X')
             && hex_prefix_has_digit(bytes, idx)
         {
+            // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
             idx += 2;
         }
         16
@@ -350,6 +360,7 @@ fn parse_concrete_digits(bytes: &[u8], base: u32) -> (u128, usize) {
         value = value
             .saturating_mul(base as u128)
             .saturating_add(digit as u128);
+        // overflow-ok: `idx` indexes `bytes`, so it is below `bytes.len()` <= isize::MAX.
         idx += 1;
     }
     if !found_digit { (0, 0) } else { (value, idx) }

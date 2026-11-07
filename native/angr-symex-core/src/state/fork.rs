@@ -567,6 +567,7 @@ impl RustSimState {
         let best_fs = if best_idx == 0 {
             self.fs.clone()
         } else {
+            // overflow-ok: `best_idx == 0` took the branch above.
             others[best_idx - 1].fs.clone()
         };
         for (i, fs) in std::iter::once(&self.fs)

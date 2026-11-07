@@ -162,6 +162,7 @@ impl RegisterFile {
                 if sub_size > 0 {
                     if pos.saturating_add(sub_size) <= end {
                         parts.push(sub_sym.clone());
+                        // overflow-ok: `pos + sub_size <= end` was checked just above.
                         pos += sub_size;
                         continue;
                     }
@@ -178,6 +179,7 @@ impl RegisterFile {
             } else {
                 parts.push(RustBV::zero(8));
             }
+            // overflow-ok: `pos < end` (the loop condition), and `end` fits in u32.
             pos += 1;
         }
         // Compose parts: in little-endian, lower offset = LSB. Concat builds

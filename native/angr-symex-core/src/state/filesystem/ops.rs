@@ -590,6 +590,7 @@ impl FileSystem {
             return Vec::new();
         };
         let pos = desc.position as usize;
+        // overflow-ok: `n <= content.len() - pos` (the peek's `count.min(available)`).
         let data = desc.content[pos..pos + n].to_vec();
         desc.position += n as u64;
         data
@@ -655,6 +656,7 @@ impl FileSystem {
                     return Vec::new();
                 }
                 let n = count.min(desc.content.len() - pos);
+                // overflow-ok: `n <= content.len() - pos` (the `min` above).
                 desc.content[pos..pos + n].to_vec()
             }
             _ => Vec::new(),
