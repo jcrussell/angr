@@ -147,7 +147,8 @@ fn uniqueness_filter_enabled_is_derived_and_re_register_resets_the_seen_set() {
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
     assert!(!mgr.uniqueness_filter_enabled());
 
-    mgr.register_uniqueness_filter(vec!["rax".to_string(), "rbx".to_string()]);
+    mgr.register_uniqueness_filter(vec!["rax".to_string(), "rbx".to_string()])
+        .expect("known registers");
     assert!(mgr.uniqueness_filter_enabled());
     assert!(mgr.sm.get("not_unique").is_some());
 
@@ -155,7 +156,8 @@ fn uniqueness_filter_enabled_is_derived_and_re_register_resets_the_seen_set() {
     // register set: the stale tuples must not survive the switch.
     mgr.constraint_tracker.uniqueness_set.insert(0xdead_beef);
     assert_eq!(mgr.uniqueness_set_size(), 1);
-    mgr.register_uniqueness_filter(vec!["rcx".to_string()]);
+    mgr.register_uniqueness_filter(vec!["rcx".to_string()])
+        .expect("known register");
     assert_eq!(
         mgr.uniqueness_set_size(),
         0,
@@ -167,4 +169,21 @@ fn uniqueness_filter_enabled_is_derived_and_re_register_resets_the_seen_set() {
     mgr.disable_uniqueness_filter();
     assert!(!mgr.uniqueness_filter_enabled());
     assert_eq!(mgr.uniqueness_set_size(), 0);
+}
+
+/// A register name the architecture does not know is refused, leaving the
+/// filter off: it would hash as one constant and send every state after the
+/// first to `not_unique` (angr-vmi2l.4).
+#[test]
+fn register_uniqueness_filter_rejects_unknown_register() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    assert!(
+        mgr.register_uniqueness_filter(vec!["rax".to_string(), "raxx".to_string()])
+            .is_err(),
+        "an unknown register name must be refused",
+    );
+    assert!(!mgr.uniqueness_filter_enabled());
+    mgr.register_uniqueness_filter(vec!["xmm0".to_string(), "eax".to_string()])
+        .expect("vector and sub-registers are known names");
+    assert!(mgr.uniqueness_filter_enabled());
 }

@@ -501,8 +501,13 @@ impl RustExplorationManager {
 
     /// Compute a hash for a state's register tuple for uniqueness checking.
     ///
-    /// For each register in uniqueness_registers, gets the concrete value
-    /// (or uses u64::MAX as sentinel for symbolic). Hashes the tuple.
+    /// For each register in uniqueness_registers, hashes its full concrete
+    /// value (a `u128`, or the literal's bits for a wider register), or a
+    /// sentinel for a symbolic one. Each case hashes its own tag first, so a
+    /// value from one case cannot collide with another (angr-vmi2l.4: the
+    /// old `as_u64` dropped bits above 63). `register_uniqueness_filter`
+    /// rejects unknown names, so the missing-register case is only a
+    /// backstop.
     pub(crate) fn compute_register_tuple_hash(&self, state: &RustSimState) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
@@ -511,19 +516,17 @@ impl RustExplorationManager {
         for reg_name in &self.constraint_tracker.uniqueness_registers {
             match state.get_register(reg_name) {
                 Some(bv) => {
-                    if let Some(val) = bv.as_u64() {
+                    if let Some(val) = bv.as_u128() {
+                        0u8.hash(&mut hasher);
                         val.hash(&mut hasher);
-                    } else {
-                        // Symbolic register — use sentinel
-                        u64::MAX.hash(&mut hasher);
-                        // Also hash 1 to distinguish from concrete u64::MAX
+                    } else if let Some(bits) = bv.literal_bits() {
                         1u8.hash(&mut hasher);
+                        bits.hash(&mut hasher);
+                    } else {
+                        2u8.hash(&mut hasher);
                     }
                 }
-                None => {
-                    // Register not found — hash 0
-                    0u64.hash(&mut hasher);
-                }
+                None => 3u8.hash(&mut hasher),
             }
         }
         hasher.finish()

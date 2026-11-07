@@ -283,6 +283,43 @@ fn amd64_compute_register_tuple_hash_branches() {
     );
 }
 
+/// Registers wider than 64 bits hash their full value: two xmm0 values that
+/// differ only above bit 63, and two ymm0 values that differ only above bit
+/// 127, hash apart (angr-vmi2l.4: `as_u64` truncated them to one tuple).
+#[test]
+fn amd64_compute_register_tuple_hash_keeps_high_bits() {
+    let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
+    mgr.constraint_tracker.uniqueness_registers = vec!["xmm0".to_string()];
+    let mut low = RustSimState::new("amd64").expect("state low");
+    assert!(low.set_register("xmm0", RustBV::concrete(1, 128)));
+    let mut high = RustSimState::new("amd64").expect("state high");
+    assert!(high.set_register("xmm0", RustBV::concrete(1 | (1u128 << 64), 128)));
+    assert_ne!(
+        mgr.compute_register_tuple_hash(&low),
+        mgr.compute_register_tuple_hash(&high),
+        "xmm0 values differing above bit 63 must hash apart",
+    );
+
+    mgr.constraint_tracker.uniqueness_registers = vec!["ymm0".to_string()];
+    let wide = |hi: u128| RustBV::concrete(hi, 128).concat(&RustBV::concrete(7, 128));
+    let mut ymm_a = RustSimState::new("amd64").expect("ymm a");
+    assert!(ymm_a.set_register("ymm0", wide(1)));
+    let mut ymm_b = RustSimState::new("amd64").expect("ymm b");
+    assert!(ymm_b.set_register("ymm0", wide(2)));
+    assert_ne!(
+        mgr.compute_register_tuple_hash(&ymm_a),
+        mgr.compute_register_tuple_hash(&ymm_b),
+        "ymm0 values differing above bit 127 must hash apart",
+    );
+    let mut ymm_sym = RustSimState::new("amd64").expect("ymm sym");
+    assert!(ymm_sym.set_register("ymm0", RustBV::symbol("y", 256)));
+    assert_ne!(
+        mgr.compute_register_tuple_hash(&ymm_a),
+        mgr.compute_register_tuple_hash(&ymm_sym),
+        "a wide literal must not hash as the symbolic sentinel",
+    );
+}
+
 // --- apply_uniqueness_filter (helpers.rs) --------------------------------
 // Driven (but never asserted) by test_named_check_uniqueness_takes_native_path;
 // these assert the duplicate actually moves to 'not_unique' (or is dropped

@@ -294,7 +294,8 @@ fn load_snapshot_clears_uniqueness_set_so_restored_states_are_not_dropped() {
     Python::initialize();
     Python::attach(|py| {
         let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
-        mgr.register_uniqueness_filter(vec!["rax".to_string()]);
+        mgr.register_uniqueness_filter(vec!["rax".to_string()])
+            .expect("known register");
         mgr.sm
             .push(STASH_ACTIVE, RustSimState::new("amd64").expect("state"));
 

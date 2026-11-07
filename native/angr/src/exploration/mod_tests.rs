@@ -84,7 +84,8 @@ fn test_orchestrator_delegation() {
         assert!(mgr.profiling.profiling_enabled);
 
         // ConstraintTracker: uniqueness filter reaches the sub-struct
-        mgr.register_uniqueness_filter(vec!["rax".into(), "rbx".into()]);
+        mgr.register_uniqueness_filter(vec!["rax".into(), "rbx".into()])
+            .expect("known registers");
         assert!(mgr.uniqueness_filter_enabled());
         assert_eq!(mgr.constraint_tracker.uniqueness_registers.len(), 2);
         mgr.disable_uniqueness_filter();

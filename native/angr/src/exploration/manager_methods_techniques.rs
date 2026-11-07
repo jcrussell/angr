@@ -21,11 +21,28 @@ impl RustExplorationManager {
     /// are moved to 'not_unique' stash. This replaces the Python
     /// CheckUniqueness technique with zero FFI overhead.
     #[angr_symex_macros::steady_guarded]
-    pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) {
+    ///
+    /// Raises `ValueError` for a name the architecture does not know: an
+    /// unknown name would hash as one constant and collapse every state
+    /// after the first (angr-vmi2l.4).
+    pub fn register_uniqueness_filter(&mut self, register_names: Vec<String>) -> PyResult<()> {
+        let arch_name = &self.environment.arch_name;
+        let arch = arch_from_name(arch_name).ok_or_else(|| {
+            PyValueError::new_err(format!("unsupported architecture: {arch_name}"))
+        })?;
+        if let Some(unknown) = register_names
+            .iter()
+            .find(|name| arch.register_size(name).is_none())
+        {
+            return Err(PyValueError::new_err(format!(
+                "unknown register for {arch_name}: {unknown}"
+            )));
+        }
         self.constraint_tracker.uniqueness_registers = register_names;
         self.constraint_tracker.clear_uniqueness_seen();
         // Ensure not_unique stash exists
         self.sm.declare_stash("not_unique");
+        Ok(())
     }
 
     /// Disable the native uniqueness filter.
