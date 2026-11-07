@@ -6158,17 +6158,19 @@ class RustExplorationManager(
         # never resurrect them, so it's safe to drop any Python-side mapping
         # keyed on them. Failure here is non-fatal — fall back to the narrower
         # active/found set so we never over-prune.
+        # Every stash counts, the private ones too: an export RustBackend handed
+        # out waits in its ``_simgr_backend_parked`` stash, and a Spiller vault
+        # can hand that live export back after missing steps, so its options
+        # and globals entries must survive (angr-l0k4o).
         try:
-            avoid_set = set(self._rust_mgr.get_state_ids("avoid"))
-            deadended_set = set(self._rust_mgr.get_state_ids("deadended"))
-            any_stash = active_set | found_set | avoid_set | deadended_set
+            any_stash = active_set | found_set
+            for name in self._rust_mgr.stash_counts():
+                any_stash.update(self._rust_mgr.get_state_ids(name))
         except (RuntimeError, KeyError):
-            # cat-(b) FALLBACK WITH LOSS: missing avoid/deadended view means
-            # the shadow-prune below sees a smaller live set and is more
-            # aggressive than ideal. Mappings for states currently sitting in
-            # those stashes will be dropped this tick (harmless: the state
-            # itself is no longer being stepped, and a new explore() call
-            # rebuilds mappings as states get re-registered).
+            # cat-(b) FALLBACK WITH LOSS: a missing stash view means the
+            # shadow-prune below sees a smaller live set and is more aggressive
+            # than ideal: mappings for states in the other stashes are dropped
+            # this tick, and a held export of one of them loses its options.
             any_stash = active_set | found_set
 
         live = active_set | found_set

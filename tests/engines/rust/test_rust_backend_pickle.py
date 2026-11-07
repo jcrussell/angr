@@ -100,6 +100,36 @@ def test_a_factory_built_rust_manager_runs_the_spiller():
     assert SOSNEAKY in [s.posix.dumps(0) for s in simgr.deadended]
 
 
+def test_an_export_held_out_of_the_stashes_keeps_its_options():
+    # Spiller's vault can hand back the live export it was given, after the
+    # rest stepped without it. Its Rust state waited in the backend's parked
+    # stash, whose options entry the cache cleanup pruned, so the export came
+    # back with no options and a concrete solver (angr-l0k4o).
+    project = angr.Project(
+        os.path.join(TEST_BINARIES_DIR, "..", "x86_64", "fauxware"), auto_load_libs=False, engine="rust"
+    )
+    simgr = project.factory.simulation_manager()
+    while len(simgr.active) < 2:
+        simgr.step()
+    # As the vault does: the claimed copies are new lineage roots.
+    simgr.active[:] = [pickle.loads(pickle.dumps(s, pickle.HIGHEST_PROTOCOL)) for s in simgr.active]
+    simgr.step()
+    held = simgr.active.pop()
+    sid = binding_of(held)._id
+    mgr = simgr.backend._manager()
+    assert sid in mgr._py_state_options
+    while simgr.active:
+        simgr.step()
+    assert sid in mgr._py_state_options
+    simgr.active.append(held)
+    simgr.run()
+    assert isinstance(simgr.backend, RustBackend)
+    assert len(simgr.deadended) == 3
+    for state in simgr.deadended:
+        assert angr.sim_options.SYMBOLIC in state.options
+    assert SOSNEAKY in [s.posix.dumps(0) for s in simgr.deadended]
+
+
 @pytest.mark.parametrize("arch", sorted(FIND))
 def test_a_pickled_export_keeps_the_after_main_continuation(arch):
     # Python ran __libc_start_main's self.call(main); Rust frames carry no
