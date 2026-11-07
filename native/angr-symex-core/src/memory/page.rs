@@ -136,8 +136,13 @@ impl PageBitmap {
     }
 
     /// Clear bits `[offset, end)`, dropping the allocation when it becomes
-    /// all-zero (angr-24pv4.3).
+    /// all-zero (angr-24pv4.3). An inverted range is empty, as in
+    /// [`set_range`](Self::set_range): `remove_range` asserts
+    /// `start <= end` (angr-vmi2l.192).
     fn clear_range(&mut self, offset: u16, end: u16) {
+        if offset >= end {
+            return;
+        }
         if let Some(bits) = &mut self.0 {
             bits.remove_range(usize::from(offset)..usize::from(end));
             if bits.is_clear() {
@@ -286,8 +291,9 @@ pub struct MemoryPage {
     symbolic_bitmap: PageBitmap,
     /// Bitmap tracking Multi-cell bytes: bit i set means byte i carries
     /// lazy alternatives in `SymbolicMemory::multi_objects`
-    /// (angr-czph Phase 1). Parallel to `symbolic_bitmap`; a byte may be marked in
-    /// at most one of the two bitmaps at a time. Empty means no Multi
+    /// (angr-czph Phase 1). Parallel to `symbolic_bitmap`, but not exclusive
+    /// with it: a byte may carry both bits, and Multi wins by dispatch order
+    /// (see [`mark_multi`](Self::mark_multi)). Empty means no Multi
     /// cells on this page — common case, so we pay one Option discriminant
     /// rather than a 512-byte bitmap allocation.
     multi_bitmap: PageBitmap,
@@ -305,8 +311,8 @@ impl MemoryPage {
     /// End offset of the page-local range `[offset, offset + len)`, clamped to
     /// the page end.
     ///
-    /// The five accessors below (`load_concrete`, `store_concrete`,
-    /// `mark_symbolic`, `clear_symbolic`, `mark_multi`/`clear_multi`) each
+    /// The accessors below (`load_concrete`, `store_concrete`,
+    /// `mark_symbolic`, `mark_multi`, `clear_multi`) each
     /// open-coded `(offset as usize + len).min(PAGE_SIZE as usize)`, and the
     /// single-byte pair spelled it `offset + 1` in `u16` — which *wraps* to 0
     /// for `offset == u16::MAX`, turning a `set_range`/`clear_range` into a
@@ -664,3 +670,4 @@ impl From<MemoryPageData> for MemoryPage {
 }
 test_submod!("serde_tests.rs" => serde_tests);
 test_submod!("page_index_tests.rs" => page_index_tests);
+test_submod!("page_bitmap_tests.rs" => page_bitmap_tests);
