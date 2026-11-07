@@ -42,9 +42,15 @@ to `Option<u64>` for legitimate pattern-matching call sites — one that a
 regex below still catches since `.concrete()` is just another link in the
 method chain it scans.
 
-Detection heuristic — in any non-test `.rs` file under `native/angr/src/`, an
-SP/return-address accessor (see :data:`ACCESSORS`) whose call is followed by a
-pure method chain ending in `.unwrap_or(0)` / `.unwrap_or_default()`. The
+Detection heuristic — in any non-test `.rs` file under the :data:`SCAN` crates,
+an SP/return-address accessor (see :data:`ACCESSORS`; any suffix, so
+`get_return_addr_raw` counts) whose call is followed by a pure method chain
+ending in a zero default (:data:`CHAIN_TO_ZERO_RE`: `.unwrap_or(0)` in any
+literal spelling, `.unwrap_or_default()`, `.unwrap_or_else(|| 0)`,
+`.map_or(0, ..)`, `.map_or_else(|| 0, ..)`). A `let` binding of the accessor
+call counts too: a later use of the bound name in the same block chained to a
+zero default is a site (angr-vmi2l.306). `get_sp` returns a raw `RustBV`, so
+its `.as_u64()` is an escape hatch next to `.concrete()`. The
 generic register reader `get_offset_u64` only counts when its arguments mention
 an `sp`-ish offset — it is a general accessor, and only the SP use is a
 wrong-answer risk.
@@ -112,20 +118,43 @@ ACCESSORS = (
     "get_return_addr",
     "get_offset_u64",
 )
-ACCESSOR_RE = re.compile(r"\b(?P<name>" + "|".join(ACCESSORS) + r")\s*\(")
+# Any suffix counts (`get_return_addr_raw`): a variant of an accessor fails
+# the same way. The logged `*_or_log` helpers also match, but they return a
+# plain `u64`, so no zero default ever chains onto them.
+ACCESSOR_RE = re.compile(r"\b(?P<name>(?:" + "|".join(ACCESSORS) + r")\w*)\s*\(")
 
 # `get_offset_u64` is the generic "read register at offset" reader; only its
 # SP use is in scope (angr-sqfj8.63 was `get_offset_u64(sp_offset)`).
 SP_ARG_RE = re.compile(r"\bsp\b|sp_offset|stack_pointer", re.IGNORECASE)
 
-# A method chain of simple calls (`.as_u64()`, `.map(f)`) terminating in a
-# silent zero default. Anchored at the accessor's closing paren.
+# A literal zero in any spelling: `0`, `0x0`, `0b00`, `0_u64`, `0usize`.
+_ZERO = r"0(?:[xbo]0*)?_*(?:[ui](?:8|16|32|64|128|size))?"
+# A closure returning that zero: `|| 0`, `|_| { 0 }`.
+_ZERO_CLOSURE = r"\|[^|]*\|\s*(?:\{\s*" + _ZERO + r"\s*\}|" + _ZERO + r")"
+# The ways an Option/Result collapses to a silent zero.
+_ZERO_TERM = (
+    r"(?P<term>unwrap_or\s*\(\s*" + _ZERO + r"\s*\)"
+    r"|unwrap_or_default\s*\(\s*\)"
+    r"|unwrap_or_else\s*\(\s*" + _ZERO_CLOSURE + r"\s*\)"
+    r"|map_or\s*\(\s*" + _ZERO + r"\s*,"
+    r"|map_or_else\s*\(\s*" + _ZERO_CLOSURE + r"\s*,)"
+)
+# A method chain of simple calls (`.as_u64()`, `.map(f)`).
+_CHAIN = r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\))*"
+
+# That chain terminating in a silent zero default. Anchored at the accessor's
+# closing paren.
 CHAIN_TO_ZERO_RE = re.compile(
     # No `\A` — `Pattern.match(s, pos)` already anchors at `pos`, whereas `\A`
     # would demand the *string* start and silently never fire.
-    r"(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\))*"
-    r"\s*\.\s*(?P<term>unwrap_or\s*\(\s*0(?:u8|u16|u32|u64|usize)?\s*\)|unwrap_or_default\s*\(\s*\))"
+    _CHAIN + r"\s*\.\s*" + _ZERO_TERM
 )
+
+# The two-statement form: `let sp = state.get_sp();` then `sp.as_u64().unwrap_or(0)`.
+# LET_PREFIX_RE must match the text between the statement start and the
+# accessor (the receiver path); STMT_END_RE the text from its `)` to the `;`.
+LET_PREFIX_RE = re.compile(r"\s*let\s+(?:mut\s+)?(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=;]*)?=\s*[\w.&*\s]*")
+STMT_END_RE = re.compile(_CHAIN + r"\s*;")
 
 
 def _iter_source_files(repo_root: Path = REPO_ROOT) -> list[Path]:
@@ -158,30 +187,84 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def _block_end(src: str, pos: int) -> int:
+    """Index of the `}` closing the block that contains ``pos`` (or EOF)."""
+    depth = 0
+    for i in range(pos, len(src)):
+        c = src[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            if depth == 0:
+                return i
+            depth -= 1
+    return len(src)
+
+
+def _statement_start(src: str, pos: int) -> int:
+    """Index just past the `;`, `{` or `}` that precedes ``pos``."""
+    return max(src.rfind(c, 0, pos) for c in ";{}") + 1
+
+
+def _bound_uses(src: str, call_start: int, call_end: int) -> list[tuple[int, int, str]]:
+    """Zero defaults applied to a `let` binding of the accessor call.
+
+    Returns (use_start, use_end, binding) per use of the bound name, in the
+    rest of the enclosing block, that chains to a zero default. The scope
+    stops at a later `let` rebinding the same name.
+    """
+    stmt = _statement_start(src, call_start)
+    let = LET_PREFIX_RE.fullmatch(src, stmt, call_start)
+    end = STMT_END_RE.match(src, call_end)
+    if let is None or end is None:
+        return []
+    var = let.group("var")
+    scope_end = _block_end(src, end.end())
+    rebind = re.compile(r"\blet\s+(?:mut\s+)?" + re.escape(var) + r"\b").search(src, end.end(), scope_end)
+    if rebind:
+        scope_end = rebind.start()
+    uses = []
+    # Not a field (`x.sp`) and not a call or path (`sp(`, `sp::`).
+    for use in re.compile(r"(?<![\w.])" + re.escape(var) + r"\b(?!\s*[(:])").finditer(src, end.end(), scope_end):
+        chain = CHAIN_TO_ZERO_RE.match(src, use.end())
+        if chain:
+            uses.append((use.start(), chain.end(), src[let.start("var") : end.end()]))
+    return uses
+
+
 def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool]]:
-    """Return (rel, lineno, fn_name, shape, exempt) per raw-default site."""
+    """Return (rel, lineno, fn_name, shape, exempt) per raw-default site.
+
+    A site is the zero default chained onto the accessor call, or onto a
+    variable a `let` bound to it; the latter's shape is
+    `<binding>;<use>`, reported at the use.
+    """
     hits: list[tuple[str, int, str, str, bool]] = []
     if not any(name in raw for name in ACCESSORS):
         return hits
     src = blank_noise(raw)
     raw_lines = raw.splitlines()
 
+    def add(start: int, shape: str) -> None:
+        lineno = src.count("\n", 0, start) + 1
+        # The site's own line plus the two above it (a wrapped chain often
+        # carries the marker on the line introducing the statement).
+        window = raw_lines[max(0, lineno - 3) : lineno]
+        exempt = any(EXEMPT_RE.search(line) for line in window)
+        hits.append((rel, lineno, enclosing_fn(src, start) or "<top-level>", _normalize(shape), exempt))
+
     for m in ACCESSOR_RE.finditer(src):
         end = _match_paren(src, m.end() - 1)
         if end is None:
             continue
-        if m.group("name") == "get_offset_u64" and not SP_ARG_RE.search(src[m.end() : end]):
+        if m.group("name").startswith("get_offset_u64") and not SP_ARG_RE.search(src[m.end() : end]):
             continue
         chain = CHAIN_TO_ZERO_RE.match(src, end)
-        if chain is None:
+        if chain is not None:
+            add(m.start(), src[m.start() : chain.end()])
             continue
-        lineno = src.count("\n", 0, m.start()) + 1
-        shape = _normalize(src[m.start() : chain.end()])
-        # The accessor's own line plus the two above it (a wrapped chain often
-        # carries the marker on the line introducing the statement).
-        window = raw_lines[max(0, lineno - 3) : lineno]
-        exempt = any(EXEMPT_RE.search(line) for line in window)
-        hits.append((rel, lineno, enclosing_fn(src, m.start()) or "<top-level>", shape, exempt))
+        for use_start, use_end, binding in _bound_uses(src, m.start(), end):
+            add(use_start, binding + src[use_start:use_end])
     return hits
 
 
@@ -193,8 +276,11 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
     return hits
 
 
-# Synthetic source for --self-test: the three historically-fixed shapes, the
-# documented-exempt escape hatch, and two must-NOT-fire controls.
+# Synthetic source for --self-test: the historically-fixed shapes, the other
+# zero spellings and the two-statement form, the documented-exempt escape
+# hatch, and must-NOT-fire controls (a helper, a propagated Option, an
+# unrelated offset, non-zero defaults, a field, a rebinding, a binding out of
+# scope).
 _SELF_TEST_SRC = """
 impl Thing {
     fn uses_the_helper(&self) -> u64 {
@@ -223,6 +309,48 @@ impl Thing {
         // sp-default-ok: a stack *depth*, 0 is the correct empty answer.
         state.get_sp().as_u64().unwrap_or(0)
     }
+    fn raw_suffix(&self) -> u64 {
+        self.get_return_addr_raw().unwrap_or(0)
+    }
+    fn closure_zero(&self, s: &S) -> u64 {
+        s.get_sp().as_u64().unwrap_or_else(|| 0)
+    }
+    fn block_closure_zero(&self, s: &S) -> u64 {
+        s.get_sp().as_u64().unwrap_or_else(|_| { 0 })
+    }
+    fn map_or_zero(&self, s: &S) -> u64 {
+        s.get_sp().concrete().map_or(0, |v| v)
+    }
+    fn map_or_else_zero(&self, s: &S) -> u64 {
+        s.get_sp().concrete().map_or_else(|| 0, |v| v)
+    }
+    fn hex_zero(&self, s: &S) -> u64 {
+        s.get_sp().as_u64().unwrap_or(0x0_u64)
+    }
+    fn nonzero_controls(&self, s: &S) -> u64 {
+        s.get_sp().as_u64().unwrap_or(0x10);
+        s.get_sp().as_u64().unwrap_or_else(|| fallback);
+        s.get_sp().concrete().map_or(1, |v| v)
+    }
+    fn two_statement(&self, state: &RustSimState) -> u64 {
+        let sp: RustBV = state.get_sp();
+        log(&sp);
+        sp.as_u64().unwrap_or(0)
+    }
+    fn two_statement_controls(&self, state: &RustSimState) -> u64 {
+        let sp = state.get_sp();
+        self.sp.unwrap_or(0);
+        let out = sp.as_u64();
+        let sp = other();
+        sp.unwrap_or(0)
+    }
+    fn two_statement_out_of_scope(&self, state: &RustSimState) -> u64 {
+        {
+            let sp = state.get_sp();
+            log(&sp);
+        }
+        sp.unwrap_or(0)
+    }
 }
 """
 
@@ -232,6 +360,13 @@ _SELF_TEST_EXPECTED = [
     ("raw_ret", "get_return_addr().unwrap_or(0u64)", False),
     ("raw_offset", "get_offset_u64(sp_offset,self.ctx).unwrap_or(0)", False),
     ("documented", "get_sp().as_u64().unwrap_or(0)", True),
+    ("raw_suffix", "get_return_addr_raw().unwrap_or(0)", False),
+    ("closure_zero", "get_sp().as_u64().unwrap_or_else(||0)", False),
+    ("block_closure_zero", "get_sp().as_u64().unwrap_or_else(|_|{0})", False),
+    ("map_or_zero", "get_sp().concrete().map_or(0,", False),
+    ("map_or_else_zero", "get_sp().concrete().map_or_else(||0,", False),
+    ("hex_zero", "get_sp().as_u64().unwrap_or(0x0_u64)", False),
+    ("two_statement", "sp:RustBV=state.get_sp();sp.as_u64().unwrap_or(0)", False),
 ]
 
 
@@ -258,7 +393,7 @@ def self_test() -> int:
         for f in root_failures:
             print(f"  {f}")
         return 1
-    print(f"self-test OK: {len(got)} sites classified as expected (4 gaps, 1 documented-exempt, 3 clean controls)")
+    print(f"self-test OK: {len(got)} sites classified as expected")
     return 0
 
 
