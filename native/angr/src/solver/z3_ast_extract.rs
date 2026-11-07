@@ -12,18 +12,10 @@ use pyo3::prelude::*;
 
 use clarirs_core::prelude::AstRef;
 
-use crate::claripy::ast::base::Base;
-
-use crate::claripy_bridge::{BridgeError, claripy_to_rustbv};
+use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, clarirs_node};
 use crate::symbolic::{RustBV, SymContext};
 
 use super::RustSolverContext;
-
-/// The clarirs node behind a Python claripy AST, or `None` when `ast` is not
-/// one of this extension's claripy ASTs.
-pub(crate) fn claripy_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
-    Some(ast.cast::<Base>().ok()?.get().ast())
-}
 
 /// A claripy node as a [`RustBV`] to evaluate: a bitvector as itself, a Bool
 /// as the bit `ite(b, 1, 0)`, never as a mis-sorted BV (angr-58ks). Any other
@@ -57,7 +49,7 @@ impl RustSolverContext {
             return Some(bv);
         }
         {
-            let node = claripy_node(ast)?;
+            let node = clarirs_node(ast)?;
             // SILENT(cat-a): a non-BV-sorted AST is an expected miss on this
             // path — the caller (`eval_batch`) falls back to Python.
             //
@@ -86,7 +78,7 @@ impl RustSolverContext {
     ) -> PyResult<RustBV> {
         match claripy_to_rustbv(py, ast, ctx) {
             Ok(bv) => Ok(bv),
-            Err(err @ BridgeError::RecursionLimit(_)) => claripy_node(ast)
+            Err(err @ BridgeError::RecursionLimit(_)) => clarirs_node(ast)
                 .filter(|node| node.ast_type().is_bitvec())
                 .and_then(|node| node_to_eval_bv(&node).ok())
                 .ok_or_else(|| err.into()),

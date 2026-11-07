@@ -6,7 +6,7 @@
 //! symbolic loads, and the `PyErr`s that become `String` messages.
 
 use super::*;
-use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, is_claripy_ast, rustbv_to_claripy};
+use crate::claripy_bridge::{claripy_module, claripy_to_rustbv, rustbv_to_claripy};
 use crate::interpreter::{
     EngineHost, HostLoad, HostPage, InspectBit, InspectView, LiftBlockOutcome,
 };
@@ -25,14 +25,7 @@ fn to_claripy(value: &RustBV) -> Option<Py<PyAny>> {
 /// A claripy AST from Python as a `RustBV`, or `None` when it is not one or
 /// does not convert (the caller then mints a fresh symbol or keeps its value).
 fn from_claripy(ctx: &SymContext, ast: &Py<PyAny>) -> Option<RustBV> {
-    Python::attach(|py| {
-        let ast = ast.bind(py);
-        if is_claripy_ast(ast) {
-            claripy_to_rustbv(py, ast, ctx).ok()
-        } else {
-            None
-        }
-    })
+    Python::attach(|py| claripy_to_rustbv(py, ast.bind(py), ctx).ok())
 }
 
 fn host_load(ctx: &SymContext, (bytes, symbolic, ast): BatchLoadEntry) -> HostLoad {
@@ -217,7 +210,7 @@ impl EngineHost for PythonCallbacks {
                 condition_ast.as_ref(),
             )
             .ok()??;
-        from_claripy_any(ctx, &mutated)
+        from_claripy(ctx, &mutated)
     }
 
     fn inspect_mem_write(
@@ -253,7 +246,7 @@ impl EngineHost for PythonCallbacks {
                 condition_ast.as_ref(),
             )
             .ok()??;
-        from_claripy_any(ctx, &mutated)
+        from_claripy(ctx, &mutated)
     }
 
     fn inspect_reg_read(&self, state_id: i64, when: &str, offset: u32, size: u32, value: &RustBV) {
@@ -375,11 +368,4 @@ impl EngineHost for PythonCallbacks {
             log::debug!("vex_lift inspect ({when}) dispatch failed at 0x{addr:x}: {e}");
         }
     }
-}
-
-/// A breakpoint's override value as a `RustBV`. Unlike [`from_claripy`] it
-/// does not check `is_claripy_ast` first, matching the conversion the
-/// interpreter used for `mem_read_expr` / `mem_write_expr` overrides.
-fn from_claripy_any(ctx: &SymContext, ast: &Py<PyAny>) -> Option<RustBV> {
-    Python::attach(|py| claripy_to_rustbv(py, ast.bind(py), ctx).ok())
 }

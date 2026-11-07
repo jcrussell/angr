@@ -11,8 +11,8 @@
 //! - here: the Python-boundary error mapping, the [`RustSolverContext`]
 //!   pyclass itself, and the "normal" claripy-AST solver API
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
-//! - [`z3_ast_extract`]: claripy-node evaluation (`claripy_node` /
-//!   `node_to_eval_bv` / `eval_claripy_node`);
+//! - [`z3_ast_extract`]: claripy-node evaluation (`node_to_eval_bv` /
+//!   `eval_claripy_node`);
 //! - [`claripy_bridge::lower_claripy_bool`](crate::claripy_bridge::lower_claripy_bool):
 //!   the sort-checked claripy → Z3 `Bool` lowering the raw constraint fast
 //!   paths assert.
@@ -34,11 +34,11 @@ use pyo3::types::PyList;
 use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
-use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, try_extract_bvv};
+use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, clarirs_node, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
 use crate::claripy_bridge::lower_claripy_bool;
-use z3_ast_extract::{claripy_node, node_to_eval_bv};
+use z3_ast_extract::node_to_eval_bv;
 
 pub(crate) mod z3_ast_extract;
 
@@ -418,7 +418,7 @@ impl RustSolverContext {
             Err(err) => {
                 // `None` means no model, so an AST the bridge cannot import
                 // raises rather than reading as unsat (angr-vmi2l.221).
-                match claripy_node(ast) {
+                match clarirs_node(ast) {
                     Some(node) => self.eval_claripy_node(py, &node),
                     None => Err(err.into()),
                 }
@@ -702,7 +702,7 @@ impl RustSolverContext {
             Err(_) => {
                 // Z3 fast path for complex expressions
                 {
-                    let Some(node) = claripy_node(ast) else {
+                    let Some(node) = clarirs_node(ast) else {
                         return Ok((result_list.into(), false));
                     };
                     match node_to_eval_bv(&node) {

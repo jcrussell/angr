@@ -6,8 +6,8 @@
 //! claripy node is turned into a value to evaluate — the Bool→1-bit rule and
 //! the decline-any-other-sort rule both live there (angr-58ks, angr-9ke6b.202).
 //! It needs no Python: the nodes are built directly in clarirs,
-//! which is what `claripy_node` reads out of a claripy AST. (The sibling
-//! `claripy_node` / `ast_to_bv_for_eval` do need claripy and stay covered by
+//! which is what `claripy_bridge::clarirs_node` reads out of a claripy AST.
+//! (The sibling `ast_to_bv_for_eval` does need claripy and stays covered by
 //! `tests/engines/rust/test_solver_ops.py`.)
 
 #![allow(clippy::unwrap_used, reason = "test fixtures")]

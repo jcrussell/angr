@@ -1,53 +1,59 @@
-//! claripy AST -> RustBV import (the op-dispatch conversion path).
+//! claripy AST -> RustBV import.
 //!
-//! Entry point `claripy_to_rustbv` walks a claripy expression tree and builds
-//! the equivalent `RustBV`.
-//!
-//! claripy is clarirs, so an AST of this extension's own claripy type is
-//! walked natively ([`import_clarirs`]): the `AstRef` behind it is read
-//! directly instead of through `op` / `args` attribute calls. The attribute
-//! walk remains for any other object (`cargo test`'s embedded interpreter
-//! imports the installed extension, whose claripy classes are different type
-//! objects; some tests hand in duck-typed ASTs).
+//! Entry point `claripy_to_rustbv` walks the clarirs nodes behind a claripy
+//! AST ([`import_clarirs`]) and builds the equivalent `RustBV`. claripy is
+//! clarirs, so the `AstRef` is read directly; there is no `op` / `args`
+//! attribute walk. Only this extension's own claripy type is accepted: under
+//! `cargo test` the embedded interpreter's `angr.rustylib` is the installed
+//! extension, whose claripy classes are different type objects, so tests
+//! build their ASTs with `claripy_bridge::claripy_object` /
+//! `claripy_module` (angr-vmi2l.222).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 
 use clarirs_core::prelude::{AstOp, AstRef};
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 use crate::claripy::ast::base::Base;
 use crate::claripy::ast::opstring::ToOpString;
 
-use crate::symbolic::{RustBV, SymContext, SymbolKind, check_bv_width, check_extract_bounds};
+use crate::symbolic::{RustBV, SymContext, check_bv_width, check_extract_bounds};
 
-use super::{BridgeError, extract_int_value};
+use super::BridgeError;
+
+/// The clarirs node behind a Python claripy AST: an AST of this extension's
+/// own claripy type, or a `SimActionObject` wrapping one in `.ast`
+/// (angr-vmi2l.221). `None` for anything else.
+pub(crate) fn clarirs_node(ast: &Bound<'_, PyAny>) -> Option<AstRef<'static>> {
+    if let Ok(base) = ast.cast::<Base>() {
+        return Some(base.get().ast());
+    }
+    let inner = ast.getattr("ast").ok()?;
+    Some(inner.cast::<Base>().ok()?.get().ast())
+}
 
 /// Try to extract a concrete BVV value directly from a claripy AST.
 /// Returns Some((value, width)) if the AST is a BVV, None otherwise.
 /// This is much cheaper than full claripy_to_rustbv conversion.
 ///
-/// A width past [`check_bv_width`]'s cap yields `None` rather than the pair:
-/// this is a *fast path* for the `"BVV"` arm of [`claripy_to_rustbv_depth`],
-/// and that arm now refuses such a width, so returning the pair here would let
-/// the shortcut accept what the general path rejects (and hand
-/// `solver::RustSolverContext::eval_batch` an absurd width to build a
-/// `RustBV::concrete` from) (angr-0jh0j.8). Callers fall back to the general
-/// path, which reports the refusal as a catchable error.
+/// A width past [`check_bv_width`]'s cap, or a value wider than a `u128`,
+/// yields `None` rather than the pair: this is a *fast path* for the `BVV`
+/// arm of [`import_clarirs_node`], which refuses such a width, so returning
+/// the pair here would let the shortcut accept what the general path rejects
+/// (angr-0jh0j.8). Callers fall back to the general path, which reports the
+/// refusal as a catchable error.
 #[inline]
 pub(crate) fn try_extract_bvv(ast: &Bound<'_, PyAny>) -> Option<(u128, u32)> {
-    let op: String = ast.getattr("op").ok()?.extract().ok()?;
-    if op != "BVV" {
+    let node = clarirs_node(ast)?;
+    let AstOp::BVV(value) = node.op() else {
         return None;
-    }
-    let args = ast.getattr("args").ok()?;
-    let args_tuple = args.cast::<PyTuple>().ok()?;
-    let value: u128 = extract_int_value(args_tuple.get_item(0).ok()?).ok()?;
-    let width: u32 = args_tuple.get_item(1).ok()?.extract().ok()?;
-    // SILENT(cat-a): every `?` above already means "not a plain BVV, use the
-    // general path"; an over-cap width is the same answer for the same reason.
+    };
+    let width = value.len();
+    // SILENT(cat-a): "not a plain BVV, use the general path"; an over-cap
+    // width or a value past 128 bits is the same answer for the same reason.
     check_bv_width("BVV", width).ok()?;
+    let value = u128::try_from(&value.to_biguint()).ok()?;
     Some((value, width))
 }
 
@@ -81,7 +87,7 @@ fn check_same_width(op: &str, left: &RustBV, right: &RustBV) -> Result<(), Bridg
 
 /// Width of an op whose result width is *derived* from its operands.
 ///
-/// The `"ZeroExt"` / `"SignExt"` arms of [`claripy_to_rustbv_depth`] compute
+/// The `"ZeroExt"` / `"SignExt"` arms of [`import_clarirs_node`] compute
 /// `source_width + extend_bits` from a caller-chosen `extend_bits`, and the
 /// `"Concat"` arm accumulates `result.width() + next.width()` across its
 /// operand list. Both halves of that need guarding at this trust boundary: the
@@ -103,31 +109,35 @@ fn extended_width(op: &str, source_width: u32, extend_bits: u32) -> Result<u32, 
 
 /// Convert a claripy AST to a RustBV.
 ///
-/// This recursively converts the claripy expression tree to RustBV operations.
-/// Supports: BVV, BVS, arithmetic, bitwise, comparison, and extension ops.
-/// Uses thread-local LRU caching with claripy's stable `__hash__` to avoid
-/// redundant conversions across constraint additions.
+/// `ast` must be a claripy AST of this extension's type, or a
+/// `SimActionObject` wrapping one ([`clarirs_node`]); anything else is
+/// [`BridgeError::TypeMismatch`]. The walk is [`import_clarirs`].
 ///
-/// `py` is part of the public API — 10+ external callers across the
-/// interpreter/solver/prefetch modules pass their existing GIL token in.
-/// The body itself doesn't reach for `py` directly (the `Bound` carries its
-/// own token), but `py` flows through the recursive calls and stays in the
-/// signature for caller ergonomics.
-///
-/// This is a thin public wrapper around [`claripy_to_rustbv_depth`], which
-/// carries the recursion-depth guard (angr-2a3i9). Keeping this outer
-/// signature stable (no depth parameter) means the external call sites
-/// across interpreter/solver/prefetch never need to know about the guard —
-/// they always start a fresh descent at depth 0.
+/// `py` is part of the public API — the interpreter/solver/prefetch callers
+/// pass their existing GIL token in. The body itself doesn't reach for it
+/// (the `Bound` carries its own token).
 pub(crate) fn claripy_to_rustbv(
-    py: Python<'_>,
+    _py: Python<'_>,
     ast: &Bound<'_, PyAny>,
     ctx: &SymContext,
 ) -> Result<RustBV, BridgeError> {
-    claripy_to_rustbv_depth(py, ast, ctx, 0)
+    // GIL-work timing (angr-1ilq.7): bracket the whole conversion as one
+    // region, so a caller-nested callback is a timing no-op and each disjoint
+    // GIL region is counted exactly once.
+    let _gil =
+        crate::gil_profile::GilWorkGuard::enter_as(crate::gil_profile::GilClass::ClaripyImport);
+
+    let node = clarirs_node(ast).ok_or_else(|| {
+        let ty = ast
+            .get_type()
+            .name()
+            .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string());
+        BridgeError::TypeMismatch(format!("expected a claripy AST, got {ty}"))
+    })?;
+    import_clarirs(&node, ctx, 0)
 }
 
-/// Maximum recursion depth for [`claripy_to_rustbv_depth`]'s self-recursion
+/// Maximum recursion depth for [`import_clarirs_node`]'s self-recursion
 /// (angr-2a3i9).
 ///
 /// This function is called directly from the main Python thread (via
@@ -175,278 +185,9 @@ pub(crate) fn claripy_to_rustbv(
 /// recursion.
 pub(super) const MAX_IMPORT_RECURSION_DEPTH: u32 = 4096;
 
-/// Depth-guarded recursive implementation of [`claripy_to_rustbv`]. See that
-/// function's doc comment for the public contract; see
-/// [`MAX_IMPORT_RECURSION_DEPTH`] for the depth-guard calibration (angr-2a3i9).
-#[allow(clippy::only_used_in_recursion)]
-fn claripy_to_rustbv_depth(
-    py: Python<'_>,
-    ast: &Bound<'_, PyAny>,
-    ctx: &SymContext,
-    depth: u32,
-) -> Result<RustBV, BridgeError> {
-    if depth > MAX_IMPORT_RECURSION_DEPTH {
-        return Err(BridgeError::RecursionLimit(format!(
-            "claripy_to_rustbv: exceeded max recursion depth {MAX_IMPORT_RECURSION_DEPTH} \
-             while importing a claripy AST -- the tree is either pathologically deep or a \
-             long unshared chain that the per-call memo cannot dedup"
-        )));
-    }
-
-    // GIL-work timing (angr-1ilq.7): bracket the whole conversion — the Python
-    // attribute reads and the recursive descent — as one region. The
-    // depth guard makes the self-recursion and any caller-nested callback a
-    // timing no-op, so each disjoint GIL region is counted exactly once.
-    let _gil =
-        crate::gil_profile::GilWorkGuard::enter_as(crate::gil_profile::GilClass::ClaripyImport);
-
-    if let Ok(base) = ast.cast::<Base>() {
-        return import_clarirs(&base.get().ast(), ctx, depth);
-    }
-    // A `SimActionObject` wraps its clarirs node in `.ast`; the attribute walk
-    // below has no FP ops, so importing the wrapper would refuse an FP
-    // expression the unwrapped node imports (angr-vmi2l.221).
-    if let Ok(inner) = ast.getattr("ast")
-        && let Ok(base) = inner.cast::<Base>()
-    {
-        return import_clarirs(&base.get().ast(), ctx, depth);
-    }
-
-    let op: String = ast.getattr("op")?.extract()?;
-    let op_str = op.as_str();
-
-    let args = ast.getattr("args")?;
-
-    match op_str {
-        // Concrete bitvector value
-        "BVV" => {
-            let args_tuple = args
-                .cast::<PyTuple>()
-                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
-            let value: u128 = extract_int_value(args_tuple.get_item(0)?)?;
-            let width: u32 = args_tuple.get_item(1)?.extract()?;
-            // The claripy boundary is a trust boundary just like the handle
-            // API: a caller-chosen width reaches Z3 as a sort allocation
-            // (angr-0jh0j.8).
-            check_bv_width("BVV", width).map_err(BridgeError::InvalidArgs)?;
-            Ok(RustBV::concrete(value, width))
-        }
-
-        // Symbolic bitvector value
-        "BVS" => {
-            let args_tuple = args
-                .cast::<PyTuple>()
-                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
-            let name: String = args_tuple.get_item(0)?.extract()?;
-            // Width might be in args[1] or in .length attribute. On double
-            // failure DO NOT default to 64: a wrong width mints a different
-            // variable than the one Python holds, and every downstream op
-            // silently papers over the mismatch with ZeroExt. Failing loud is
-            // strictly better than minting a wrong-width symbol (angr-ph300.56).
-            let width: u32 = if args_tuple.len() > 1 {
-                match args_tuple.get_item(1)?.extract() {
-                    Ok(w) => w,
-                    Err(_) => ast
-                        .getattr("length")
-                        .and_then(|l| l.extract())
-                        .map_err(|e| {
-                            BridgeError::InvalidArgs(format!(
-                                "BVS '{name}': args[1] not an int and .length unreadable ({e})"
-                            ))
-                        })?,
-                }
-            } else {
-                ast.getattr("length")?.extract()?
-            };
-            check_bv_width("BVS", width).map_err(BridgeError::InvalidArgs)?;
-
-            Ok(import_symbolic_leaf(&name, width, SymbolKind::BitVector))
-        }
-
-        // Arithmetic operations
-        "__add__" => import_assoc_op(py, &args, ctx, depth, "__add__", RustBV::add),
-        "__sub__" => import_binary_op(py, &args, ctx, depth, "__sub__", RustBV::sub),
-        "__mul__" => import_assoc_op(py, &args, ctx, depth, "__mul__", RustBV::mul),
-        "SDiv" => import_binary_op(py, &args, ctx, depth, "div", RustBV::sdiv),
-
-        // claripy BV.__floordiv__ is UNSIGNED division (verified: BVV(0xFFFFFFFE,32)//3
-        // == 0x55555554). Only the SDiv op-name maps to signed sdiv.
-        "__floordiv__" | "UDiv" => import_binary_op(py, &args, ctx, depth, "UDiv", RustBV::udiv),
-
-        "SMod" => import_binary_op(py, &args, ctx, depth, "mod", RustBV::srem),
-
-        // claripy BV.__mod__ is UNSIGNED remainder (verified: BVV(0xFFFFFFFE,32)%3 == 2).
-        // Only the SMod op-name maps to signed srem (claripy SMod == z3 bvsrem).
-        "__mod__" | "URem" => import_binary_op(py, &args, ctx, depth, "URem", RustBV::urem),
-
-        "__neg__" => import_unary_op(py, &args, ctx, depth, "__neg__", RustBV::neg),
-
-        // Bitwise operations
-        "__and__" => import_assoc_op(py, &args, ctx, depth, "__and__", RustBV::and),
-        "__or__" => import_assoc_op(py, &args, ctx, depth, "__or__", RustBV::or),
-        "__xor__" => import_assoc_op(py, &args, ctx, depth, "__xor__", RustBV::xor),
-
-        "__invert__" => import_unary_op(py, &args, ctx, depth, "__invert__", RustBV::not),
-
-        // Shift operations
-        "__lshift__" => import_binary_op(py, &args, ctx, depth, "__lshift__", RustBV::shl),
-        "LShR" => import_binary_op(py, &args, ctx, depth, "LShR", RustBV::lshr),
-        "__rshift__" => import_binary_op(py, &args, ctx, depth, "__rshift__", RustBV::ashr),
-        "RotateLeft" => import_binary_op(py, &args, ctx, depth, "RotateLeft", RustBV::rotl),
-        "RotateRight" => import_binary_op(py, &args, ctx, depth, "RotateRight", RustBV::rotr),
-
-        // Extension operations
-        "ZeroExt" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("ZeroExt requires 2 args".into()));
-            }
-            let extend_bits: u32 = args_list[0].extract()?;
-            let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            let new_width = extended_width("ZeroExt", val.width(), extend_bits)?;
-            Ok(val.zero_extend(new_width))
-        }
-
-        "SignExt" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 2 {
-                return Err(BridgeError::InvalidArgs("SignExt requires 2 args".into()));
-            }
-            let extend_bits: u32 = args_list[0].extract()?;
-            let val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            let new_width = extended_width("SignExt", val.width(), extend_bits)?;
-            Ok(val.sign_extend(new_width))
-        }
-
-        "Extract" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 3 {
-                return Err(BridgeError::InvalidArgs("Extract requires 3 args".into()));
-            }
-            let high: u32 = args_list[0].extract()?;
-            let low: u32 = args_list[1].extract()?;
-            let val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
-            // Validate Extract bounds to prevent runtime errors. Shared with
-            // the handle API's `op_extract`, which guards the same
-            // `Z3_mk_extract` precondition at the other trust boundary
-            // (angr-c7xno.92).
-            check_extract_bounds("Extract", high, low, val.width())
-                .map_err(BridgeError::InvalidArgs)?;
-
-            Ok(val.extract(high, low))
-        }
-
-        "Concat" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs(
-                    "Concat requires at least 1 arg".into(),
-                ));
-            }
-            let mut result = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            for arg in &args_list[1..] {
-                let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
-                // Guard the accumulator at *every* step rather than once at the
-                // end: `value_ops::concat_owned` adds the two operand widths
-                // with a plain unchecked `u32` add, so an intermediate wrap
-                // would leave a `RustBV` whose stored width is small and wrong
-                // while its Z3 sort is enormous — and `width()` is what every
-                // later extract-bounds / eval / export check trusts.
-                extended_width("Concat", result.width(), next.width())?;
-                result = result.concat(&next);
-            }
-            Ok(result)
-        }
-
-        // Comparison operations (return 1-bit result)
-        "__eq__" => import_binary_op(py, &args, ctx, depth, "__eq__", RustBV::eq),
-        "__ne__" => import_binary_op(py, &args, ctx, depth, "__ne__", RustBV::ne),
-        "ULT" => import_binary_op(py, &args, ctx, depth, "ULT", RustBV::ult),
-        "ULE" => import_binary_op(py, &args, ctx, depth, "ULE", RustBV::ule),
-        "UGT" => import_binary_op(py, &args, ctx, depth, "UGT", RustBV::ugt),
-        "UGE" => import_binary_op(py, &args, ctx, depth, "UGE", RustBV::uge),
-        "SLT" => import_binary_op(py, &args, ctx, depth, "SLT", RustBV::slt),
-        "SLE" => import_binary_op(py, &args, ctx, depth, "SLE", RustBV::sle),
-        "SGT" => import_binary_op(py, &args, ctx, depth, "SGT", RustBV::sgt),
-        "SGE" => import_binary_op(py, &args, ctx, depth, "SGE", RustBV::sge),
-
-        // Boolean constant
-        "BoolV" => {
-            let args_tuple = args
-                .cast::<PyTuple>()
-                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
-            let value: bool = args_tuple.get_item(0)?.extract()?;
-            // Return 1-bit BV (1 for true, 0 for false)
-            Ok(RustBV::concrete(u128::from(value), 1))
-        }
-
-        // Symbolic boolean (angr-q6r1): claripy.BoolS("name") is a 1-bit
-        // Bool leaf with args=(name,) and no `.length`. Mirror the BVS
-        // identity-preservation path with a fixed width of 1 so an
-        // `If(BoolS, ...)` (e.g. posix.fork) survives the FFI boundary
-        // instead of failing AST conversion. The reverse-direction
-        // `rust_to_claripy` rebuilds Symbolic-width-1 values as a
-        // claripy `BVS` of width 1, which composes correctly when an
-        // outer claripy op (e.g. `If`) coerces the operand to Bool.
-        "BoolS" => {
-            let args_tuple = args
-                .cast::<PyTuple>()
-                .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
-            let name: String = args_tuple.get_item(0)?.extract()?;
-            // Registered under the Bool sort so this does NOT collide with a
-            // same-named `BVS(name, 1)` (angr-9ke6b.38): both are width-1
-            // Symbolics here, and aliasing them would make export hand back
-            // the other one's claripy AST — a BV where a Bool was expected.
-            Ok(import_symbolic_leaf(&name, 1, SymbolKind::Bool))
-        }
-
-        // If-then-else
-        "If" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.len() != 3 {
-                return Err(BridgeError::InvalidArgs("If requires 3 args".into()));
-            }
-            let cond = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            let then_val = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-            let else_val = claripy_to_rustbv_depth(py, &args_list[2], ctx, depth + 1)?;
-            check_same_width("If", &then_val, &else_val)?;
-            Ok(cond.ite(&then_val, &else_val))
-        }
-
-        // Boolean operations (for constraints). Both fold their operand list
-        // with `import_nary_op`; empty `And` is True, empty `Or` is False.
-        "And" => import_nary_op(py, &args, ctx, depth, "And", RustBV::and, 1),
-
-        "Or" => import_nary_op(py, &args, ctx, depth, "Or", RustBV::or, 0),
-
-        // Bool Xor, n-ary like And/Or (the BV form is `__xor__`).
-        "Xor" => import_assoc_op(py, &args, ctx, depth, "Xor", RustBV::xor),
-
-        // Boolean Not: invert 1-bit value — same `RustBV::not` as `__invert__`.
-        "Not" => import_unary_op(py, &args, ctx, depth, "Not", RustBV::not),
-
-        // Reverse bytes
-        "Reverse" => {
-            let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-            if args_list.is_empty() {
-                return Err(BridgeError::InvalidArgs("Reverse requires 1 arg".into()));
-            }
-            let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-            // Byte-reverse the value
-            reverse_bytes(&val)
-        }
-
-        _ => Err(BridgeError::UnsupportedOp(op_str.to_string())),
-    }
-}
-
-/// [`claripy_to_rustbv_depth`] over a clarirs `AstRef`, without the Python
-/// attribute walk. The value keeps the clarirs nodes it is built from, so it
-/// exports as those nodes, annotations included: a node that carries an
-/// annotation is never rebuilt operand-wise.
-///
-/// Op semantics and every width / bounds check mirror the attribute walk's
-/// arms one for one.
+/// [`claripy_to_rustbv`] over a clarirs `AstRef`. The value keeps the
+/// clarirs nodes it is built from, so it exports as those nodes, annotations
+/// included: a node that carries an annotation is never rebuilt operand-wise.
 ///
 /// Each distinct node is imported once per call: a merged state's memory
 /// holds `If` trees that share their subterms, so a walk without the memo
@@ -652,157 +393,6 @@ fn import_clarirs_node(
         AstOp::ByteReverse(_) => reverse_bytes(&child(0)?),
         _ => whole(),
     }
-}
-
-/// Shared body for the ~24 plain binary ops in [`claripy_to_rustbv_depth`]'s
-/// op-dispatch match, collapsed into this one helper (angr-9ke6b.45).
-///
-/// Every one of those arms — arithmetic, bitwise, shift/rotate, comparison —
-/// had grown its own verbatim copy of the same shape: extract `args` into a
-/// 2-element list, reject any other arity, recurse into both operands at
-/// `depth + 1`, then call the matching `RustBV` method. Duplicating it per
-/// binary op gave an op-specific typo (recursing twice into `args_list[0]`,
-/// forgetting `depth + 1`, naming the wrong op in the error) one place per op
-/// to hide; there is now exactly one.
-///
-/// `op_name` is the label used in the arity error and is passed explicitly
-/// rather than reusing the dispatched `op` string, because several arms match
-/// two claripy op-names at once (`"__floordiv__" | "UDiv"`) and report the
-/// canonical one.
-///
-/// `apply` is a plain `fn` pointer, not an `impl Fn`, so every call site
-/// share a single instantiation of this function instead of monomorphizing
-/// one copy each.
-fn import_binary_op(
-    py: Python<'_>,
-    args: &Bound<'_, PyAny>,
-    ctx: &SymContext,
-    depth: u32,
-    op_name: &str,
-    apply: fn(&RustBV, &RustBV) -> RustBV,
-) -> Result<RustBV, BridgeError> {
-    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-    if args_list.len() != 2 {
-        return Err(BridgeError::InvalidArgs(format!(
-            "{op_name} requires 2 args"
-        )));
-    }
-    let left = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-    let right = claripy_to_rustbv_depth(py, &args_list[1], ctx, depth + 1)?;
-    check_same_width(op_name, &left, &right)?;
-    Ok(apply(&left, &right))
-}
-
-/// N-ary counterpart of [`import_binary_op`] for the associative bitvector
-/// ops (`__add__`, `__mul__`, `__and__`, `__or__`, `__xor__`).
-///
-/// clarirs flattens a chain of these into one node whose `args` holds every
-/// operand — `x + y + z` is a single 3-argument `__add__` — so a strict
-/// two-argument import refused any longer chain. A refused register or memory
-/// import is only logged, so the value silently reached Rust as its default
-/// instead. Folds left, width-checking each operand against the accumulator
-/// as [`import_nary_op`] does; at least one operand is required.
-fn import_assoc_op(
-    py: Python<'_>,
-    args: &Bound<'_, PyAny>,
-    ctx: &SymContext,
-    depth: u32,
-    op_name: &str,
-    apply: fn(&RustBV, &RustBV) -> RustBV,
-) -> Result<RustBV, BridgeError> {
-    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-    let Some((first, rest)) = args_list.split_first() else {
-        return Err(BridgeError::InvalidArgs(format!(
-            "{op_name} requires at least 1 arg"
-        )));
-    };
-    let mut result = claripy_to_rustbv_depth(py, first, ctx, depth + 1)?;
-    for arg in rest {
-        let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
-        check_same_width(op_name, &result, &next)?;
-        result = apply(&result, &next);
-    }
-    Ok(result)
-}
-
-/// Arity-1 counterpart of [`import_binary_op`] (angr-12jjk.15).
-///
-/// `__neg__`, `__invert__` and `Not` had each kept a verbatim copy of the
-/// same shape the binary helper already collapsed — extract `args`, reject a
-/// missing operand, recurse at `depth + 1`, apply the `RustBV` method — which
-/// left the identical typo classes (wrong op-name in the error, a dropped
-/// `depth + 1`) three places to hide.
-///
-/// The arity check is `is_empty()` rather than `len() != 1` because that is
-/// what all three arms did: claripy only ever emits one operand for these
-/// ops, and extra trailing args are ignored rather than rejected.
-///
-/// Like the binary helper, `apply` is a plain `fn` pointer so every call site
-/// shares one instantiation.
-fn import_unary_op(
-    py: Python<'_>,
-    args: &Bound<'_, PyAny>,
-    ctx: &SymContext,
-    depth: u32,
-    op_name: &str,
-    apply: fn(&RustBV) -> RustBV,
-) -> Result<RustBV, BridgeError> {
-    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-    if args_list.is_empty() {
-        return Err(BridgeError::InvalidArgs(format!(
-            "{op_name} requires 1 arg"
-        )));
-    }
-    let val = claripy_to_rustbv_depth(py, &args_list[0], ctx, depth + 1)?;
-    Ok(apply(&val))
-}
-
-/// Variadic counterpart of [`import_binary_op`], for the boolean `And` / `Or`
-/// arms claripy emits with an arbitrary operand count.
-///
-/// Both arms had kept a hand-rolled fold that reached `RustBV::and` /
-/// `RustBV::or` directly and so skipped the [`check_same_width`] guard every
-/// other multi-operand arm performs — `RustBV`'s own width-equality checks are
-/// `debug_assert_eq!` and compile out of the shipped release profile, so a
-/// mismatched-width operand pair built a mismatched-sort Z3 `bvand`/`bvor` and
-/// aborted the process (angr-fs8kb.80). Folding through one helper makes the
-/// check structural: every operand is measured against the accumulator before
-/// it is applied.
-///
-/// `empty` is the identity the op returns for a zero-operand list, as a 1-bit
-/// concrete: `1` for `And` (empty conjunction is True), `0` for `Or`.
-///
-/// Like the other two helpers, `apply` is a plain `fn` pointer so both call
-/// sites share one instantiation.
-fn import_nary_op(
-    py: Python<'_>,
-    args: &Bound<'_, PyAny>,
-    ctx: &SymContext,
-    depth: u32,
-    op_name: &str,
-    apply: fn(&RustBV, &RustBV) -> RustBV,
-    empty: u128,
-) -> Result<RustBV, BridgeError> {
-    let args_list: Vec<Bound<'_, PyAny>> = args.extract()?;
-    let Some((first, rest)) = args_list.split_first() else {
-        return Ok(RustBV::concrete(empty, 1));
-    };
-    let mut result = claripy_to_rustbv_depth(py, first, ctx, depth + 1)?;
-    for arg in rest {
-        let next = claripy_to_rustbv_depth(py, arg, ctx, depth + 1)?;
-        check_same_width(op_name, &result, &next)?;
-        result = apply(&result, &next);
-    }
-    Ok(result)
-}
-
-/// Import a symbol leaf from the attribute walk: the leaf of its Rust-side
-/// name, the Bool tag applied ([`SymbolKind::rust_symbol_name`]), so a `BoolS`
-/// and a same-named 1-bit `BVS` stay two variables (angr-9ke6b.38/.223).
-/// A leaf is its name, so re-importing a symbol is the same
-/// leaf (angr-mx00p.12).
-fn import_symbolic_leaf(name: &str, width: u32, kind: SymbolKind) -> RustBV {
-    RustBV::symbol(kind.rust_symbol_name(name), width)
 }
 
 /// Byte-reverse a RustBV value.

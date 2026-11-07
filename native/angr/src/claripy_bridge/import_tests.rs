@@ -33,15 +33,6 @@ fn test_extended_width_refuses_overflow_and_absurd_widths() {
     assert_eq!(extended_width("SignExt", 32, 32).unwrap(), 64);
 }
 
-/// Python source for the `Fake` stand-in AST class shared by the
-/// `PyModule::from_code` fixtures below.
-const FAKE_AST_CLASS: &str = "class Fake:\n\
-     \x20   def __init__(self, op, args, length):\n\
-     \x20       self.op = op\n\
-     \x20       self.args = args\n\
-     \x20       self.length = length\n\
-     \n";
-
 /// angr-5mnx3.9: `Concat` derives its result width from the operand list, so —
 /// like `ZeroExt`/`SignExt` — the derivation is the guard site, and the guard
 /// has to run on the *accumulator* at every step. Two operands that are each
@@ -50,47 +41,33 @@ const FAKE_AST_CLASS: &str = "class Fake:\n\
 /// whose stored `width()` every later extract-bounds/eval/export check trusts.
 #[test]
 fn test_concat_arm_refuses_oversized_derived_width() {
-    use crate::symbolic::MAX_BV_WIDTH;
+    use clarirs_core::prelude::*;
 
-    // Each half is a legal BVV width; their sum is not.
-    let half = MAX_BV_WIDTH / 2 + 1;
+    use crate::claripy::ast::GLOBAL_CONTEXT;
+    use crate::claripy_bridge::claripy_object;
+    use crate::symbolic::MAX_BV_WIDTH;
 
     Python::initialize();
     Python::attach(|py| {
         let ctx = SymContext::new_mock();
-        let module = pyo3::types::PyModule::from_code(
-            py,
-            &std::ffi::CString::new(format!(
-                "{FAKE_AST_CLASS}\
-                 def concat(half):\n\
-                 \x20   leaf = lambda: Fake('BVV', (0, half), half)\n\
-                 \x20   return Fake('Concat', (leaf(), leaf()), 2 * half)\n"
-            ))
-            .expect("cstring"),
-            &std::ffi::CString::new("fake_ast.py").expect("cstring"),
-            &std::ffi::CString::new("fake_ast").expect("cstring"),
-        )
-        .expect("module");
-        let ast = module
-            .getattr("concat")
-            .expect("concat")
-            .call1((half,))
-            .expect("build fake Concat AST");
+        let concat = |half: u32| {
+            let leaf = |n: &str| GLOBAL_CONTEXT.bvs(format!("concat_cap_{n}_{half}"), half).expect("BVS");
+            let node = GLOBAL_CONTEXT
+                .make_ast_exact(AstOp::Concat(vec![leaf("a"), leaf("b")]), Default::default())
+                .expect("Concat");
+            claripy_object(py, node)
+        };
 
-        let err = claripy_to_rustbv(py, &ast, &ctx)
+        // Each half is a legal BVS width; their sum is not.
+        let err = claripy_to_rustbv(py, &concat(MAX_BV_WIDTH / 2 + 1), &ctx)
             .expect_err("a Concat past MAX_BV_WIDTH must be refused, not silently built");
         let msg = err.to_string();
         assert!(msg.contains("Concat"), "{msg}");
         assert!(msg.contains(&MAX_BV_WIDTH.to_string()), "{msg}");
 
         // Control: the same shape inside the cap still converts, so the
-        // assertion above cannot pass just because the fake AST is unusable.
-        let ok_ast = module
-            .getattr("concat")
-            .expect("concat")
-            .call1((8u32,))
-            .expect("build fake Concat AST");
-        let bv = claripy_to_rustbv(py, &ok_ast, &ctx).expect("a 16-bit Concat is legal");
+        // assertion above cannot pass just because the fixture is unusable.
+        let bv = claripy_to_rustbv(py, &concat(8), &ctx).expect("a 16-bit Concat is legal");
         assert_eq!(bv.width(), 16);
     });
 }
@@ -120,68 +97,6 @@ fn test_check_same_width_refuses_mismatched_operands() {
     assert!(
         check_same_width("If", &RustBV::concrete(1, 1), &RustBV::concrete(0, 1)).is_ok()
     );
-}
-
-/// angr-fs8kb.80: the `And` / `Or` arms folded their operand list by reaching
-/// `RustBV::and` / `RustBV::or` directly, so the sweep that gave every other
-/// multi-operand arm a [`check_same_width`] call never touched them
-/// (angr-6cp06.81). Both now fold through `import_nary_op`, which performs the
-/// check.
-#[test]
-fn test_bool_fold_refuses_mismatched_operand_widths() {
-    Python::initialize();
-    Python::attach(|py| {
-        let ctx = SymContext::new_mock();
-        let module = pyo3::types::PyModule::from_code(
-            py,
-            &std::ffi::CString::new(format!(
-                "{FAKE_AST_CLASS}\
-                 def bvv(width):\n\
-                 \x20   return Fake('BVV', (0, width), width)\n\
-                 \n\
-                 def fold(op, widths):\n\
-                 \x20   return Fake(op, tuple(bvv(w) for w in widths), max(widths))\n\
-                 \n\
-                 def empty(op):\n\
-                 \x20   return Fake(op, (), 1)\n"
-            ))
-            .expect("cstring"),
-            &std::ffi::CString::new("fake_bool_ast.py").expect("cstring"),
-            &std::ffi::CString::new("fake_bool_ast").expect("cstring"),
-        )
-        .expect("module");
-        let fold = module.getattr("fold").expect("fold");
-
-        for op in ["And", "Or"] {
-            let ast = fold
-                .call1((op, vec![1u32, 8u32]))
-                .expect("build mismatched fake AST");
-            let msg = claripy_to_rustbv(py, &ast, &ctx)
-                .expect_err("mismatched bool operand widths must be refused")
-                .to_string();
-            assert!(msg.contains(op), "{msg}");
-            assert!(msg.contains("1-bit"), "{msg}");
-            assert!(msg.contains("8-bit"), "{msg}");
-
-            // Control: the same shape at equal widths still converts, so the
-            // refusal above cannot be an artifact of the fake AST.
-            let ok = fold
-                .call1((op, vec![1u32, 1u32, 1u32]))
-                .expect("build matched fake AST");
-            let bv = claripy_to_rustbv(py, &ok, &ctx).expect("same-width bool fold is legal");
-            assert_eq!(bv.width(), 1);
-        }
-
-        // Empty-operand identities are unchanged by the refactor: And -> 1, Or -> 0.
-        let empty = module.getattr("empty").expect("empty");
-
-        for (op, want) in [("And", 1u64), ("Or", 0u64)] {
-            let ast = empty.call1((op,)).expect("build empty fake AST");
-            let bv = claripy_to_rustbv(py, &ast, &ctx).expect("empty bool fold is legal");
-            assert_eq!(bv.width(), 1, "{op}");
-            assert_eq!(bv.as_u64(), Some(want), "{op}");
-        }
-    });
 }
 
 /// clarirs flattens `x + y + z` into one 3-argument `__add__` (and likewise
@@ -224,12 +139,12 @@ fn test_nary_assoc_ops_import_every_operand() {
     });
 }
 
-/// The native clarirs walk (`import_clarirs`) and the attribute walk must
-/// build equivalent values. A Python shim exposing only `op` / `args` /
-/// `length` forces the attribute walk all the way down; Z3 then checks the two
-/// results cannot differ.
+/// Only a claripy AST of this binary's type imports (angr-vmi2l.222): an
+/// object that merely exposes `op` / `args` is a type mismatch, not walked by
+/// attribute, while an object wrapping a claripy AST in `.ast` (a
+/// `SimActionObject`) imports as that AST (angr-vmi2l.221).
 #[test]
-fn test_native_and_attribute_walks_agree() {
+fn test_only_claripy_asts_import() {
     use clarirs_core::prelude::*;
     use pyo3::types::PyDict;
 
@@ -241,42 +156,40 @@ fn test_native_and_attribute_walks_agree() {
         let globals = PyDict::new(py);
         py.run(
             c"class Duck:
+    def __init__(self, op, args):
+        self.op = op
+        self.args = args
+
+class Wrapper:
     def __init__(self, ast):
-        self._ast = ast
-        self.op = ast.op
-        self.args = tuple(Duck(a) if hasattr(a, 'op') else a for a in ast.args)
-        self.length = getattr(ast, 'length', None)
+        self.ast = ast
 ",
             Some(&globals),
             None,
         )
-        .expect("define Duck");
-        let duck = globals.get_item("Duck").expect("lookup").expect("Duck");
+        .expect("define fixtures");
+        let ctx = SymContext::new_mock();
 
-        let g = &*GLOBAL_CONTEXT;
-        let x = g.bvs("walks_x", 32).expect("x");
-        let y = g.bvs("walks_y", 32).expect("y");
-        let k = |v: u64| g.bvv(BitVec::from((v, 32))).expect("k");
-        let exprs = [
-            g.add(g.mul(x.clone(), k(3)).expect("mul"), y.clone()).expect("add"),
-            g.concat([g.extract(x.clone(), 15, 0).expect("ex"), g.extract(y.clone(), 31, 16).expect("ex")])
-                .expect("concat"),
-            g.ite(g.ult(x.clone(), y.clone()).expect("ult"), g.lshr(x.clone(), k(2)).expect("lshr"), g.sub(y.clone(), x.clone()).expect("sub"))
-                .expect("ite"),
-            g.zero_ext(g.extract(x.clone(), 7, 0).expect("ex"), 24).expect("zext"),
-            g.byte_reverse(g.xor([x.clone(), y.clone(), k(0xff)]).expect("xor")).expect("rev"),
-        ];
-        for expr in exprs {
-            let native_obj = claripy_object(py, expr.clone());
-            let duck_obj = duck.call1((native_obj.clone(),)).expect("Duck(ast)");
+        let duck = globals
+            .get_item("Duck")
+            .expect("lookup")
+            .expect("Duck")
+            .call1(("BVV", (5u64, 32u32)))
+            .expect("Duck(...)");
+        let err = claripy_to_rustbv(py, &duck, &ctx).expect_err("a duck-typed AST is refused");
+        assert!(matches!(err, BridgeError::TypeMismatch(_)), "{err}");
+        assert_eq!(try_extract_bvv(&duck), None);
 
-            let ctx = SymContext::new();
-            let native = claripy_to_rustbv(py, &native_obj, &ctx).expect("native walk");
-            let walked = claripy_to_rustbv(py, &duck_obj, &ctx).expect("attribute walk");
-            assert_eq!(native.width(), walked.width(), "{expr:?}");
-            ctx.assume_true(&native.ne(&walked));
-            assert!(!ctx.is_sat(), "the two walks disagree on {expr:?}");
-        }
+        let five = claripy_object(py, GLOBAL_CONTEXT.bvv(BitVec::from((5u64, 32))).expect("BVV"));
+        let wrapped = globals
+            .get_item("Wrapper")
+            .expect("lookup")
+            .expect("Wrapper")
+            .call1((five,))
+            .expect("Wrapper(...)");
+        let bv = claripy_to_rustbv(py, &wrapped, &ctx).expect("a wrapped AST imports");
+        assert_eq!(bv.as_u128(), Some(5));
+        assert_eq!(try_extract_bvv(&wrapped), Some((5, 32)));
     });
 }
 

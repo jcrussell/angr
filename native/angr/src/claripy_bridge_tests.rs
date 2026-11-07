@@ -6,36 +6,6 @@ use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::{RustBV, SymContext};
 
-#[test]
-fn test_extract_int_value_small() {
-    pyo3::Python::initialize();
-    Python::attach(|py| {
-        let val = 42i64.into_pyobject(py).unwrap();
-        assert_eq!(extract_int_value(val.into_any().clone()).unwrap(), 42);
-    });
-}
-
-/// angr-cxw7: an integer needing more than 128 bits must be rejected, not
-/// silently truncated to its low 128 bits. `1 << 200` previously imported
-/// as 0.
-#[test]
-fn test_extract_int_value_above_128_bits_errors() {
-    pyo3::Python::initialize();
-    Python::attach(|py| {
-        // 2**200, built in Python so it stays an arbitrary-precision int.
-        let big = py
-            .eval(c"1 << 200", None, None)
-            .expect("eval 1<<200")
-            .into_any();
-        let err = extract_int_value(big).expect_err("must reject >128-bit int");
-        assert!(matches!(err, BridgeError::InvalidArgs(_)));
-
-        // A 256-bit-wide value whose magnitude still fits in 128 bits is OK.
-        let small = py.eval(c"1 << 100", None, None).expect("eval 1<<100");
-        assert_eq!(extract_int_value(small.into_any()).unwrap(), 1u128 << 100);
-    });
-}
-
 /// Regression (angr-c3rd): exporting `And(Eq(x,5), Eq(y,7))` (two
 /// Bool-converting operands) must keep BOTH operands. The old (None,None)
 /// arm returned only `args[0]`, silently dropping the second comparison.

@@ -537,7 +537,7 @@ class TestSolverOperations:
         ctx = RustSolverContext()
         ctx.add_constraint_ast(SimActionObject(f == claripy.FPV(2.5, dbl)))
         assert ctx.eval(SimActionObject(claripy.fpToIEEEBV(f))) == 0x4004000000000000
-        with pytest.raises(RuntimeError):
+        with pytest.raises(TypeError):
             ctx.eval(object())
 
         load = 0x400000

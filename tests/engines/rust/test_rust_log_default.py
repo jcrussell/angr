@@ -21,7 +21,8 @@ from angr.exploration.rust_manager import RUST_EXPLORATION_AVAILABLE
 pytestmark = pytest.mark.skipif(not RUST_EXPLORATION_AVAILABLE, reason="Rust exploration extension not built")
 
 _PRELUDE = """
-import angr, claripy
+import angr
+from angr import claripy
 from angr.exploration.rust_manager import RustExplorationManager
 p = angr.load_shellcode(b"\\x90\\xc3", arch="amd64")
 s = p.factory.blank_state(add_options={angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS})

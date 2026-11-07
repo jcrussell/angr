@@ -143,22 +143,18 @@ fn constraint_list<'py>(py: Python<'py>, items: &[Bound<'py, PyAny>]) -> Bound<'
     list
 }
 
-/// A duck-typed claripy AST: any object exposing `.op` / `.args` is what
-/// `claripy_to_rustbv` reads, and `types.SimpleNamespace` supplies both
-/// without pulling in claripy. `BVV` is deliberate — it is the one op the
-/// importer does not cache, so the object never needs to be hashable.
+/// A claripy BVV of this binary's claripy type (`claripy_object`).
 ///
-/// The point of the duck type is the *fast path declining*: claripy's z3
-/// backend raises on a non-AST, so these constraints are the only way to reach
-/// `import_python_constraints`'s slow path deterministically (with a real claripy AST the raw-pointer fast path always wins).
-fn duck_bvv(py: Python<'_>, value: u64, width: u32) -> Bound<'_, PyAny> {
-    let types = py.import("types").expect("import types");
-    let kwargs = pyo3::types::PyDict::new(py);
-    kwargs.set_item("op", "BVV").expect("set op");
-    kwargs.set_item("args", (value, width)).expect("set args");
-    types
-        .call_method("SimpleNamespace", (), Some(&kwargs))
-        .expect("SimpleNamespace")
+/// A BVV is a bitvector, not a Bool, so the sort-checked raw-pointer tier
+/// declines it: these constraints are the only way to reach
+/// `import_python_constraints`'s RustBV tier deterministically (a Bool
+/// constraint always takes the raw-pointer tier).
+fn claripy_bvv(py: Python<'_>, value: u64, width: u32) -> Bound<'_, PyAny> {
+    use clarirs_core::prelude::*;
+    let ast = crate::claripy::ast::GLOBAL_CONTEXT
+        .bvv(BitVec::from((value, width)))
+        .expect("BVV");
+    crate::claripy_bridge::claripy_object(py, ast)
 }
 
 /// Slow path, `width == 1` arm: the constraint is assumed true as-is. Pinned
@@ -169,7 +165,7 @@ fn import_slow_path_boolean_is_assumed_as_is() {
     Python::initialize();
     Python::attach(|py| {
         let ctx = crate::symbolic::SymContext::new();
-        let list = constraint_list(py, &[duck_bvv(py, 1, 1)]);
+        let list = constraint_list(py, &[claripy_bvv(py, 1, 1)]);
         assert_eq!(
             import_python_constraints(py, &ctx, &list, "test"),
             ConstraintImportSummary {
@@ -181,7 +177,7 @@ fn import_slow_path_boolean_is_assumed_as_is() {
         assert!(ctx.is_sat(), "assuming true keeps the context satisfiable");
 
         let false_ctx = crate::symbolic::SymContext::new();
-        let false_list = constraint_list(py, &[duck_bvv(py, 0, 1)]);
+        let false_list = constraint_list(py, &[claripy_bvv(py, 0, 1)]);
         assert_eq!(
             import_python_constraints(py, &false_ctx, &false_list, "test").added,
             1
@@ -202,7 +198,7 @@ fn import_slow_path_widens_non_boolean_to_nonzero() {
     Python::attach(|py| {
         let ctx = crate::symbolic::SymContext::new();
         let before = ctx.assumed_local_len();
-        let list = constraint_list(py, &[duck_bvv(py, 2, 64)]);
+        let list = constraint_list(py, &[claripy_bvv(py, 2, 64)]);
         assert_eq!(import_python_constraints(py, &ctx, &list, "test").added, 1);
         assert!(
             ctx.is_sat(),
@@ -221,7 +217,7 @@ fn import_slow_path_widens_non_boolean_to_nonzero() {
         );
 
         let zero_ctx = crate::symbolic::SymContext::new();
-        let zero_list = constraint_list(py, &[duck_bvv(py, 0, 64)]);
+        let zero_list = constraint_list(py, &[claripy_bvv(py, 0, 64)]);
         assert_eq!(
             import_python_constraints(py, &zero_ctx, &zero_list, "test").added,
             1
@@ -246,7 +242,7 @@ fn import_skips_unconvertible_items_without_aborting_siblings() {
             .expect("builtins")
             .call_method0("object")
             .expect("object()");
-        let list = constraint_list(py, &[junk, duck_bvv(py, 1, 1)]);
+        let list = constraint_list(py, &[junk, claripy_bvv(py, 1, 1)]);
         assert_eq!(
             import_python_constraints(py, &ctx, &list, "test"),
             ConstraintImportSummary {
@@ -280,7 +276,7 @@ fn import_constraints_and_recheck_reports_unsat_after_a_partial_import() {
             .expect("builtins")
             .call_method0("object")
             .expect("object()");
-        let list = constraint_list(py, &[junk, duck_bvv(py, 0, 1)]);
+        let list = constraint_list(py, &[junk, claripy_bvv(py, 0, 1)]);
         assert_eq!(
             import_constraints_and_recheck(py, &state, &list, "pending", 42),
             Some(false),
@@ -298,7 +294,7 @@ fn import_constraints_and_recheck_reports_sat_for_a_clean_import() {
     Python::initialize();
     Python::attach(|py| {
         let state = RustSimState::new("amd64").expect("state");
-        let list = constraint_list(py, &[duck_bvv(py, 1, 1)]);
+        let list = constraint_list(py, &[claripy_bvv(py, 1, 1)]);
         assert_eq!(
             import_constraints_and_recheck(py, &state, &list, "initial", 7),
             Some(true),
