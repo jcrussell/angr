@@ -241,9 +241,9 @@ impl RustSimState {
     /// This creates a self-contained snapshot that can be used to
     /// reconstruct an angr SimState.
     ///
-    /// Does **not** flush deferred symbolic stores — see the note at the
-    /// memory-page export below. Prefer [`Self::flush_and_export_full`]
-    /// unless the pending queue is known to be empty.
+    /// Does **not** flush Multi cells — see the note at the memory-page
+    /// export below. Prefer [`Self::flush_and_export_full`] unless the state
+    /// holds no Multi cells.
     pub fn export_full(&self) -> StateExport {
         // Export registers
         let registers_raw = self.get_registers_raw();
@@ -268,19 +268,15 @@ impl RustSimState {
             }
         }
 
-        // Pending writes are NOT flushed before the memory pages below:
-        // `SymbolicMemory::flush_pending_writes` needs `&mut`, and this method
-        // takes `&self`. Nor does the snapshot advertise the shortfall —
-        // `StateExport` has no pending-write count, so a deferred
-        // store that never got materialized is simply missing from the
-        // exported pages with nothing to signal it.
-        //
-        // The mitigation is therefore at the call sites, not here: every
-        // production export path goes through `flush_and_export_full`
-        // instead — `state_bridge::pymethods::PyRustSimState::export_full`,
+        // Multi cells are NOT flushed before the memory pages below:
+        // `SymbolicMemory::flush_multi_cells` needs `&mut`, and this method
+        // takes `&self`, so a byte still in a Multi cell exports as its stale
+        // concrete backing byte. Every production export path therefore goes
+        // through `flush_and_export_full` instead —
+        // `state_bridge::pymethods::PyRustSimState::export_full`,
         // `exploration::state_api`, `exploration::pending_api` (angr-sqfj8.27)
         // and `exploration::stepping`. Call `export_full` directly only when
-        // the pending queue is known to be empty.
+        // the state holds no Multi cells.
 
         // Export memory pages as tuples: (addr, data, permissions, symbolic_offsets)
         let mut memory_pages: Vec<PageData> = Vec::new();
@@ -351,24 +347,10 @@ impl RustSimState {
         }
     }
 
-    /// Flush pending writes and then export.
-    /// This materializes any deferred symbolic stores before creating the snapshot.
+    /// Flush Multi cells into symbolic objects (see [`Self::flush_memory`])
+    /// and then export.
     pub fn flush_and_export_full(&mut self) -> StateExport {
-        // Flush pending writes using the current solver context
-        {
-            let ctx = self.solver.borrow();
-            // SILENT(cat-b): export has no way to fetch a lazy page or retry a
-            // failed materialization, so a flush error costs the rest of the
-            // queue (`flush_pending_writes` already took it). Log it rather
-            // than exporting a silently-incomplete snapshot without a trace
-            // (angr-9ke6b.100).
-            if let Err(e) = self.memory.flush_pending_writes(&ctx, &self.concretizer) {
-                log::warn!(
-                    "flush_and_export_full: pending-write flush failed ({e:?}); \
-                     remaining deferred stores are not reflected in the exported snapshot"
-                );
-            }
-        }
+        self.flush_memory();
         self.export_full()
     }
 }

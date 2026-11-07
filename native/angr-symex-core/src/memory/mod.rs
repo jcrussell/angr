@@ -43,8 +43,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(crate) type SymMap<K, V> =
     im::HashMap<K, V, std::hash::BuildHasherDefault<rustc_hash::FxHasher>>;
 
-use crate::symbolic::concretize::{AddressConcretizer, ConcretizationResult, strided_addrs};
-use crate::symbolic::{RustBV, SymContext};
+use crate::symbolic::RustBV;
+use crate::symbolic::concretize::ConcretizationResult;
+#[cfg(test)]
+use crate::symbolic::{SymContext, concretize::AddressConcretizer};
 use angr_vex::Endness;
 
 mod address;
@@ -61,21 +63,6 @@ pub use address::Address;
 pub use load::{fresh_unconstrained_read_symbol, mem_filler_name};
 pub use multi::{MultiAlternative, MultiFlushed, MultiPayload};
 pub use page::{BITMAP_WORDS, MemoryPage, PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
-
-/// A deferred symbolic store. Instead of eagerly concretizing symbolic addresses
-/// and building ITE chains at store time (275 Z3 calls for sym-write), we record
-/// the store and only materialize it when a load touches the same region.
-#[derive(Debug, Clone)]
-pub struct PendingWrite {
-    /// The symbolic address expression.
-    pub addr: RustBV,
-    /// The value to store.
-    pub value: RustBV,
-    /// Size in bytes.
-    pub size: u32,
-    /// Optional condition (for conditional stores).
-    pub condition: Option<RustBV>,
-}
 
 /// Errors from memory operations.
 ///
@@ -385,10 +372,6 @@ pub struct SymbolicMemory {
     /// See `memory/multi.rs` for the `MultiPayload` invariants.
     #[merge_policy = "joint"]
     multi_objects: FxHashMap<Address, MultiPayload>,
-    /// Deferred symbolic stores. Instead of eagerly concretizing symbolic
-    /// addresses at store time, we append here and materialize on load.
-    #[merge_policy = "joint"]
-    pending_writes: Vec<PendingWrite>,
     /// If true, fill unconstrained memory with zeros instead of symbolic values.
     /// Corresponds to angr's ZERO_FILL_UNCONSTRAINED_MEMORY option.
     ///
@@ -513,7 +496,6 @@ impl SymbolicMemory {
             lazy_regions: Vec::new(),
             symbolic_spans: SymMap::default(),
             multi_objects: FxHashMap::default(),
-            pending_writes: Vec::new(),
             zero_fill_unconstrained: false,
             imported_addrs: SymMap::default(),
             enforce_permissions: false,
@@ -936,8 +918,7 @@ impl SymbolicMemory {
 
     // The load and store entry points live in memory/load.rs and
     // memory/store.rs (their module docs hold the variant matrices);
-    // check_candidate_pages and prepare_strided_region live in
-    // memory/concretize_glue.rs.
+    // check_candidate_pages lives in memory/concretize_glue.rs.
 
     /// Fork the memory (O(1) via CoW).
     pub fn fork(&self) -> Self {
@@ -950,7 +931,6 @@ impl SymbolicMemory {
             lazy_regions: self.lazy_regions.clone(), // Share lazy regions
             symbolic_spans: self.symbolic_spans.clone(),
             multi_objects: self.multi_objects.clone(),
-            pending_writes: self.pending_writes.clone(),
             zero_fill_unconstrained: self.zero_fill_unconstrained,
             imported_addrs: self.imported_addrs.clone(),
             enforce_permissions: self.enforce_permissions,
@@ -966,125 +946,6 @@ impl SymbolicMemory {
             wider_load_cache: RefCell::new(FxHashMap::default()),
             fillers: self.fillers.clone(),
         }
-    }
-
-    /// Get pending writes count.
-    pub fn pending_writes_count(&self) -> usize {
-        self.pending_writes.len()
-    }
-
-    /// Get a reference to the pending writes.
-    pub fn pending_writes(&self) -> &[PendingWrite] {
-        &self.pending_writes
-    }
-
-    /// Add a deferred symbolic store.
-    pub fn add_pending_write(&mut self, write: PendingWrite) {
-        self.pending_writes.push(write);
-    }
-
-    /// Flush all pending writes by materializing ITE chains into memory.
-    /// This must be called before exporting state to Python to ensure
-    /// memory pages contain all written values.
-    ///
-    /// Phase 2 (angr-qh5u): also flushes Multi cells installed by the
-    /// lazy STORE path (`install_multi_for_candidates_safe`). Each Multi
-    /// byte collapses to a 1-byte symbolic_object so a snapshot export
-    /// (`_load_snapshot_pages` in `rust_state_export.py`) picks it up.
-    /// Without this step Multi bytes would be invisible to Python on
-    /// state export — their pages would be exported as if the bytes
-    /// were concrete.
-    pub fn flush_pending_writes(
-        &mut self,
-        ctx: &SymContext,
-        concretizer: &AddressConcretizer,
-    ) -> Result<MultiFlushed, MemoryError> {
-        // Flush Multi cells regardless of pending_writes status — Phase 2
-        // makes Multi cells the default for symbolic-address stores, so
-        // export correctness depends on flushing them even when the
-        // pending_writes queue (a separate, scaffolded path) is empty.
-        let proof = self.flush_multi_cells();
-
-        if self.pending_writes.is_empty() {
-            return Ok(proof);
-        }
-
-        let writes = std::mem::take(&mut self.pending_writes);
-        for pw in writes {
-            // Try to concretize the address
-            if let Some(concrete_addr) = pw.addr.as_u64() {
-                self.store_concrete_lazy(concrete_addr, pw.value)?;
-                continue;
-            }
-
-            match concretizer.concretize_write(&pw.addr, ctx) {
-                ConcretizationResult::Single(addr) => {
-                    self.store_concrete_lazy(addr, pw.value)?;
-                }
-                ConcretizationResult::Multiple(addrs) => {
-                    // Build ITE chains for each candidate address
-                    for &candidate in &addrs {
-                        self.materialize_pending_ite(candidate, &pw)?;
-                    }
-                }
-                ConcretizationResult::Strided {
-                    base,
-                    stride,
-                    count,
-                } => {
-                    for candidate in strided_addrs(base, stride, count) {
-                        self.materialize_pending_ite(candidate, &pw)?;
-                    }
-                }
-                ConcretizationResult::TooLarge { .. } | ConcretizationResult::Failed(_) => {
-                    // Cannot materialize — skip (data was already applied via load-time ITE)
-                }
-            }
-        }
-        Ok(proof)
-    }
-
-    /// Materialize one candidate of a pending symbolic-address write
-    /// (angr-24pv4.3) shared by the `Multiple` and `Strided` arms of
-    /// `flush_pending_writes`. Builds `mem[candidate] = If(pw.addr ==
-    /// candidate [&& pw.condition], pw.value, current)` where `current` is
-    /// the existing value.
-    ///
-    /// Loads that fail are classified rather than collapsed to a single
-    /// zero default (angr-9ke6b.100): `UnmappedPageInRegion` — the page is
-    /// unmapped *in Rust* but declared lazy, so Python still holds its
-    /// backer data — propagates to the caller, because zero-filling
-    /// `current` would bake `If(addr == candidate, value, 0)` over bytes
-    /// the binary actually initialized. Any other load failure means there
-    /// is no prior value to preserve, so `current` is zero.
-    fn materialize_pending_ite(
-        &mut self,
-        candidate: u64,
-        pw: &PendingWrite,
-    ) -> Result<(), MemoryError> {
-        let addr_const = RustBV::concrete(candidate as u128, pw.addr.width());
-        let cond = pw.addr.eq(&addr_const);
-        let effective_cond = if let Some(ref c) = pw.condition {
-            cond.and(c)
-        } else {
-            cond
-        };
-        let current = match self.load_concrete_lazy_inner(Address(candidate), pw.size) {
-            Ok(v) => v,
-            // Surface the fetch-me signal instead of inventing zeros — same
-            // contract as the `store_concrete_lazy` below, which fails the
-            // identical page range anyway. When the pending-writes queue is
-            // activated the caller must fetch `page_addr` from Python and
-            // re-run the flush.
-            Err(e @ MemoryError::UnmappedPageInRegion { .. }) => return Err(e),
-            // SILENT(cat-a): a never-mapped page or a permission denial means
-            // there is no prior value to preserve, so zero is the correct
-            // `current` for a fresh cell. `store_concrete_lazy` re-checks the
-            // mapping below, so nothing lands on absent memory.
-            Err(_) => RustBV::concrete(0, pw.size * 8),
-        };
-        let ite_val = effective_cond.ite(&pw.value, &current);
-        self.store_concrete_lazy(candidate, ite_val)
     }
 
     /// Get page count.
@@ -1407,10 +1268,9 @@ impl Clone for SymbolicMemory {
 /// from `symbolic_objects` at load time so the reverse index stays
 /// consistent.
 ///
-/// `multi_objects` and `pending_writes` carry lazy-store state used by the
-/// symbolic-address optimization path; both restore to empty (their content
-/// is already folded into `pages`/`symbolic_objects` by the time
-/// `to_snapshot` runs). [`SymbolicMemory::to_snapshot`] requires a
+/// `multi_objects` carries lazy-store state used by the symbolic-address
+/// store path; it restores to empty (its content is already folded into
+/// `pages`/`symbolic_objects` by the time `to_snapshot` runs). [`SymbolicMemory::to_snapshot`] requires a
 /// [`MultiFlushed`] proof precisely so that folding has always happened by
 /// construction (angr-sqfj8.71) — there is no discipline left for a caller to
 /// get wrong here.
@@ -1491,8 +1351,8 @@ impl SymbolicMemory {
     /// Restore a snapshot into a fresh [`SymbolicMemory`]. Rebuilds the
     /// `symbolic_spans` reverse index from `symbolic_objects` (per-byte
     /// entries keyed by base + offset, width recorded as the BV width in
-    /// bits). Lazy-store side tables (`multi_objects`, `pending_writes`)
-    /// start empty — see [`SymbolicMemorySnapshot`].
+    /// bits). The lazy-store side table (`multi_objects`)
+    /// starts empty — see [`SymbolicMemorySnapshot`].
     pub fn from_snapshot(snap: SymbolicMemorySnapshot) -> Self {
         let mut pages: OrdMap<u64, MemoryPage> = OrdMap::new();
         for (k, v) in snap.pages {
@@ -1526,7 +1386,6 @@ impl SymbolicMemory {
             lazy_regions: snap.lazy_regions,
             symbolic_spans,
             multi_objects: FxHashMap::default(),
-            pending_writes: Vec::new(),
             zero_fill_unconstrained: snap.zero_fill_unconstrained,
             imported_addrs,
             enforce_permissions: snap.enforce_permissions,

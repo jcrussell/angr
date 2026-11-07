@@ -19,8 +19,7 @@
 //!   boundary and permission enforcement for page-straddling accesses.
 //! - `symbolic_unmapped_candidates`: `load_symbolic_unified` candidates on
 //!   pages Rust does not hold — fetched, or read as per-candidate fillers.
-//! - `symbolic_fork`: fork isolation of the symbolic sidecars plus the
-//!   `pending_writes` deferred-write lifecycle.
+//! - `symbolic_fork`: fork isolation of the symbolic sidecars.
 //! - `symbolic_counters`: memory ITE depth, load/store volume,
 //!   concretization, lazy-page-fault and symbolic-address counters.
 //! - `multi`: `MultiPayload` data structure and the whole Phase 1–4.2
@@ -31,7 +30,7 @@
 //!   Err fallback (the ITE build path always hits Ok).
 //! - `merge_branches`: `merge`'s generic per-byte ITE selection plus its
 //!   structural branches (page-only-in-other adoption, non-page symbolic-object
-//!   union, pending-write extension) — the plain cases the specialized
+//!   union) — the plain cases the specialized
 //!   `merge_*` files below assume.
 //! - `merge_cost_shape`: S5a measurement record for the merge cost-shape
 //!   question (spike; the optimization it recommended has since shipped).
@@ -39,7 +38,7 @@
 //!   `is_shared_identical` CoW page skip, its walk count, and its soundness
 //!   against the symbolic-overlay trap.
 //! - `merge_multi`: merging a byte that is Multi on both arms into one lazy
-//!   Multi cell, plus merge-condition guarding of deferred `pending_writes`.
+//!   Multi cell.
 //! - `merge_sidecars`: every `SymbolicMemory` sidecar field is merged per its
 //!   declared `#[merge_policy]` (behavioural half of the `MergePolicy` derive).
 //! - `page_boundary_property_tests`: property-based concrete round-trips for

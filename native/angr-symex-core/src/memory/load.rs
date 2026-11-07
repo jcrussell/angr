@@ -1,6 +1,6 @@
 //! Load operations for `SymbolicMemory`.
 //!
-//! Extracted from `memory/mod.rs` (angr-0lre). Holds the load_*/apply_pending_writes_*
+//! Extracted from `memory/mod.rs` (angr-0lre). Holds the load_*
 //! family in a single file. Multiple `impl SymbolicMemory` blocks across files are
 //! fine — Rust permits inherent impls to be split.
 //!
@@ -632,10 +632,7 @@ impl SymbolicMemory {
                 base,
                 stride,
                 count,
-            } => {
-                self.prepare_strided_region(base, stride, count, size);
-                self.load_strided_balanced(&addr, base, stride, count, size)?
-            }
+            } => self.load_strided_balanced(&addr, base, stride, count, size)?,
             // Return error so caller can fall back to Python's memory model,
             // which handles large symbolic address ranges natively.
             other => {
@@ -643,35 +640,7 @@ impl SymbolicMemory {
             }
         };
 
-        // Apply any pending writes that might overlap this symbolic load
-        Ok(self.apply_pending_writes_symbolic(&addr, size, base_value))
-    }
-
-    /// Apply pending writes that might overlap a concrete load address.
-    /// Returns the value with ITE chains for any matching pending writes.
-    pub(super) fn apply_pending_writes_concrete(
-        &self,
-        _addr: Address,
-        _size: u32,
-        base_value: RustBV,
-    ) -> RustBV {
-        // Pending writes overlay is disabled during execution.
-        // Stores go through the eager concretize+ITE path.
-        // Pending writes are only used for deferred flushing on export.
-        base_value
-    }
-
-    /// Apply pending writes that might overlap a symbolic load address.
-    /// Returns the value with ITE chains for any matching pending writes.
-    pub(super) fn apply_pending_writes_symbolic(
-        &self,
-        _addr: &RustBV,
-        _size: u32,
-        base_value: RustBV,
-    ) -> RustBV {
-        // Pending writes overlay is disabled during execution.
-        // See apply_pending_writes_concrete for rationale.
-        base_value
+        Ok(base_value)
     }
 
     /// Load from a concrete address, returning UnmappedPageInRegion for lazy regions.
@@ -684,9 +653,7 @@ impl SymbolicMemory {
         addr: impl Into<Address>,
         size: u32,
     ) -> Result<RustBV, MemoryError> {
-        let addr = addr.into();
-        let base = self.load_concrete_lazy_inner(addr, size)?;
-        Ok(self.apply_pending_writes_concrete(addr, size, base))
+        self.load_concrete_lazy_inner(addr.into(), size)
     }
 
     /// Internal implementation of `load_concrete_lazy`.

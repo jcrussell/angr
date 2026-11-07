@@ -64,7 +64,7 @@ impl RustExplorationManager {
     ///
     /// This searches all stashes for the state with the given ID and returns
     /// a complete snapshot that can be used to reconstruct an angr SimState.
-    /// Deferred writes (pending writes and Multi cells) are flushed first, so
+    /// Multi cells are flushed first, so
     /// this is now an alias for `export_state_flushed` (angr-9ke6b.101).
     #[angr_symex_macros::steady_guard_exempt(
         reason = "exports one state_id-scoped state's snapshot (flushing its own deferred \
@@ -99,7 +99,7 @@ impl RustExplorationManager {
         self._step_state(state_id, extra_stop_points)
     }
 
-    /// Export a state by ID, flushing pending writes first.
+    /// Export a state by ID, flushing its Multi cells first.
     #[angr_symex_macros::steady_guard_exempt(
         reason = "exports one state_id-scoped state's snapshot (flushing its own deferred \
                   writes first); does not mutate exploration config or the active stash."

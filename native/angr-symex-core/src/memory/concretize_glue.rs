@@ -42,25 +42,4 @@ impl SymbolicMemory {
         }
         Ok(())
     }
-
-    /// Prepare a strided memory region (no-op - kept for API compatibility).
-    ///
-    /// # Note
-    /// This function previously auto-mapped zero pages for unmapped addresses,
-    /// but that caused state divergence with Python's actual backer data.
-    /// Now it does nothing - unmapped pages will trigger Python fallback.
-    ///
-    /// # Arguments
-    /// * `base` - Base address of the strided pattern
-    /// * `stride` - Stride between consecutive addresses
-    /// * `count` - Number of addresses in the pattern
-    /// * `size` - Size of each access in bytes
-    pub(super) fn prepare_strided_region(&self, _base: u64, _stride: u64, _count: u64, _size: u32) {
-        // No longer auto-maps zero pages.
-        // The interpreter will fall back to Python callback which can provide
-        // actual backer data instead of speculative zeros.
-        //
-        // NOTE: Strided loads/stores may fail and trigger Python fallback.
-        // This is intentional - Python has the correct memory state.
-    }
 }

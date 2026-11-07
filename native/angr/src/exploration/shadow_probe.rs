@@ -55,20 +55,13 @@ impl RustExplorationManager {
             self.shadow_probe_chan = Some(spawn_shadow_probe_thread());
         }
 
-        // `to_serialized` flushes memory first (angr-sqfj8.71): a
-        // representation-only normalization (Multi cells -> symbolic_objects)
-        // on the success path, but `flush_pending_writes`'s error path
-        // silently DISCARDS whatever pending writes it hadn't yet materialized
-        // (the SILENT(cat-b) log::warn! at that call site) rather than
-        // restoring them — fine for the existing export-only callers, which
-        // only ever touch a state that's leaving exploration anyway, but not
-        // for this probe, which used to run on the live, still-stepping
-        // state. Serializing a disposable fork instead keeps the "discarded,
-        // byte-identical behaviour" contract this module's doc promises
-        // literally true even on that error path — a bad flush can only cost
-        // the fork, never the real state. The fork happens outside the timed
-        // region so only the real detach/serialize cost is measured; channel
-        // transit time is also NOT counted.
+        // `to_serialized` flushes memory first (angr-sqfj8.71), which
+        // rewrites Multi cells into symbolic objects. Serializing a
+        // disposable fork rather than the live, still-stepping state keeps
+        // this module's "discarded, byte-identical behaviour" contract
+        // literal: the probe never mutates the real state. The fork happens
+        // outside the timed region so only the real detach/serialize cost is
+        // measured; channel transit time is also NOT counted.
         let mut probe_state = state.fork();
         let t0 = Instant::now();
         let bytes = probe_state.to_serialized();

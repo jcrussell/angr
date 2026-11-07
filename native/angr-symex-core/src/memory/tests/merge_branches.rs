@@ -6,8 +6,7 @@
 //! walk, `merge_multi` the Multi-on-both-arms lazy cell, `merge_sidecars` the
 //! per-field `#[merge_policy]` contract, `merge_cost_shape` the cost-shape
 //! spike measurement. This file covers the plain cases those assume:
-//! per-byte ITE selection, the guarded one-arm page walk, and pending-write
-//! extension.
+//! per-byte ITE selection and the guarded one-arm page walk.
 
 use super::super::*;
 
@@ -125,31 +124,3 @@ fn test_merge_self_only_page_is_guarded() {
     assert_eq!(ctx.eval(&v), Some(0xBEEF), "self's arm keeps its write");
 }
 
-/// Pending writes present only in `other` extend `self.pending_writes`.
-#[test]
-fn test_merge_extends_pending_writes_from_other() {
-
-    let mut self_mem = SymbolicMemory::new(Endness::Little);
-    self_mem.map(0x1000, 0x1000, Permission::RWX);
-
-    let mut other_mem = SymbolicMemory::new(Endness::Little);
-    other_mem.map(0x1000, 0x1000, Permission::RWX);
-    other_mem.add_pending_write(PendingWrite {
-        addr: RustBV::symbol("pw_addr", 64),
-        value: RustBV::concrete(0x99, 8),
-        size: 1,
-        condition: None,
-    });
-
-    assert_eq!(self_mem.pending_writes_count(), 0);
-    let cond = RustBV::symbol("c", 1);
-    assert!(
-        self_mem.merge(&other_mem, &cond),
-        "extending pending writes must count as a merge"
-    );
-    assert_eq!(
-        self_mem.pending_writes_count(),
-        1,
-        "self.pending_writes must be extended by other's"
-    );
-}

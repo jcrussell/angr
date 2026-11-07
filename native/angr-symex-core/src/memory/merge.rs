@@ -7,9 +7,7 @@
 //! The merge contract: for every byte that differs between the two arms the
 //! merged value becomes `ITE(merge_cond_other, other_byte, self_byte)`, with
 //! `Multi` cells collapsed to their ITE BV first so a Multi byte and a plain
-//! symbolic byte feed the same expression shape (angr-op0dn.11.2.2). Deferred
-//! (pending) symbolic stores cannot be collapsed that way, so they are instead
-//! *guarded* by the arm's condition and carried forward unmaterialized.
+//! symbolic byte feed the same expression shape (angr-op0dn.11.2.2).
 //!
 //! A page only one arm holds is walked against a zero stand-in for the other
 //! arm (angr-vmi2l.187), lazy region or not: a page the engine materializes
@@ -22,7 +20,7 @@ use rustc_hash::FxHashMap;
 
 use super::multi::{MultiAlternative, MultiPayload};
 use super::page::{PAGE_SIZE, PageIndex};
-use super::{Address, MemoryPage, PendingWrite, SymMap, SymbolicMemory};
+use super::{Address, MemoryPage, SymMap, SymbolicMemory};
 use crate::symbolic::RustBV;
 use angr_vex::Endness;
 
@@ -62,7 +60,6 @@ impl SymbolicMemory {
             lazy_regions: o_lazy_regions,
             symbolic_spans: o_symbolic_spans,
             multi_objects: o_multi_objects,
-            pending_writes: o_pending_writes,
             // SimOption mirrors, identical across fork siblings.
             zero_fill_unconstrained: _,
             enforce_permissions: _,
@@ -304,33 +301,6 @@ impl SymbolicMemory {
             merged = true;
         }
 
-        // Merge pending writes with merge-condition guards
-        // (M3-2b; angr-op0dn.11.2.2). A deferred symbolic store is arm-specific, so a
-        // blind `extend` would let `other`'s writes fire on `self`'s paths (and
-        // leaves `self`'s own writes firing on `other`'s paths). Guard each
-        // arm's writes so a write only materializes on the path that issued it:
-        // `self`'s writes under `!merge_cond_other`, `other`'s under
-        // `merge_cond_other`. Guarding composes with any pre-existing
-        // conditional-store condition via `And`.
-        if !self.pending_writes.is_empty() {
-            let not_cond = merge_cond_other.not();
-            let guarded: Vec<PendingWrite> = self
-                .pending_writes
-                .iter()
-                .map(|pw| Self::guard_pending_write(pw, &not_cond))
-                .collect();
-            self.pending_writes = guarded;
-            merged = true;
-        }
-        if !o_pending_writes.is_empty() {
-            self.pending_writes.extend(
-                o_pending_writes
-                    .iter()
-                    .map(|pw| Self::guard_pending_write(pw, merge_cond_other)),
-            );
-            merged = true;
-        }
-
         // Accumulating sidecars (angr-91vj9.3). None of these are keyed off
         // the page bitmaps, so the byte walk above cannot reconstruct them —
         // each grows monotonically over a branch's life, which makes a union
@@ -455,23 +425,5 @@ impl SymbolicMemory {
         }
         let offset = u32::try_from(addr.raw().wrapping_sub(base_addr.raw())).ok()?;
         Self::extract_byte_lane(sym, offset, endness)
-    }
-
-    /// Guard a deferred symbolic store with a merge condition, composing with
-    /// any pre-existing conditional-store condition via `And`
-    /// (angr-op0dn.11.2.2). The returned write only materializes when `guard`
-    /// holds, so an arm-specific pending write stays scoped to its own path
-    /// after a merge.
-    fn guard_pending_write(pw: &PendingWrite, guard: &RustBV) -> PendingWrite {
-        let condition = Some(match &pw.condition {
-            Some(c) => guard.and(c),
-            None => guard.clone(),
-        });
-        PendingWrite {
-            addr: pw.addr.clone(),
-            value: pw.value.clone(),
-            size: pw.size,
-            condition,
-        }
     }
 }

@@ -183,31 +183,13 @@ fn default_cgc_allocation_base() -> u64 {
 }
 
 impl RustSimState {
-    /// Flush this state's memory (Multi cells + any queued lazy-write ITEs)
-    /// and return proof of it, for any caller about to build a
-    /// snapshot/export or otherwise read `symbolic_objects`/pages directly
-    /// and that must see fully-materialized memory
-    /// (angr-sqfj8.71, angr-sqfj8.26, angr-sqfj8.52). Mirrors [`Self::flush_and_export_full`]'s
-    /// flush step.
+    /// Flush this state's Multi cells into symbolic objects and return proof
+    /// of it, for any caller about to build a snapshot/export or otherwise
+    /// read `symbolic_objects`/pages directly and that must see
+    /// fully-materialized memory (angr-sqfj8.71, angr-sqfj8.26,
+    /// angr-sqfj8.52). [`Self::flush_and_export_full`] flushes through it.
     pub fn flush_memory(&mut self) -> crate::memory::MultiFlushed {
-        let ctx = self.solver.borrow();
-        // SILENT(cat-b): same rationale as `flush_and_export_full` — a
-        // lazy-write materialization failure costs the rest of the queue
-        // either way, so log it rather than losing the snapshot outright.
-        // `flush_multi_cells` (the part the proof certifies) runs
-        // unconditionally before any pending-write processing inside
-        // `flush_pending_writes`, so the proof is valid even on this error
-        // path.
-        match self.memory.flush_pending_writes(&ctx, &self.concretizer) {
-            Ok(proof) => proof,
-            Err(e) => {
-                log::warn!(
-                    "flush_memory: pending-write flush failed ({e:?}); \
-                     remaining deferred stores are not reflected in this snapshot"
-                );
-                self.memory.flush_multi_cells()
-            }
-        }
+        self.memory.flush_multi_cells()
     }
 
     /// Build a serializable snapshot of this state (angr-x04s.1.3).

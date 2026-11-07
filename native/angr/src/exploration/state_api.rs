@@ -559,8 +559,8 @@ impl RustExplorationManager {
     /// default representation for a symbolic-address store resolving to
     /// `Multiple`/`Strided`) exports as its stale concrete backing byte
     /// instead of the stored value. `flush_and_export_full` ->
-    /// `SymbolicMemory::flush_pending_writes` -> `flush_multi_cells`
-    /// collapses those cells into symbolic objects the exporter can see.
+    /// `flush_memory` -> `SymbolicMemory::flush_multi_cells` collapses those
+    /// cells into symbolic objects the exporter can see.
     pub(crate) fn _export_state_flushed(
         &mut self,
         state_id: u64,

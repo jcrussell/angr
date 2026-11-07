@@ -1,21 +1,16 @@
-//! Multi-cell union + pending-write guard merge semantics
+//! Multi-cell union merge semantics
 //! (angr-op0dn.11.2.2, M3-2b).
 //!
 //! `SymbolicMemory::merge` must, per the `rust_lazy_memory_design.rst` merge
 //! rule, merge a byte that is Multi on *both* arms into a single lazy Multi
 //! cell whose alternatives union the arms under merge-condition guards (staying
-//! lazy — no eager collapse to a `symbolic_objects` ITE). It must also guard
-//! deferred symbolic stores (`pending_writes`) by the merge condition instead
-//! of the old blind `extend`, so an arm-specific write only materializes on the
-//! path that issued it.
+//! lazy — no eager collapse to a `symbolic_objects` ITE).
 //!
 //! These tests assert:
 //!   * union alternative count == n_self + n_other (the union);
 //!   * the merged byte stays Multi (not collapsed into `symbolic_objects`);
 //!   * the union collapses to the correct arm value under a concrete merge
-//!     condition (other under m==1, self under m==0);
-//!   * pending writes are guarded — self under `!m`, other under `m`, composing
-//!     with any pre-existing conditional-store condition via `And`.
+//!     condition (other under m==1, self under m==0).
 
 use super::super::*;
 
@@ -169,57 +164,6 @@ fn test_mixed_multi_and_concrete_collapses() {
     assert!(
         a.symbolic_objects.contains_key(&addr),
         "mixed Multi/concrete byte collapses to a symbolic_objects ITE"
-    );
-}
-
-/// Pending writes are guarded by the merge condition, not blindly extended.
-/// Deterministic: `m == 1`, so self's write (guarded `!m`) resolves to a `0`
-/// condition and other's write (guarded `m`, composed with its prior `1`
-/// condition via `And`) resolves to `1`.
-#[test]
-fn test_pending_writes_are_merge_guarded() {
-
-    let mut a = SymbolicMemory::new(Endness::Little);
-    a.add_pending_write(PendingWrite {
-        addr: RustBV::symbol("wa_addr", 64),
-        value: RustBV::symbol("wa_val", 8),
-        size: 1,
-        condition: None,
-    });
-
-    let mut b = SymbolicMemory::new(Endness::Little);
-    b.add_pending_write(PendingWrite {
-        addr: RustBV::symbol("wb_addr", 64),
-        value: RustBV::symbol("wb_val", 8),
-        size: 1,
-        condition: Some(RustBV::concrete(1, 1)),
-    });
-
-    assert!(a.merge(&b, &RustBV::concrete(1, 1)));
-
-    let writes = a.pending_writes();
-    assert_eq!(writes.len(), 2, "both arms' pending writes are retained");
-
-    // self's write: guarded with !m == !1 == 0, no prior condition.
-    let self_cond = writes[0]
-        .condition
-        .as_ref()
-        .expect("self write is now guarded (was None)");
-    assert_eq!(
-        self_cond.as_u128(),
-        Some(0),
-        "self write guarded off on the other arm (m==1)"
-    );
-
-    // other's write: guarded with m == 1, composed with prior 1 via And → 1.
-    let other_cond = writes[1]
-        .condition
-        .as_ref()
-        .expect("other write stays guarded");
-    assert_eq!(
-        other_cond.as_u128(),
-        Some(1),
-        "other write live on the other arm (m==1), And-composed with its prior condition"
     );
 }
 
