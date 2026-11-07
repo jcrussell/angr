@@ -13,16 +13,21 @@ The convention: every such site that can affect *state correctness* carries a
     // SILENT(cat-b): <rationale>   fallback with loss (degrades silently)
     // SILENT(cat-c): <rationale>   wrong-answer risk -- MUST also log::warn!
 
-comment within a small window above the site. cat-a/b are annotation-only;
-cat-c additionally demands a warn.
+comment, either trailing the site's own line or in the comment/code run
+directly above it (see :func:`_has_tag` for where that run stops). The tag
+is annotation-only: this gate does not check that a cat-c site logs. A
+fallback that must log goes through the ``silent_default!`` macro, whose
+``cat_c`` arm logs warn.
 
 This runs as a CI gate (``ci.yml::rust_check``) against a checked-in baseline: the detected shapes
 have real false positives (plenty of legitimate self-only-by-design early
 returns exist), so precision is proven against a checked-in *baseline* of the
-currently-known-untagged sites. The script reports only sites that are neither
-tagged nor in the baseline -- i.e. *new* untagged silent fallbacks introduced
-since the baseline was taken. A new untagged site fails the gate; tag it
-rather than growing the baseline.
+currently-known-untagged sites. The baseline is a multiset: one line per
+untagged occurrence, so a second identical site in a baselined file is new.
+The script reports untagged sites beyond the baseline's count for their key,
+and baseline lines that no longer match a live site (stale: prune them with
+``--update-baseline``, a deletions-only diff). Either fails the gate; tag a
+new site rather than growing the baseline.
 
 Detected shapes (deliberately narrow -- the noisy ``.unwrap_or*`` /
 ``let _ =`` families are out of scope until precision is proven):
@@ -51,6 +56,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 # The scanner below is this gate's own; only root resolution is shared.
@@ -72,12 +78,6 @@ EXCLUDE = {"native/angr-symex-macros": "proc-macro crate: a failure there is a c
 MIN_FILES = 200
 BASELINE_PATH = REPO_ROOT / "tools" / "silent_fallback_baseline.txt"
 
-# Window (lines before / after the site) scanned for a SILENT(cat-x) tag.
-# Mirrors the Python audit's 20-before / 12-after asymmetry: the rationale
-# almost always precedes the swallow.
-LOOKBACK = 20
-LOOKAHEAD = 12
-
 # Either the `// SILENT(cat-x): <rationale>` comment, or an invocation of the
 # `silent_default!` macro (`lib.rs`), whose category argument *is* the tag —
 # requiring a redundant comment beside it would push contributors back toward
@@ -86,6 +86,7 @@ LOOKAHEAD = 12
 # that makes the bare `silent_default!(` enough, and it keeps matching when
 # rustfmt wraps the category onto its own line (this regex is applied one line
 # at a time, so anchoring on `silent_default!(\s*cat_c` would miss that shape).
+# Where a match counts is :func:`_has_tag`'s business (angr-vmi2l.309).
 TAG_RE = re.compile(r"//\s*SILENT\(cat-[abc]\):|silent_default!\(")
 
 # Each shape: (name, compiled matcher over the *stripped* line).
@@ -151,10 +152,42 @@ def _key(rel: str, shape: str, stripped: str) -> str:
     return f"{rel}\t{shape}\t{stripped}"
 
 
+# An item header: the walk up from a site never crosses into another fn.
+FN_HEADER_RE = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe|extern(?:\s+\"[^\"]*\")?)\s+)*fn\s")
+
+
+# A trailing `// ...` comment, so `x.ok(); // SILENT(cat-b): why` is still a
+# `.ok();` site. The leading whitespace keeps a `"http://"` literal intact.
+TRAILING_COMMENT_RE = re.compile(r"\s+//.*$")
+
+
+def _code(stripped: str) -> str:
+    """A stripped line minus its trailing comment: what ``SHAPES`` match."""
+    return TRAILING_COMMENT_RE.sub("", stripped)
+
+
+def _is_site(stripped: str) -> bool:
+    """Whether a stripped, non-comment line carries one of ``SHAPES``."""
+    return not stripped.startswith("//") and any(m.search(_code(stripped)) for _, m in SHAPES)
+
+
 def _has_tag(lines: list[str], idx: int) -> bool:
-    lo = max(0, idx - LOOKBACK)
-    hi = min(len(lines), idx + LOOKAHEAD + 1)
-    return any(TAG_RE.search(lines[j]) for j in range(lo, hi))
+    """Whether the site on ``lines[idx]`` carries its own tag.
+
+    The tag is on the site's line, or in the run of lines directly above it.
+    The walk up stops at a blank line, another site, a fn header, or a line
+    opening with ``}`` (the end of a sibling block). So one site's tag cannot
+    exempt a neighbour, nor a site in the next fn (angr-vmi2l.309).
+    """
+    if TAG_RE.search(lines[idx]):
+        return True
+    for j in range(idx - 1, -1, -1):
+        stripped = lines[j].strip()
+        if not stripped or _is_site(stripped) or FN_HEADER_RE.match(stripped) or stripped.startswith("}"):
+            return False
+        if TAG_RE.search(stripped):
+            return True
+    return False
 
 
 def scan_text(rel: str, text: str) -> list[tuple[str, int, str, str, bool]]:
@@ -166,9 +199,10 @@ def scan_text(rel: str, text: str) -> list[tuple[str, int, str, str, bool]]:
         # Ignore commented-out code so a `// return Ok(None)` note is inert.
         if stripped.startswith("//"):
             continue
+        code = _code(stripped)
         for shape, matcher in SHAPES:
-            if matcher.search(stripped):
-                hits.append((rel, idx + 1, shape, stripped, _has_tag(lines, idx)))
+            if matcher.search(code):
+                hits.append((rel, idx + 1, shape, code, _has_tag(lines, idx)))
                 break
     return hits
 
@@ -192,8 +226,8 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
 # Synthetic sources for --self-test. The untagged file carries each detected
 # shape (bare `return Ok(None)`, bare `.ok();`, the `let` tail) plus
 # must-NOT-fire controls; the tagged file is the same sites, each with a
-# `// SILENT(cat-b):` tag. They are separate texts, so a tag in one cannot
-# fall inside the other's LOOKBACK/LOOKAHEAD window.
+# `// SILENT(cat-b):` tag (one of them trailing). They are separate texts so
+# the tagged one cannot bind into the untagged one.
 _SELF_TEST_UNTAGGED = """\
 fn early(&self) -> Result<Option<u64>> {
     if self.empty() {
@@ -219,10 +253,47 @@ fn early(&self) -> Result<Option<u64>> {
 fn swallow(&self) {
     // SILENT(cat-b): why
     self.flush().ok();
-    // SILENT(cat-b): why
-    let page = self.load(addr).ok();
+    let page = self.load(addr).ok(); // SILENT(cat-b): why
 }
 """
+# Neighbour-tag evasions (angr-vmi2l.309): in each, a tag or a
+# `silent_default!` belongs to something else, and the `.ok();` site is
+# untagged. They cover a site in the next fn, the next site in a run, a
+# blank-line gap, and a sibling block's tag.
+_SELF_TEST_NEIGHBOURS = """\
+fn a(&self) -> u64 {
+    silent_default!(cat_b, self.parse(), 0, "unrelated")
+}
+fn b(&self) {
+    self.flush().ok();
+}
+fn c(&self) -> Result<Option<u64>> {
+    // SILENT(cat-a): expected
+    return Ok(None);
+}
+fn d(&self) {
+    // SILENT(cat-a): covers the first only
+    self.first().ok();
+    self.flush().ok();
+    // SILENT(cat-a): a gap ends the comment run
+
+    self.flush().ok();
+    if x {
+        // SILENT(cat-a): the if arm's own fallback
+        self.first().ok();
+    }
+    self.flush().ok();
+}
+"""
+_SELF_TEST_EXPECTED_NEIGHBOURS = [
+    ("ok-swallow", "self.flush().ok();", False),
+    ("return-ok-none", "return Ok(None);", True),
+    ("ok-swallow", "self.first().ok();", True),
+    ("ok-swallow", "self.flush().ok();", False),
+    ("ok-swallow", "self.flush().ok();", False),
+    ("ok-swallow", "self.first().ok();", True),
+    ("ok-swallow", "self.flush().ok();", False),
+]
 _SELF_TEST_EXPECTED_UNTAGGED = [
     ("return-ok-none", "return Ok(None);", False),
     ("ok-swallow", "self.flush().ok();", False),
@@ -245,6 +316,7 @@ def self_test() -> int:
     for name, src, want in (
         ("untagged", _SELF_TEST_UNTAGGED, _SELF_TEST_EXPECTED_UNTAGGED),
         ("tagged", _SELF_TEST_TAGGED, _SELF_TEST_EXPECTED_TAGGED),
+        ("neighbours", _SELF_TEST_NEIGHBOURS, _SELF_TEST_EXPECTED_NEIGHBOURS),
     ):
         got = [(shape, code, tagged) for _, _, shape, code, tagged in scan_text("fixture.rs", src)]
         if got != want:
@@ -252,10 +324,23 @@ def self_test() -> int:
 
     # A baselined untagged site is suppressed; the others still report.
     untagged = [h for h in scan_text("fixture.rs", _SELF_TEST_UNTAGGED) if not h[4]]
-    baseline = {_key("fixture.rs", "return-ok-none", "return Ok(None);")}
+    baseline = Counter([_key("fixture.rs", "return-ok-none", "return Ok(None);")])
     fresh = [h[3] for h in new_untagged(untagged, baseline)]
     if fresh != ["self.flush().ok();", "let page = self.load(addr).ok();"]:
         failures.append(f"baseline: got {fresh}")
+    if stale_baseline(untagged, baseline):
+        failures.append(f"baseline: a used line reads stale: {stale_baseline(untagged, baseline)}")
+
+    # The baseline counts: one line covers one of the four identical untagged
+    # `self.flush().ok();` sites, so three are new; a line nothing uses is stale.
+    flush = _key("fixture.rs", "ok-swallow", "self.flush().ok();")
+    gone = _key("fixture.rs", "ok-swallow", "self.gone().ok();")
+    untagged = [h for h in scan_text("fixture.rs", _SELF_TEST_NEIGHBOURS) if not h[4]]
+    fresh_lines = [h[1] for h in new_untagged(untagged, Counter([flush, gone]))]
+    if fresh_lines != [h[1] for h in untagged[1:]]:
+        failures.append(f"baseline count: expected the last 3 of {[h[1] for h in untagged]}, got {fresh_lines}")
+    if stale_baseline(untagged, Counter([flush, gone])) != [gone]:
+        failures.append(f"stale baseline: got {stale_baseline(untagged, Counter([flush, gone]))}")
 
     for rel, want_test in (
         ("memory/page_tests.rs", True),
@@ -286,36 +371,57 @@ def self_test() -> int:
         return 1
     print(
         "self-test OK: untagged return Ok(None) / .ok(); / let-tail flagged, "
-        "the same sites tagged SILENT(cat-b) pass, baseline, test-file and upstream-owned skips honoured; "
+        "the same sites tagged SILENT(cat-b) above or trailing pass, a neighbour's tag exempts nothing, "
+        "the baseline counts occurrences and reports stale lines, test-file and upstream-owned skips honoured; "
         "an unclassified member, a missing root and a low file count fail"
     )
     return 0
 
 
-def load_baseline() -> set[str]:
+def load_baseline() -> Counter[str]:
+    """The baseline as a multiset: a key listed twice covers two sites."""
     if not BASELINE_PATH.exists():
-        return set()
-    keys = set()
+        return Counter()
+    keys: Counter[str] = Counter()
     for line in BASELINE_PATH.read_text(encoding="utf-8").splitlines():
         line = line.rstrip("\n")
         if not line or line.startswith("#"):
             continue
-        keys.add(line)
+        keys[line] += 1
     return keys
 
 
 def new_untagged(
-    untagged: list[tuple[str, int, str, str, bool]], baseline: set[str]
+    untagged: list[tuple[str, int, str, str, bool]], baseline: Counter[str]
 ) -> list[tuple[str, int, str, str, bool]]:
-    """The untagged sites whose line-number-independent key is not baselined."""
-    return [h for h in untagged if _key(h[0], h[2], h[3]) not in baseline]
+    """The untagged sites beyond the baseline's count for their key.
+
+    Within one key the earliest sites are the baselined ones, so the
+    surplus reported is the last occurrences in the file.
+    """
+    left = Counter(baseline)
+    fresh = []
+    for h in untagged:
+        k = _key(h[0], h[2], h[3])
+        if left[k] > 0:
+            left[k] -= 1
+        else:
+            fresh.append(h)
+    return fresh
+
+
+def stale_baseline(untagged: list[tuple[str, int, str, str, bool]], baseline: Counter[str]) -> list[str]:
+    """Baseline lines no live untagged site uses, one entry per surplus line."""
+    surplus = baseline - Counter(_key(h[0], h[2], h[3]) for h in untagged)
+    return sorted(surplus.elements())
 
 
 def write_baseline(untagged: list[tuple[str, int, str, str, bool]]) -> int:
-    keys = sorted({_key(rel, shape, stripped) for rel, _, shape, stripped, _ in untagged})
+    keys = sorted(_key(rel, shape, stripped) for rel, _, shape, stripped, _ in untagged)
     header = (
         "# Silent-fallback audit baseline -- see tools/audit_silent_fallback.py\n"
-        "# One key per known-untagged site: <relpath>\\t<shape>\\t<stripped-code>.\n"
+        "# One line per known-untagged site: <relpath>\\t<shape>\\t<stripped-code>;\n"
+        "# a key repeats once per occurrence.\n"
         "# Regenerate with: tools/audit_silent_fallback.py --update-baseline\n"
         "# Shrinking this file (by tagging a site with // SILENT(cat-x):) is the goal.\n"
     )
@@ -354,22 +460,29 @@ def main() -> int:
 
     baseline = load_baseline()
     new_sites = new_untagged(untagged, baseline)
+    stale = stale_baseline(untagged, baseline)
 
-    if not new_sites:
+    if not new_sites and not stale:
         print(
             f"OK: {len(hits)} silent-fallback sites, "
-            f"{len(hits) - len(untagged)} tagged, {len(untagged)} baselined, 0 new untagged."
+            f"{len(hits) - len(untagged)} tagged, {len(untagged)} baselined, 0 new untagged, 0 stale."
         )
         return 0
 
-    print(f"FOUND {len(new_sites)} new untagged silent-fallback site(s):\n")
-    for rel, lineno, shape, stripped, _ in new_sites:
-        print(f"  {rel}:{lineno}\t[{shape}]\t{stripped}")
-    print(
-        "\nAdd a `// SILENT(cat-a|b|c): <rationale>` comment above each site "
-        "(cat-c must also log::warn!),\nor run --update-baseline if this is an "
-        "intentional new fallback to defer."
-    )
+    if new_sites:
+        print(f"FOUND {len(new_sites)} new untagged silent-fallback site(s):\n")
+        for rel, lineno, shape, stripped, _ in new_sites:
+            print(f"  {rel}:{lineno}\t[{shape}]\t{stripped}")
+        print(
+            "\nAdd a `// SILENT(cat-a|b|c): <rationale>` comment directly above each site "
+            "(or trailing it),\nwith no blank line between. A fallback that must log "
+            "goes through `silent_default!`."
+        )
+    if stale:
+        print(f"\nFOUND {len(stale)} stale baseline line(s) matching no live untagged site:\n")
+        for key in stale:
+            print(f"  {key}")
+        print("\nPrune them with --update-baseline (the diff must be deletions only).")
     return 1
 
 

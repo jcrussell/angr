@@ -309,6 +309,8 @@ pub(crate) fn arch_register_info<'py>(
     arch_name: &str,
 ) -> PyResult<Option<Bound<'py, pyo3::types::PyDict>>> {
     let Some(arch) = arch_from_name(arch_name) else {
+        // SILENT(cat-a): `None` is this fn's documented "no Rust arch by that
+        // name" answer, and the Python caller checks for it.
         return Ok(None);
     };
     let cc = crate::arch::default_cc_for_arch(arch.name());
