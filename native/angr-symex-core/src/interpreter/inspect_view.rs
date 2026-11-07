@@ -23,7 +23,7 @@ pub struct InspectView {
     memory: Option<SymbolicMemory>,
     pending_stores: PendingStoreBuffer,
     pending_symbolic_stores: FxHashMap<u64, RustBV>,
-    flushed_stores: FxHashMap<u64, Vec<u8>>,
+    flushed_stores: FlushedStoreBytes,
     flushed_symbolic_stores: FxHashMap<u64, RustBV>,
     solver: SymContext,
 }
@@ -73,9 +73,8 @@ impl InspectView {
             return Some(value);
         }
         self.flushed_stores
-            .get(&addr)
-            .filter(|data| bytes <= data.len())
-            .map(|data| bytes_to_bv(&data[..bytes], bits))
+            .try_load(addr, bytes, self.registers.is_big_endian())
+            .map(|data| bytes_to_bv(&data, bits))
     }
 }
 

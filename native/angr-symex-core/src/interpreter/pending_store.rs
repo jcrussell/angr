@@ -41,8 +41,7 @@ pub(crate) struct PendingStoreBuffer {
 /// The mirrored slice is itself the value-LE encoding of the narrower
 /// big-endian read, so callers decode it unchanged.
 ///
-/// Shared by the concrete pending buffer, the flushed concrete map
-/// (`VEXInterpreter::flushed_store_bytes`) and the symbolic-store maps
+/// Shared by the concrete pending buffer and the symbolic-store maps
 /// (`VEXInterpreter::symbolic_overlap_load`).
 pub(super) fn value_range(
     big_endian: bool,
@@ -339,6 +338,68 @@ impl PendingStoreBuffer {
             }
         }
         None
+    }
+}
+
+/// Concrete stores flushed in earlier blocks of this step, kept one memory
+/// byte per address so a later store overwrites exactly the bytes it covers.
+///
+/// An exact-base map of whole stores answered only a load at a store's own
+/// base: a narrower load inside a wider flushed store, or a load over a
+/// flushed store a later one partly overwrote, read stale lower-layer bytes
+/// (angr-vmi2l.174). Bytes are kept in memory order, so the target's
+/// byte order is applied once on [`Self::insert`] and once on
+/// [`Self::try_load_partial`].
+#[derive(Default, Clone)]
+pub(crate) struct FlushedStoreBytes {
+    bytes: FxHashMap<u64, u8>,
+}
+
+impl FlushedStoreBytes {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.bytes.clear();
+    }
+
+    /// Record a store of value-LE `data` at `addr`, last write wins.
+    pub(crate) fn insert(&mut self, addr: u64, data: &[u8], big_endian: bool) {
+        for off in 0..data.len() {
+            // Guest addresses wrap at the top of the address space, as
+            // `PendingStoreBuffer::push` indexes them.
+            let byte = data[value_index(big_endian, data.len(), off)];
+            self.bytes.insert(addr.wrapping_add(off as u64), byte);
+        }
+    }
+
+    /// The flushed bytes of `[addr, addr + size)` in value-LE order, `None`
+    /// at each position no flushed store wrote; `None` overall when none
+    /// did. The same shape as [`PendingStoreBuffer::try_load_partial`].
+    pub(crate) fn try_load_partial(
+        &self,
+        addr: u64,
+        size: usize,
+        big_endian: bool,
+    ) -> Option<Vec<Option<u8>>> {
+        if self.bytes.is_empty() {
+            return None;
+        }
+        let out: Vec<Option<u8>> = (0..size as u64)
+            .map(|off| self.bytes.get(&addr.wrapping_add(off)).copied())
+            .collect();
+        out.iter()
+            .any(Option::is_some)
+            .then(|| into_value_order(big_endian, out))
+    }
+
+    /// The value-LE bytes of `[addr, addr + size)` when flushed stores wrote
+    /// every one of them.
+    pub(crate) fn try_load(&self, addr: u64, size: usize, big_endian: bool) -> Option<Vec<u8>> {
+        self.try_load_partial(addr, size, big_endian)?
+            .into_iter()
+            .collect()
     }
 }
 

@@ -1459,7 +1459,7 @@ fn partially_buffered_load_overlays_pending_bytes_on_concrete_lower_layer() {
     let mut interp = new_interp(&ctx);
     assert!(!interp.use_rust_memory);
     // Lower layer (a previously flushed store from an earlier block).
-    interp.all_flushed_stores.insert(0x4000, vec![0x11, 0x22]);
+    interp.all_flushed_stores.insert(0x4000, &[0x11, 0x22], false);
     // In-flight store covering only the low byte of the coming 2-byte load.
     interp.pending_stores.push(0x4000, vec![0xaa], interp.registers.is_big_endian());
 

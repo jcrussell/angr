@@ -55,7 +55,7 @@ fn interp_with_words<'c>(ctx: &'c SymContext, words: &[(u64, u32)]) -> VEXInterp
     for (addr, value) in words {
         interp
             .all_flushed_stores
-            .insert(*addr, value.to_le_bytes().to_vec());
+            .insert(*addr, &value.to_le_bytes(), false);
     }
     interp.temps.resize(2, None);
     interp

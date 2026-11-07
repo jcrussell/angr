@@ -273,11 +273,37 @@ impl<'a> VEXInterpreter<'a> {
             return Ok(sym_val);
         }
 
-        // Also check previously flushed concrete stores (cross-block)
-        if let Some(data) = self.flushed_store_bytes(addr_concrete, size) {
-            return Ok(bytes_to_bv(data, (size * 8) as u32));
+        // Then previously flushed concrete stores (cross-block). Like the
+        // pending buffer, a load they cover only in part splices their bytes
+        // over the rungs below (angr-vmi2l.174).
+        let flushed = self.all_flushed_stores.try_load_partial(
+            addr_concrete,
+            size,
+            self.registers.is_big_endian(),
+        );
+        if let Some(overlay) = &flushed
+            && overlay.iter().all(Option::is_some)
+        {
+            let data: Vec<u8> = overlay.iter().flatten().copied().collect();
+            return Ok(bytes_to_bv(&data, (size * 8) as u32));
         }
+        let below = self.load_concrete_addr_below_flushed(callbacks, addr_concrete, size)?;
+        match flushed {
+            Some(overlay) => Ok(splice_bytes_over_bv(&below, &overlay)),
+            None => Ok(below),
+        }
+    }
 
+    /// The bottom rungs of `load_concrete_addr`'s ladder, below every store
+    /// buffer: the Rust concrete-memory cache, then the Python callback.
+    /// Only `load_concrete_addr_below_pending` calls it, for the reason
+    /// that fn's doc gives.
+    fn load_concrete_addr_below_flushed(
+        &self,
+        callbacks: &dyn EngineHost,
+        addr_concrete: u64,
+        size: usize,
+    ) -> Result<RustBV, CbExecutionError> {
         // FAST PATH: Check if address is in Rust-cached concrete memory.
         // The cache holds memory-order bytes, unlike the value-LE store
         // buffers above (angr-vmi2l.172).
@@ -308,25 +334,18 @@ impl<'a> VEXInterpreter<'a> {
             || self
                 .symbolic_store_load(&self.all_flushed_symbolic_stores, addr, size)
                 .is_some()
-            || self.flushed_store_bytes(addr, size).is_some()
+            || self
+                .all_flushed_stores
+                .try_load_partial(addr, size, self.registers.is_big_endian())
+                .is_some()
             || self.try_read_concrete_memory(addr, size).is_some()
-    }
-
-    /// The value-LE bytes of a `size`-byte load at `addr` from the flushed
-    /// concrete store based exactly at `addr`, when it is at least that wide.
-    /// On a big-endian target the address's bytes are the stored value's
-    /// high end, not its low end (angr-vmi2l.172).
-    pub(super) fn flushed_store_bytes(&self, addr: u64, size: usize) -> Option<&[u8]> {
-        let data = self.all_flushed_stores.get(&addr)?;
-        (size <= data.len())
-            .then(|| &data[value_range(self.registers.is_big_endian(), data.len(), 0..size)])
     }
 
     /// Load from memory via Python callback.
     /// This handles the common case of loading from a concrete address.
     ///
     /// Bottom rung of the load-resolution ladder, and its only caller is
-    /// `load_concrete_addr_below_pending`: every load reaches it through
+    /// `load_concrete_addr_below_flushed`: every load reaches it through
     /// `load_concrete_addr`, after the pending/flushed store buffers and the
     /// concrete-memory cache, never in place of them. (The multi-candidate
     /// `build_ite_load_from_callbacks` batches its host loads in one crossing,

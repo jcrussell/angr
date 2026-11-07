@@ -1033,3 +1033,67 @@ fn big_endian_callback_ladder_decodes_in_memory_order() {
     assert_eq!(load(&interp, at, 1), Some(0x11), "symbolic exact key");
     assert_eq!(load(&interp, at + 1, 2), Some(0x2233), "symbolic overlap");
 }
+
+/// Flushed concrete stores answer any load inside or across them, last
+/// write wins, and a load they cover only in part splices their bytes over
+/// the concrete cache (angr-vmi2l.174). The flushed layer used to be an
+/// exact-base map of whole stores, so each load below read the cache's
+/// stale 0xAA bytes or the overwritten byte.
+#[test]
+fn flushed_stores_serve_offset_overlapping_and_partial_loads() {
+    let callbacks = TestHost {
+        accept_stores: true,
+        ..TestHost::default()
+    };
+    let ctx = SymContext::new_mock();
+    let at: u64 = 0x4000;
+    let load = |interp: &VEXInterpreter<'_>, addr: u64, size: usize| {
+        interp
+            .load_concrete_addr(&callbacks, addr, size)
+            .unwrap()
+            .as_u64()
+    };
+    let store = |interp: &mut VEXInterpreter<'_>, addr: u64, le: Vec<u8>| {
+        let be = interp.registers.is_big_endian();
+        interp.pending_stores.push(addr, le, be);
+        interp.flush_stores(&callbacks).unwrap();
+    };
+    let fresh = |big_endian: bool| {
+        let mut interp = if big_endian {
+            new_be_interp(&ctx)
+        } else {
+            new_interp(&ctx)
+        };
+        assert!(!interp.use_rust_memory);
+        interp.add_concrete_memory(at, vec![0xAA; 16]);
+        interp
+    };
+
+    // An offset load inside a wider flushed store.
+    let mut interp = fresh(false);
+    store(&mut interp, at, 0x1122_3344_5566_7788_u64.to_le_bytes().to_vec());
+    assert_eq!(load(&interp, at + 4, 4), Some(0x1122_3344), "offset load");
+
+    // A later flushed byte overwrites part of an earlier flushed word.
+    let mut interp = fresh(false);
+    store(&mut interp, at, 0x1122_3344_u32.to_le_bytes().to_vec());
+    store(&mut interp, at + 1, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0x1122_9944), "last write wins");
+
+    // A load straddling a flushed store's edge splices it over the cache.
+    let mut interp = fresh(false);
+    store(&mut interp, at + 1, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0xAAAA_99AA), "partial splice");
+
+    // The same three on a big-endian target.
+    let mut interp = fresh(true);
+    store(&mut interp, at, 0x1122_3344_5566_7788_u64.to_le_bytes().to_vec());
+    assert_eq!(load(&interp, at + 4, 4), Some(0x5566_7788), "BE offset load");
+    let mut interp = fresh(true);
+    store(&mut interp, at, 0x1122_3344_u32.to_le_bytes().to_vec());
+    store(&mut interp, at + 1, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0x1199_3344), "BE last write wins");
+    let mut interp = fresh(true);
+    store(&mut interp, at + 1, vec![0x99]);
+    assert_eq!(load(&interp, at, 4), Some(0xAA99_AAAA), "BE partial splice");
+}

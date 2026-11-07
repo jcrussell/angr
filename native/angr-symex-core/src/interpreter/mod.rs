@@ -157,7 +157,7 @@ pub use test_host::{SymbolicValueStore, TestHost};
 
 use block_result::{ConcretizedJump, StmtResult};
 use bv_utils::bytes_to_bv;
-use pending_store::PendingStoreBuffer;
+use pending_store::{FlushedStoreBytes, PendingStoreBuffer};
 
 pub use block_result::BlockResult;
 pub use concrete_memory::ConcreteMemoryRegion;
@@ -264,8 +264,9 @@ pub struct VEXInterpreter<'a> {
     pending_stores: PendingStoreBuffer,
     /// All stores flushed during this step (accumulated across block boundaries).
     /// Used for same-step cross-block load forwarding and for applying to state memory.
-    /// HashMap for O(1) lookup by address. Value is the most recent store data.
-    all_flushed_stores: FxHashMap<u64, Vec<u8>>,
+    /// Kept per byte, so any load inside or across flushed stores reads the
+    /// last bytes written.
+    all_flushed_stores: FlushedStoreBytes,
     /// All symbolic stores flushed during this step (accumulated across block boundaries).
     /// Preserves symbolic RustBV values for cross-block load forwarding.
     /// Takes priority over all_flushed_stores (concrete) during loads.
@@ -456,7 +457,7 @@ impl<'a> VEXInterpreter<'a> {
             loader_object_ranges: Arc::from([]),
             concretizer: AddressConcretizer::new(),
             pending_stores: PendingStoreBuffer::with_capacity(256),
-            all_flushed_stores: FxHashMap::default(),
+            all_flushed_stores: FlushedStoreBytes::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),
             pending_symbolic_stores: FxHashMap::default(),
             max_pending_stores: 256,
@@ -826,9 +827,9 @@ impl<'a> VEXInterpreter<'a> {
                     self.all_flushed_symbolic_stores.insert(addr, bv);
                 }
             }
-            // Drain pending_stores by move into all_flushed_stores (no Vec<u8> clone).
+            let big_endian = self.registers.is_big_endian();
             for (addr, data) in self.pending_stores.drain() {
-                self.all_flushed_stores.insert(addr, data);
+                self.all_flushed_stores.insert(addr, &data, big_endian);
             }
             return Ok(());
         }
@@ -838,9 +839,9 @@ impl<'a> VEXInterpreter<'a> {
             .memory_store_batch(self.pending_stores.as_slice())
             .map_err(|e| CbExecutionError::Callback(e.to_string()))?;
 
-        // Drain pending_stores into all_flushed_stores by move (no Vec<u8> clone).
+        let big_endian = self.registers.is_big_endian();
         for (addr, data) in self.pending_stores.drain() {
-            self.all_flushed_stores.insert(addr, data);
+            self.all_flushed_stores.insert(addr, &data, big_endian);
         }
         // Preserve symbolic values across block boundaries
         for (addr, bv) in self.pending_symbolic_stores.drain() {
@@ -995,7 +996,7 @@ impl<'a> VEXInterpreter<'a> {
             loader_object_ranges: Arc::clone(&self.loader_object_ranges),
             concretizer: self.concretizer.clone(), // Share concretizer settings
             pending_stores: PendingStoreBuffer::with_capacity(256), // Fresh store buffer for fork
-            all_flushed_stores: FxHashMap::default(),
+            all_flushed_stores: FlushedStoreBytes::default(),
             all_flushed_symbolic_stores: FxHashMap::default(),
             pending_symbolic_stores: FxHashMap::default(),
             max_pending_stores: self.max_pending_stores,

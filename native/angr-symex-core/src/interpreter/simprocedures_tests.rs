@@ -33,7 +33,7 @@ fn get_return_addr_reads_flushed_concrete_store() {
     set_sp(&mut interp, 0x7fff_0000);
     interp
         .all_flushed_stores
-        .insert(0x7fff_0000, 0x0040_1122_u64.to_le_bytes().to_vec());
+        .insert(0x7fff_0000, &0x0040_1122_u64.to_le_bytes(), false);
     assert_eq!(interp.get_return_addr().concrete(), Some(0x0040_1122));
 }
 
@@ -54,7 +54,7 @@ fn get_return_addr_pending_symbolic_store_shadows_stale_concrete_bytes() {
         .push(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec(), false);
     interp
         .all_flushed_stores
-        .insert(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec());
+        .insert(0x7fff_0000, &0xdead_beefu64.to_le_bytes(), false);
     // The write that actually landed last is symbolic.
     interp
         .pending_symbolic_stores
@@ -73,7 +73,7 @@ fn get_return_addr_flushed_symbolic_store_shadows_stale_concrete_bytes() {
     set_sp(&mut interp, 0x7fff_0000);
     interp
         .all_flushed_stores
-        .insert(0x7fff_0000, 0xdead_beefu64.to_le_bytes().to_vec());
+        .insert(0x7fff_0000, &0xdead_beefu64.to_le_bytes(), false);
     interp
         .all_flushed_symbolic_stores
         .insert(0x7fff_0000, RustBV::symbol("ret", 64));

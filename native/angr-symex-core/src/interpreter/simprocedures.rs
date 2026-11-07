@@ -113,8 +113,11 @@ impl<'a> VEXInterpreter<'a> {
         }
 
         // Flushed concrete stores (cross-block within same step).
-        if let Some(data) = self.flushed_store_bytes(sp_val, size) {
-            return Some(from_le(data));
+        if let Some(data) =
+            self.all_flushed_stores
+                .try_load(sp_val, size, self.registers.is_big_endian())
+        {
+            return Some(from_le(&data));
         }
 
         cc_fallback()
