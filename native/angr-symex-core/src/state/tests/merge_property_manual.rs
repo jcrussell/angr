@@ -12,9 +12,9 @@
 //! `solver`, `heap_metadata`), `computed` (the merged value is a function of
 //! neither branch's value — fresh ids, tombstone sets) and `joint` (the
 //! merge reads more than one field at once — a map and its removal
-//! tombstone). The fourth kind is four fields whose policy *label* is
-//! mechanical but which opt out via `#[merge_manual]`:
-//! `native_resume_stack`, `stdin_symbols`, `inspection`, `last_time`.
+//! tombstone). The fourth kind is the fields whose policy *label* is
+//! mechanical but which opt out via `#[merge_manual]`; this file covers
+//! `native_resume_stack`, `stdin_symbols` and `last_time`.
 //!
 //! Every assertion below is reasoned from
 //! `state/fork.rs::RustSimState::merge`'s actual logic, so a behaviour
@@ -335,7 +335,7 @@ fn joint_fs_keeps_the_longest_stdout_branch() {
     );
 }
 
-/// merge_manual (1 of 4): `stdin_symbols`. Labelled `union` but hand-written
+/// merge_manual: `stdin_symbols`. Labelled `union` but hand-written
 /// since the union is set-like over a `Vec` keyed by name, not a bool OR.
 #[test]
 fn manual_stdin_symbols_unions_by_name_dedup_self_first() {
@@ -361,7 +361,7 @@ fn manual_stdin_symbols_unions_by_name_dedup_self_first() {
     );
 }
 
-/// merge_manual (1 of 4): `native_resume_stack`. Labelled `warn_on_diverge`
+/// merge_manual: `native_resume_stack`. Labelled `warn_on_diverge`
 /// but hand-written since the divergence test is per-frame length, not a
 /// plain `!=`. The divergence-DETECTION half
 /// (`fork::native_resume_stack_diverges`) is unit-tested directly in
@@ -402,45 +402,7 @@ fn manual_native_resume_stack_keeps_selfs_frames_even_when_b_has_more() {
     );
 }
 
-/// merge_manual (1 of 4): `inspection`. Labelled `warn_on_diverge` but
-/// hand-written since the divergence check only compares `enabled_mask`
-/// (angr-sqfj8.89) — the whole manager, including a losing branch's
-/// `events`/`event_counts`, is otherwise dropped down to self's copy with no
-/// warning. That drop was previously only implied by doc comments, never
-/// pinned by a test.
-#[test]
-fn manual_inspection_keeps_selfs_events_and_drops_others_silently() {
-    let (mut a, mut b) = base_pair("amd64");
-    a.inspection_mut().enable(InspectEvent::MemRead);
-    a.inspect_mem_read(0x1000, 4);
-    b.inspection_mut().enable(InspectEvent::MemWrite);
-    b.inspect_mem_write(0x2000, 8);
-
-    let [m0, m1] = conds("inspection_drop");
-    let merged = a.merge(&[&b], &[m0, m1]);
-
-    assert_eq!(
-        merged.inspection().event_counts()[InspectEvent::MemRead as usize],
-        1,
-        "self's recorded event count survives"
-    );
-    assert_eq!(
-        merged.inspection().event_counts()[InspectEvent::MemWrite as usize],
-        0,
-        "b's recorded event/count is dropped silently: only \
-         enabled_mask is compared for divergence, not events/event_counts"
-    );
-    assert!(
-        merged.inspection().is_enabled(InspectEvent::MemRead),
-        "self's enabled mask survives"
-    );
-    assert!(
-        !merged.inspection().is_enabled(InspectEvent::MemWrite),
-        "b's enabled bit is not unioned in — the whole manager is self's clone"
-    );
-}
-
-/// merge_manual (1 of 4): `last_time`. Labelled `max` but hand-written since
+/// merge_manual: `last_time`. Labelled `max` but hand-written since
 /// `Option<RustBV>` has no `Ord`; the maximum is built symbolically via
 /// `uge`+`ite`. Deeper coverage (including the `None`-vs-`Some` fold arms)
 /// lives in `merge_scalars.rs`; this is the census entry.

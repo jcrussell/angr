@@ -952,8 +952,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fire a `call` inspect callback into Python for an Ijk_Call exit.
-    /// Gated on `InspectBit::Call` (above the `InspectEvent` enum's 0..=5
-    /// range and the custom bits used by instruction/irsb).
+    /// Gated on `InspectBit::Call`.
     /// `function_address` is the resolved call target.
     /// Mirrors Python `CallStack._manage`.
     fn dispatch_call_inspect(&self, callbacks: &dyn EngineHost, function_address: u64, when: &str) {

@@ -80,7 +80,7 @@ impl RustExplorationManager {
     }
 
     /// Fire a `state.inspect.fork` BP for the given forked state id.
-    /// Bit-gated on `InspectEvent::Fork` (bit 4) — single atomic load in
+    /// Bit-gated on `InspectBit::Fork` — single atomic load in
     /// the common no-BP case. Dispatches `when='after'` with no attrs,
     /// matching Python `SimSuccessors._preprocess_successor`
     /// (`angr/engines/successors.py`), where the BP fires

@@ -101,7 +101,6 @@ mod filesystem;
 mod fork;
 mod history;
 mod hooks;
-mod inspection;
 mod memory;
 /// Cross-worker state migration transport between per-worker Z3 contexts
 /// (angr-1ilq.1).
@@ -116,7 +115,6 @@ mod types;
 pub use crate::state_flag_list;
 pub use export::*;
 pub use filesystem::*;
-pub use inspection::*;
 pub use migration::StateMigrationPayload;
 pub use options::SYMBOLIC_INITIAL_VALUES;
 pub use snapshot::*;
@@ -561,16 +559,6 @@ pub struct RustSimState {
     /// Cloned on fork so each path has its own heap state.
     #[merge_policy = "delegate"]
     heap_metadata: HeapMetadata,
-    /// Inspection/breakpoint system for tracking memory and register access.
-    /// Only records events when enabled (single bitmask check per operation).
-    ///
-    /// On merge only `enabled_mask()` is compared for divergence; the
-    /// recorded `events` / `event_counts` payload is per-path data and is
-    /// dropped down to `self`'s copy with no warning — see the
-    /// `warn_config_divergence("inspection ...")` block in `fork.rs::merge`.
-    #[merge_policy = "warn_on_diverge"]
-    #[merge_manual = "divergence compares enabled_mask() only; events/event_counts are dropped unwarned"]
-    inspection: InspectionManager,
     /// Environment variables map for native getenv/setenv.
     /// Keys and values are byte vectors (no NUL terminator in storage).
     /// Wrapped in Arc for cheap fork — copy-on-write via Arc::make_mut on setenv.
@@ -732,9 +720,7 @@ impl RustSimState {
     // environment map, heap_brk / posix_brk / mmap_base break pointers, the
     // getopt(3) cursor and extern-global addresses, ctype_loc, the native
     // sub-call resume stack, the CGC allocator/sinkhole state, last_time, and
-    // the heap bump-allocator) lives in `process.rs` (extension impl). The
-    // inspection manager accessor + inspect_mem_read/write/fork/exit event
-    // recorders live in `inspection.rs` alongside the InspectionManager type.
+    // the heap bump-allocator) lives in `process.rs` (extension impl).
 
     // History (basic-block visit log, plain + detailed) and call-stack
     // tracking (push_call / pop_call / set_call_stack, honoring max_history)

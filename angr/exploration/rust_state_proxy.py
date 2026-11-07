@@ -3595,10 +3595,9 @@ _COPY_NEEDS_MANAGER_MSG = (
 #     events do not need a PythonCallbacks slot because no Rust code path
 #     ever calls into the inspect callback for them.
 #
-# Bits 0..=5 mirror `crate::state::InspectEvent` ordering (bit 4 is fork,
-# dispatched from the shell's deferred-fork processing); bits 6 and 7 are custom (instruction / irsb)
-# with no InspectionManager enum slot in Rust; bits 8 and 9 are custom for
-# call / return (the InspectEvent enum has no slot for them). Bits 10..=12
+# The Rust mirror of this numbering is `InspectBit` (the core's
+# `interpreter/inspect_bits.rs`). The fork bit is dispatched from the
+# shell's deferred-fork processing. Bits 10..=12
 # are Python-dispatched (simprocedure / syscall / dirty), fired from the
 # existing Python callback handlers in `rust_callback_dispatch.py` /
 # `rust_manager._cb_dirty_call`.

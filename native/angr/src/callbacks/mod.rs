@@ -346,7 +346,7 @@ pub struct PythonCallbacks {
     /// back to a `RustBV` and substitutes for the loaded value (value
     /// injection); None leaves the original load result standing.
     /// See `PythonCallbacks::call_inspect_mem_read` for the Rust-side contract.
-    /// Only dispatched when bit InspectEvent::MemRead in `inspect_enabled` is set.
+    /// Only dispatched when bit `InspectBit::MemRead` in `inspect_enabled` is set.
     pub inspect_mem_read: Option<Py<PyAny>>,
     /// Callback for state.inspect mem_write events.
     /// Signature mirrors `inspect_mem_read` but `value_ast` is the data
@@ -361,7 +361,7 @@ pub struct PythonCallbacks {
     ///   fn(state_id: int, when: str, offset: int, size: int,
     ///      value_ast: object | None) -> None
     /// `value_ast` carries the loaded register value on AFTER (None on BEFORE).
-    /// Only dispatched when bit InspectEvent::RegRead in `inspect_enabled` is set.
+    /// Only dispatched when bit `InspectBit::RegRead` in `inspect_enabled` is set.
     pub inspect_reg_read: Option<Py<PyAny>>,
     /// Callback for state.inspect reg_write events.
     /// Signature mirrors `inspect_reg_read`; `value_ast` is the value being
@@ -493,7 +493,7 @@ pub struct PythonCallbacks {
     /// bytes are already lifted); firing it eagerly would double-fire BEFORE
     /// whenever the native lift misses and the Python callback re-fires it.
     pub inspect_vex_lift: Option<Py<PyAny>>,
-    /// Bitmask of enabled inspect events. Bit N = `InspectEvent` variant N.
+    /// Bitmask of enabled inspect events. Bit N = the `InspectBit` with `bit()` N.
     /// VEX dispatch sites read this with a single `& != 0` check before
     /// touching any payload — keeps the cost of inspect-disabled
     /// execution at one branch per Load/Store.
@@ -586,7 +586,7 @@ impl PythonCallbacks {
         with_callback_fields!(empty_holder)
     }
 
-    /// Set the inspect-enabled bitmask. Bit N = `InspectEvent` variant N.
+    /// Set the inspect-enabled bitmask. Bit N = the `InspectBit` with `bit()` N.
     /// Python aggregates registered breakpoints into this single value;
     /// VEX dispatch sites do a single AND test before any payload work.
     ///

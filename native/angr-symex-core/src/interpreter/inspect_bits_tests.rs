@@ -4,11 +4,9 @@
 //! (which dispatch call a gate precedes is a convention, see the
 //! `inspect_bits` module doc); these tests cover the two ways the table
 //! itself can go wrong — a duplicated/skipped bit, and drift away from the
-//! two other places the same numbering lives (`crate::state::InspectEvent` for bits 0..=5, and the
-//! Python `_INSPECT_EVENT_SPECS` table that builds the enabled-mask).
+//! Python `_INSPECT_EVENT_SPECS` table that builds the enabled-mask.
 
 use super::InspectBit;
-use crate::state::InspectEvent;
 
 /// `ALL` must be dense and in bit order: `py_set_inspect_enabled` ships a
 /// single `u32` mask, so a skipped or duplicated bit silently aliases two
@@ -42,22 +40,6 @@ fn event_names_are_unique_and_snake_case() {
         assert!(
             name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
             "{name} is not snake_case"
-        );
-    }
-}
-
-/// Bits 0..=5 are shared with `crate::state::InspectEvent` (the recorder
-/// enum). The two are independent declarations; if they disagree, a recorded
-/// event and a dispatched breakpoint refer to different things.
-#[test]
-fn low_bits_match_state_inspect_event() {
-    for variant in 0..InspectEvent::COUNT as u8 {
-        let recorder = InspectEvent::from_u8(variant).expect("dense 0..COUNT");
-        let dispatch = InspectBit::ALL[variant as usize];
-        assert_eq!(
-            recorder.name(),
-            dispatch.event_name(),
-            "InspectEvent::{recorder:?} and InspectBit::{dispatch:?} disagree at bit {variant}"
         );
     }
 }

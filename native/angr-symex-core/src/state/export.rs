@@ -60,10 +60,6 @@ pub struct StateExport {
     heap_freed: Vec<u64>,
     /// Open file descriptors: (fd, name, position, flags, content_len, is_open).
     open_fds: Vec<(u32, String, u64, u32, usize, bool)>,
-    /// Inspection event counts per type.
-    inspection_counts: Vec<(String, u64)>,
-    /// Inspection enabled bitmask.
-    pub inspection_enabled: u8,
 }
 
 // The `ExplorationStateSnapshot` pymethod surface (angr-hv4lt.11). Each
@@ -84,7 +80,7 @@ pub struct StateExport {
 //   over angr/ at audit time): `get_call_stack`, `get_call_stack_depth`,
 //   `get_detailed_history`, `get_detailed_history_str`, `get_heap_allocated`,
 //   `get_heap_freed`, `get_heap_alloc_count`, `get_heap_free_count`,
-//   `get_open_fds`, `get_fd_count`, `get_inspection_counts`,
+//   `get_open_fds`, `get_fd_count`,
 //   `get_symbolic_offsets`, `memory_load`, `page_addresses`, `get_history`,
 //   `get_registers_raw` (the Python bridge reconstructs
 //   registers from `get_registers_named` + `get_symbolic_register_names`; the
@@ -227,16 +223,6 @@ impl StateExport {
         self.open_fds.len()
     }
 
-    /// Get inspection event counts as list of (event_name, count) tuples.
-    ///
-    /// On a state produced by `RustSimState::merge` these are the counts of
-    /// the *first* branch only — the other branches' tallies are dropped, not
-    /// summed (angr-sqfj8.89; see the `warn_config_divergence("inspection
-    /// ...")` block in `fork.rs::merge`).
-    pub fn get_inspection_counts(&self) -> Vec<(String, u64)> {
-        self.inspection_counts.clone()
-    }
-
     /// Get symbolic byte offsets for a page.
     /// Returns empty vec if page not found.
     pub fn get_symbolic_offsets(&self, page_addr: u64) -> Vec<u16> {
@@ -362,17 +348,6 @@ impl RustSimState {
                     Some((fd, info.0.to_string(), info.1, info.2, info.3, info.4))
                 })
                 .collect(),
-            inspection_counts: self
-                .inspection
-                .event_counts()
-                .iter()
-                .enumerate()
-                .filter(|&(_, &count)| count > 0)
-                .filter_map(|(i, &count)| {
-                    InspectEvent::from_u8(i as u8).map(|e| (e.name().to_string(), count))
-                })
-                .collect(),
-            inspection_enabled: self.inspection.enabled_mask(),
         }
     }
 

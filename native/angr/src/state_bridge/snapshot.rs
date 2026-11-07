@@ -56,12 +56,6 @@ impl ExplorationStateSnapshot {
         self.inner.constraint_count
     }
 
-    /// Inspection enabled bitmask.
-    #[getter]
-    pub fn inspection_enabled(&self) -> u8 {
-        self.inner.inspection_enabled
-    }
-
     /// See [`StateExport::get_registers_raw`].
     pub fn get_registers_raw(&self) -> Vec<u8> {
         self.inner.get_registers_raw()
@@ -155,11 +149,6 @@ impl ExplorationStateSnapshot {
     /// See [`StateExport::get_fd_count`].
     pub fn get_fd_count(&self) -> usize {
         self.inner.get_fd_count()
-    }
-
-    /// See [`StateExport::get_inspection_counts`].
-    pub fn get_inspection_counts(&self) -> Vec<(String, u64)> {
-        self.inner.get_inspection_counts()
     }
 
     /// See [`StateExport::get_symbolic_offsets`].

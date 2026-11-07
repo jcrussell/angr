@@ -263,7 +263,7 @@ def _is_const(operand: str) -> bool:
     ``PAGE_SIZE - 1`` between two constants is const-evaluated: rustc's
     deny-by-default ``arithmetic_overflow`` lint (a hard error in a ``const``
     item) rejects a wrap at compile time, so it can never wrap silently.
-    ``Type::`` path prefixes are dropped, so ``InspectEvent::COUNT`` counts.
+    ``Type::`` path prefixes are dropped, so ``Type::COUNT`` counts.
     """
     operand = re.sub(rf"(?:{_IDENT}::)+", "", re.sub(r"\s+as\s+\w+$", "", operand))
     return all(_CONST_NAME_RE.fullmatch(tok) for tok in re.findall(_IDENT, operand))

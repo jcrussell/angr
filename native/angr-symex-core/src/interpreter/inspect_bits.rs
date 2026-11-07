@@ -31,8 +31,7 @@
 //! `angr/exploration/rust_state_proxy.py`, which is what actually builds the
 //! enabled-mask Python hands to `py_set_inspect_enabled`. That table stays
 //! authoritative for the wire format; adding an event means adding a row in
-//! both places (the recipe documented above `_INSPECT_EVENT_SPECS`). The first six bits additionally coincide with
-//! `crate::state::InspectEvent`, which `inspect_bits_tests` asserts.
+//! both places (the recipe documented above `_INSPECT_EVENT_SPECS`).
 //!
 //! [`EngineHost`]: super::EngineHost
 //! [`EngineHost::inspect_event_enabled`]: super::EngineHost::inspect_event_enabled
@@ -59,11 +58,11 @@ macro_rules! inspect_events {
 
         #[allow(
             dead_code,
-            reason = "ALL / event_name exist for the table-consistency tests (bit density, and the cross-checks against crate::state::InspectEvent and Python's _INSPECT_EVENT_SPECS); the engine only ever calls bit()"
+            reason = "ALL / event_name exist for the table-consistency tests (bit density, and the cross-check against Python's _INSPECT_EVENT_SPECS); the engine only ever calls bit()"
         )]
         impl InspectBit {
             /// Every event, in bit order. Used by the tests to check bit
-            /// density/uniqueness and the `InspectEvent` overlap.
+            /// density/uniqueness and the Python table match.
             pub const ALL: &'static [InspectBit] = &[ $( InspectBit::$variant, )+ ];
 
             /// The event's bit position in the enabled-mask.

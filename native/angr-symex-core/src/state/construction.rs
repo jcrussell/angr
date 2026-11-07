@@ -116,7 +116,6 @@ impl RustSimState {
             stdin_host_packets: Vec::new(),
             call_stack: Vec::new(),
             heap_metadata: HeapMetadata::default(),
-            inspection: InspectionManager::default(),
             environment: Arc::new(HashMap::new()),
             removed_env_keys: Arc::new(HashSet::new()),
             symbolic_pages: OverlayMap::default(),

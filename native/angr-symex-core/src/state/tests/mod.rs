@@ -22,7 +22,6 @@
 //!   sharing / serde / length / `read_sym*` contracts.
 //! - `filesystem_demote`: demotion of symbolic content to concrete and the
 //!   write choke point that refuses rather than dropping it.
-//! - `inspection`: the `state.inspect` event ring.
 //! - `solver_gate`: the `survives_sat_prune` exploration prune gate and its
 //!   undecided-query (Z3 timeout) contract.
 //! - `snapshot`: `to_snapshot`/`from_snapshot` round-trip and the serialized
@@ -65,7 +64,6 @@ mod filesystem_symbolic;
 mod heap;
 mod helpers;
 mod history;
-mod inspection;
 mod memory;
 mod merge_config;
 mod merge_heap;

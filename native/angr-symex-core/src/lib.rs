@@ -28,7 +28,7 @@
 //! | `arch/` | The `Arch` trait and `AddrOrSymbolic`, the per-arch register tables and offsets, `RegisterFile`, the arch registry and the calling conventions; `arch/mod.rs` indexes its files. |
 //! | `interpreter/` | `VEXInterpreter`: statement and expression execution, exits, deferred forks, inspect bits, the `EngineHost` seam and its `TestHost` double; `interpreter/mod.rs` indexes its files. |
 //! | `memory/` | `SymbolicMemory`, its pages, loads, stores, merge and the multi-value overlay; `memory/mod.rs` indexes its files. |
-//! | `state/` | `RustSimState` (construction, fork/merge, registers, memory, history, inspection, export), its filesystem, snapshots and `StateMigrationPayload`; `state/mod.rs` indexes its files. |
+//! | `state/` | `RustSimState` (construction, fork/merge, registers, memory, history, export), its filesystem, snapshots and `StateMigrationPayload`; `state/mod.rs` indexes its files. |
 //! | `symbolic/` | `SymContext`, `ToZ3`, the Z3 plumbing, the `RustBV` re-export of `angr_bv::SymBV`, and `concretize`; `symbolic/mod.rs` indexes its files. |
 //! | `test_boundary_values.rs` | The boundary-value tables for the integer-overflow sweep; test-only, widened by feature `testing`. |
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

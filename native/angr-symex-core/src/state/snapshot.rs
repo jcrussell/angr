@@ -135,7 +135,10 @@ pub struct RustSimStateSnapshot {
     pub stdin_host_packets: Vec<crate::state::StdinHostPacket>,
     pub call_stack: Vec<CallStackEntry>,
     pub heap_metadata: HeapMetadata,
-    pub inspection: InspectionManager,
+    // angr-vmi2l.197: the dead per-state `InspectionManager` and its
+    // `inspection` field are gone. No version bump: the envelope is JSON
+    // without `deny_unknown_fields`, so an older snapshot's `inspection` key
+    // is ignored on decode.
     /// `(key, value)` byte pairs sorted by key for deterministic ordering.
     /// Not a `BTreeMap<Vec<u8>, Vec<u8>>` because `serde_json` only allows
     /// string-shaped map keys; the angr environment is byte-keyed.
@@ -276,7 +279,6 @@ impl RustSimState {
             stdin_host_packets: self.stdin_host_packets.clone(),
             call_stack: self.call_stack.clone(),
             heap_metadata: self.heap_metadata.clone(),
-            inspection: self.inspection.clone(),
             environment,
             removed_env_keys,
             no_ip_concretization: self.no_ip_concretization,
@@ -347,7 +349,6 @@ impl RustSimState {
             stdin_host_packets: snap.stdin_host_packets,
             call_stack: snap.call_stack,
             heap_metadata: snap.heap_metadata,
-            inspection: snap.inspection,
             environment: Arc::new(environment),
             removed_env_keys: Arc::new(removed_env_keys),
             symbolic_pages: OverlayMap::default(),

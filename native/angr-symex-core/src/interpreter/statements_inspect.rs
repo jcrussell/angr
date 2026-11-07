@@ -112,10 +112,7 @@ impl<'a> VEXInterpreter<'a> {
     }
 
     /// Fire an `instruction` inspect callback into Python for a VEX `IMark`.
-    /// Gated on `InspectBit::Instruction`. Bits 0..=5 mirror
-    /// `crate::state::InspectEvent`; the `instruction` bit is custom (no
-    /// `InspectEvent` slot — angr Python exposes it but the Rust
-    /// `InspectionManager` enum doesn't track it). Dispatches `when='before'`.
+    /// Gated on `InspectBit::Instruction`. Dispatches `when='before'`.
     pub(super) fn dispatch_instruction_inspect(&self, callbacks: &dyn EngineHost, addr: u64) {
         if !callbacks.inspect_event_enabled(InspectBit::Instruction) {
             return;
