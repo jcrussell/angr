@@ -52,3 +52,29 @@ def test_eager_unsat_fork_still_counted():
     mgr.explore(find=LOAD + 8, avoid=LOAD + 6)
     assert len(mgr.pruned) == 0
     assert mgr._rust_mgr.stats()["pruned_count"] > 0
+
+
+def _simgr_explore(route: str) -> dict[str, int]:
+    """A ``save_unsat=True`` explore on the Python engine, a Rust-default project, or ``engine="rust"``."""
+    engine = "rust" if route == "default" else None
+    proj = angr.load_shellcode(CODE, arch="amd64", load_address=LOAD, engine=engine)
+    state = proj.factory.blank_state(addr=LOAD, add_options={angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS})
+    x = claripy.BVS("x", 64)
+    state.solver.add(x.ULT(5))
+    state.regs.rsi = x
+    kwargs = {"engine": "rust"} if route == "strict" else {}
+    simgr = proj.factory.simulation_manager(state, save_unsat=True, **kwargs)
+    simgr.explore(find=LOAD + 8, avoid=LOAD + 6)
+    return {k: len(v) for k, v in simgr.stashes.items() if v}
+
+
+def test_save_unsat_keeps_the_unsat_side_on_a_rust_default_project():
+    """Rust has no ``unsat`` stash, so the backend declines and Python keeps the state there."""
+    py = _simgr_explore("py")
+    assert py == {"unsat": 1, "avoid": 1}
+    assert _simgr_explore("default") == py
+
+
+def test_save_unsat_is_refused_by_a_strict_rust_route():
+    with pytest.raises(NotImplementedError, match="save_unsat"):
+        _simgr_explore("strict")

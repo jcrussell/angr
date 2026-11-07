@@ -220,7 +220,7 @@ raise-listed SimOption (``_RAISE_OPTION_NAMES`` — the ``TRACK_*_ACTIONS``
 family, the eager-solve options, …) or lacks a required one
 (``_REQUIRED_OPTION_NAMES``); the caller passed a
 ``SimulationManager``-only kwarg the Rust manager would silently drop
-(``hierarchy``, ``techniques``, …); or a seeding state
+(``hierarchy``, ``techniques``, ``save_unsat``, …); or a seeding state
 already has a breakpoint on an ``inspect`` event the Rust engine does not
 dispatch, or on ``simprocedure`` / ``syscall``, which fire only for calls
 bounced to Python and ignore a ``simprocedure_result`` override. The predicate is

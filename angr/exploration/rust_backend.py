@@ -264,6 +264,9 @@ class RustBackend(SimulationBackend):
             return "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
         if successor_func is not None:
             return "step passes a successor_func"
+        if simgr._save_unsat:
+            # Rust drops an UNSAT successor (StashManager::drop_unsat) and has no `unsat` stash to keep it in.
+            return "save_unsat is not honored by the rust engine"
         unhonored = sorted(k for k in run_args if k != _STOP_POINTS)
         if unhonored:
             return "step passes run arguments: " + ", ".join(unhonored)
