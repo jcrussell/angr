@@ -1102,6 +1102,10 @@ impl RustExplorationManager {
     /// [`Self::map_multi_store_page`] and the store is retried, so a page the
     /// host backs is fetched rather than shadowed by zeros (angr-vmi2l.350).
     ///
+    /// `multiwrite` selects `memory_store_symbolic_multi` (the annotated
+    /// Range chain) over `memory_store_symbolic` (the default chain); see
+    /// the `state_memory_store_symbolic_multi` pymethod.
+    ///
     /// Returns `true` if the store landed in Rust memory. Returns `false`
     /// when conversion fails, the address concretization yields
     /// TooLarge / Failed, or a missing page can be neither fetched nor
@@ -1113,6 +1117,7 @@ impl RustExplorationManager {
         state_id: u64,
         addr_ast: &Bound<'py, PyAny>,
         data_ast: &Bound<'py, PyAny>,
+        multiwrite: bool,
     ) -> PyResult<bool> {
         let converted = self.with_state_mut(state_id, |state| {
             let solver_ref = state.solver();
@@ -1147,7 +1152,11 @@ impl RustExplorationManager {
         const MAX_PAGE_RETRIES: usize = 64;
         for _ in 0..MAX_PAGE_RETRIES {
             let attempt = self.with_state_mut(state_id, |state| {
-                Ok(state.memory_store_symbolic_multi(addr_bv.clone(), data_bv.clone()))
+                Ok(if multiwrite {
+                    state.memory_store_symbolic_multi(addr_bv.clone(), data_bv.clone())
+                } else {
+                    state.memory_store_symbolic(addr_bv.clone(), data_bv.clone())
+                })
             })?;
             // Only a lazy-region fault is retried. A page in no lazy region
             // (`Unmapped`) goes back to the proxy, whose single-witness

@@ -2456,10 +2456,11 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         Address handling:
 
         * Concrete ``int`` or concrete claripy AST → direct FFI store.
-        * Symbolic claripy AST → routed through the lazy Multi-cell path
-          (``state_memory_store_symbolic_multi``). Single-solution addrs
-          short-circuit to the eager concrete store; Multiple/Strided
-          concretization installs per-byte Multi alternatives. An address
+        * Symbolic claripy AST → concretized in Rust
+          (``state_memory_store_symbolic_multi``) with Python's write
+          chain: the Max solution, pinned, unless the address carries a
+          ``MultiwriteAnnotation`` or SYMBOLIC_WRITE_ADDRESSES is on, when
+          a Range result installs per-byte Multi alternatives. An address
           the Multi path cannot route is concretized to one witness
           (angr-p1s02). A guarded or symbolic-size store to a symbolic
           address raises ``NotImplementedError``.
@@ -2576,7 +2577,14 @@ class RustMemoryProxy(_ProxyStatePluginMixin):
         """Store ``data``, a BV in memory order (byte 0 at its MSB), at ``addr``."""
         if isinstance(addr, claripy.ast.Base) and not addr.concrete:
             data_ast = self._data_to_ast(data, None, "Iend_BE")
-            ok = self._mgr.state_memory_store_symbolic_multi(self._write_state_id, addr, data_ast)
+            # angr-vmi2l.351: only a MultiwriteAnnotation address gets the
+            # Range strategy with SYMBOLIC_WRITE_ADDRESSES off (Python's
+            # ``_multiwrite_filter``); any other address takes the default
+            # chain, which pins the Max solution as Python's does.
+            from angr.storage.memory_mixins.address_concretization_mixin import MultiwriteAnnotation
+
+            multiwrite = addr.has_annotation_type(MultiwriteAnnotation)
+            ok = self._mgr.state_memory_store_symbolic_multi(self._write_state_id, addr, data_ast, multiwrite)
             if ok:
                 return
             # angr-p1s02: the lazy Multi-cell path could not route this

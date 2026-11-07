@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 
 from angr import claripy
+from angr.storage.memory_mixins.address_concretization_mixin import MultiwriteAnnotation
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
     RustExplorationManager,
@@ -50,7 +51,10 @@ def _multi_store_manager(project, sym_name):
     mgr = RustExplorationManager(project, [state])
     seed_id = mgr._rust_mgr.get_state_ids("active")[0]
     proxy = mgr.proxy.active[0]
-    proxy.memory.store(addr_sym, claripy.BVV(_PAYLOAD, 32), endness="Iend_LE")
+    # The annotation keeps the Range strategy with SYMBOLIC_WRITE_ADDRESSES
+    # off; an unannotated address is pinned to its Max solution (angr-vmi2l.351).
+    store_addr = addr_sym.annotate(MultiwriteAnnotation())
+    proxy.memory.store(store_addr, claripy.BVV(_PAYLOAD, 32), endness="Iend_LE")
     return mgr, seed_id, addr_sym, candidates
 
 

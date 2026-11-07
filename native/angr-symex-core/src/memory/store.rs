@@ -501,6 +501,21 @@ impl SymbolicMemory {
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<Option<ConcretizationResult>, MemoryError> {
+        self.store_symbolic_with(addr, value, ctx, concretizer, false)
+    }
+
+    /// Shared body of [`Self::store_symbolic_unified`] and
+    /// [`Self::store_symbolic_unified_multi`]. `multiwrite` picks the
+    /// concretizer: `concretize_write_multiwrite` keeps the Range strategy
+    /// with SYMBOLIC_WRITE_ADDRESSES off, `concretize_write` does not.
+    fn store_symbolic_with(
+        &mut self,
+        addr: RustBV,
+        value: RustBV,
+        ctx: &SymContext,
+        concretizer: &AddressConcretizer,
+        multiwrite: bool,
+    ) -> Result<Option<ConcretizationResult>, MemoryError> {
         // Fast path: concrete address
         if let Some(concrete_addr) = addr.as_u64() {
             self.store_concrete_lazy(concrete_addr, value)?;
@@ -518,8 +533,11 @@ impl SymbolicMemory {
             return Ok(None);
         }
 
-        // Try to concretize the address (write mode: falls back to Max solution)
-        let result = concretizer.concretize_write(&addr, ctx);
+        let result = if multiwrite {
+            concretizer.concretize_write_multiwrite(&addr, ctx)
+        } else {
+            concretizer.concretize_write(&addr, ctx)
+        };
         match &result {
             ConcretizationResult::Single(concrete_addr) => {
                 self.store_concrete_lazy(*concrete_addr, value)?;
@@ -895,52 +913,7 @@ impl SymbolicMemory {
         ctx: &SymContext,
         concretizer: &AddressConcretizer,
     ) -> Result<Option<ConcretizationResult>, MemoryError> {
-        // Fast path: concrete address — eager store, no Multi cells needed.
-        if let Some(concrete_addr) = addr.as_u64() {
-            self.store_concrete_lazy(concrete_addr, value)?;
-            return Ok(Some(ConcretizationResult::Single(concrete_addr)));
-        }
-        // Past the fast path the address is genuinely symbolic (angr-9ke6b.229).
-        record_mem_store_symbolic_addr();
-
-        // AVOID_MULTIVALUED_WRITES: silently drop the store.
-        // SILENT(cat-b): under the AVOID_MULTIVALUED_WRITES option the caller
-        // deliberately degrades a multi-valued symbolic-address write to a
-        // no-op (matches the Python engine's opt); the store is lost but this
-        // is the requested, bounded behavior, not a wrong-answer surprise.
-        if concretizer.should_avoid_multivalued_write(&addr) {
-            return Ok(None);
-        }
-
-        // This entry point is only reached for addresses that carry a
-        // `MultiwriteAnnotation` on the Python side, so it passes Python's
-        // `_multiwrite_filter` and keeps the Range strategy even when
-        // SYMBOLIC_WRITE_ADDRESSES is off (angr-9ke6b.194).
-        let result = concretizer.concretize_write_multiwrite(&addr, ctx);
-        match &result {
-            ConcretizationResult::Single(concrete_addr) => {
-                self.store_concrete_lazy(*concrete_addr, value)?;
-                Ok(Some(result))
-            }
-            ConcretizationResult::Multiple(addrs) => {
-                let addrs_v: Vec<u64> = addrs.clone();
-                self.install_multi_for_candidates_safe(&addr, &value, &addrs_v)?;
-                // angr-62li: hoist the addr-domain disjunction.
-                Self::assert_address_disjunction(&addr, &addrs_v, ctx);
-                Ok(Some(result))
-            }
-            ConcretizationResult::Strided {
-                base,
-                stride,
-                count,
-            } => {
-                let (base, stride, count) = (*base, *stride, *count);
-                let addrs_v = strided_addrs(base, stride, count);
-                self.install_multi_for_candidates_safe(&addr, &value, &addrs_v)?;
-                Ok(Some(result))
-            }
-            other => to_symbolic_address_error(other).map_or(Ok(Some(result)), Err),
-        }
+        self.store_symbolic_with(addr, value, ctx, concretizer, true)
     }
 
     /// Store to a concrete address, returning `UnmappedPageInRegion` for lazy

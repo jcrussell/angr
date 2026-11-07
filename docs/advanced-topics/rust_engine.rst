@@ -427,10 +427,11 @@ Supported writes (all immediate, no queueing):
 
 Symbolic-address stores:
 
-* ``proxy.memory.store(symbolic_addr, data)`` goes through the lazy
-  Multi-cell path (``state_memory_store_symbolic_multi``): a
-  single-solution address stores eagerly, and a multi-valued one installs
-  per-byte alternatives. An address that path cannot route (unbounded or
+* ``proxy.memory.store(symbolic_addr, data)`` is concretised in Rust
+  (``state_memory_store_symbolic_multi``) with Python's write chain: the
+  address is pinned to its Max solution and stored there, unless it carries
+  a ``MultiwriteAnnotation`` or ``SYMBOLIC_WRITE_ADDRESSES`` is on, when a
+  Range result installs per-byte alternatives on every candidate. An address that path cannot route (unbounded or
   unconstrained) is concretised to one witness from the proxy's solver
   context and stored there, mapping the page if need be, as angr's
   ``DefaultMemory`` concretises a write address (angr-p1s02). The store

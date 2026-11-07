@@ -415,9 +415,16 @@ impl RustExplorationManager {
     /// addresses with this annotation so Range concretization picks up >1
     /// candidate.
     ///
+    /// `multiwrite` picks the write concretizer: `true` (the annotated
+    /// route) keeps the Range strategy with SYMBOLIC_WRITE_ADDRESSES off, as
+    /// Python's `_multiwrite_filter` does; `false` is the default chain
+    /// (Max only unless SYMBOLIC_WRITE_ADDRESSES is on), which
+    /// `RustMemoryProxy` uses for an unannotated address (angr-vmi2l.351).
+    ///
     /// Returns `true` on success. Returns `false` if conversion or store
     /// fails (caller should fall back to the existing Python state path
     /// to keep progress).
+    #[pyo3(signature = (state_id, addr_ast, data_ast, multiwrite = true))]
     #[angr_symex_macros::steady_guard_exempt(
         reason = "mutates one state_id-scoped state's own memory content; does not mutate \
                   exploration config or the active stash."
@@ -428,8 +435,9 @@ impl RustExplorationManager {
         state_id: u64,
         addr_ast: &Bound<'py, PyAny>,
         data_ast: &Bound<'py, PyAny>,
+        multiwrite: bool,
     ) -> PyResult<bool> {
-        self._state_memory_store_symbolic_multi(py, state_id, addr_ast, data_ast)
+        self._state_memory_store_symbolic_multi(py, state_id, addr_ast, data_ast, multiwrite)
     }
 
     /// Get the stdout buffer for a state by ID.
