@@ -154,8 +154,11 @@ inspect_dispatch! {
     /// Invoke the Python inspect mem_read callback.
     ///
     /// Caller is expected to gate this on `inspect_event_enabled(InspectBit::MemRead)` for
-    /// the common no-breakpoint case. Errors propagate so the engine can
-    /// surface user-action failures rather than swallowing them.
+    /// the common no-breakpoint case. A raising breakpoint comes back as
+    /// `Err`, but the production caller (`EngineHost::inspect_mem_read` in
+    /// `callbacks/host_impl.rs`) discards it and keeps the loaded value: a
+    /// breakpoint never aborts the step that fired it (see
+    /// `note_inspect_error`).
     ///
     /// Returns the value the user's BP action left in `state.inspect.
     /// mem_read_expr` when it differs from what we passed in (value
@@ -478,8 +481,9 @@ inspect_dispatch! {
     ///
     /// Caller gates on `inspect_event_enabled(InspectBit::VexLift)`. That
     /// production caller lives in the native libVEX lift path, which needs an
-    /// imported pyvex, so under `cargo test` the only way in is
-    /// `py_call_inspect_vex_lift`, the test entry point in `callbacks/mod.rs`.
+    /// imported pyvex, so under `cargo test` the only way in is the
+    /// `call_inspect_vex_lift` test entry point that `inspect_test_entries!`
+    /// derives in `callbacks/inspect_test_entries.rs`.
     pub(crate) fn vex_lift(
         &self,
         state_id: i64,

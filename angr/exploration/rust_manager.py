@@ -3203,7 +3203,8 @@ class RustExplorationManager(
     def _cb_inspect_call(self, state_id: int, when: str, function_address: int):
         """PyO3 callback target for Ijk_Call events (function entry).
 
-        Mirrors Python `callstack.py:386/419` — fires `when='before'` with
+        Mirrors the `call` BP pair in Python's `CallStack._manage`
+        (`state_plugins/callstack.py`): fires `when='before'` with
         the resolved call target, then `when='after'` once the Rust
         call_stack push has happened. `function_address` is wrapped in a
         word-sized BVV so user code may compare it with `state.regs._ip`
@@ -3219,7 +3220,8 @@ class RustExplorationManager(
     def _cb_inspect_return(self, state_id: int, when: str, function_address: int):
         """PyO3 callback target for Ijk_Ret events (function exit).
 
-        Mirrors Python `callstack.py:430/432` — fires `when='before'` with
+        Mirrors the `return` BP pairs in Python's `CallStack._manage`
+        (`state_plugins/callstack.py`): fires `when='before'` with
         the func_addr of the frame being popped, then `when='after'`.
         function_address is 0 when the Rust call stack is empty (popping
         from an unentered frame), matching the int convention.
@@ -3319,10 +3321,11 @@ class RustExplorationManager(
         """PyO3 callback target for fork events.
 
         Fired `when='after'` once per forked state created by the
-        deferred-fork processing in `exploration/stepping.rs`
-        (`apply_core_outcome` + `process_deferred_forks_into`). `state_id`
-        is the FORKED state's id (matching Python's
-        `engines/successors.py:203` where the BP fires on the newly-added
+        deferred-fork processing (`apply_core_outcome` in
+        `exploration/stepping.rs`, `process_deferred_forks_into` in
+        `exploration/stepping_forks.rs`). `state_id` is the FORKED state's
+        id (matching Python's `SimSuccessors._preprocess_successor` in
+        `engines/successors.py`, where the BP fires on the newly-added
         successor, not the parent). The fork event has no attrs in
         angr's `inspect_attributes` table; the BP just gets the per-state
         proxy via `state.inspect`. UNSAT-pruned forks still fire the BP

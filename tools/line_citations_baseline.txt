@@ -6,5 +6,3 @@ docs/advanced-topics/debug_var.rst	# Find the addr before executing printf("%d\n
 docs/advanced-topics/debug_var.rst	# Get a state before executing printf(%d\n", *b) (line 7)
 docs/advanced-topics/debug_var.rst	# Resolve 'a' in state before execute line 10
 docs/advanced-topics/debug_var.rst	# the addr to line 7 is 0x401193 you can search for it with
-native/angr/src/callbacks/mod.rs	/// Matches Python's callstack.py:430/432 semantics.
-native/angr/src/callbacks/mod.rs	/// pushed). Matches Python's callstack.py:386/419 semantics.

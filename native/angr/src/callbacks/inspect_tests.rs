@@ -534,18 +534,16 @@ const INSPECT_DISPATCH_CASES: &[InspectDispatchCase] = &[
     },
 ];
 
-/// The `call_inspect_*` methods hand-copy the slot they read
-/// (`self.inspect_<event>.as_ref()`), one layer below where
-/// `inspect_test_entries!` made the *entry-point* naming compiler-enforced
-/// (angr-0jh0j.6). Leaving `self.inspect_reg_read.as_ref()` in a body
-/// copy-pasted into `call_inspect_reg_write` compiles cleanly and silently
-/// routes every reg_write breakpoint to the reg_read callback — the failure
-/// only ever surfaces as a user-reported misrouted breakpoint, because
+/// `inspect_dispatch!` derives the slot each `call_inspect_*` method reads
+/// from its name (angr-6cp06.79), so a body copy-pasted from
+/// `call_inspect_reg_read` into `call_inspect_reg_write` can no longer read
+/// the sibling's slot. This test is the runtime net under that derivation:
+/// a misrouted breakpoint otherwise surfaces only as a user report, because
 /// `unset_inspect_callbacks_are_ok` exercises the all-`None` case only.
 ///
-/// This is the N x N pairing check: wire exactly one slot, call all 18
-/// dispatch methods, and require that precisely the matching one observes the
-/// callback (angr-0jh0j.81).
+/// It is the N x N pairing check: wire exactly one slot, call every
+/// dispatch method in `INSPECT_DISPATCH_CASES`, and require that precisely
+/// the matching one observes the callback (angr-0jh0j.81).
 #[test]
 fn each_call_inspect_dispatches_only_its_own_slot() {
     Python::initialize();

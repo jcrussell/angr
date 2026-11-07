@@ -102,8 +102,9 @@ pub enum RunResult {
     ///
     /// Never constructed in production: the interpreter's own
     /// `BlockResult::BlockEnd` is consumed inside `run_until_event`, which
-    /// loops to the next block instead of surfacing a `RunResult`. Only
-    /// `callbacks_tests` / `run_result_tests` build it (angr-9ke6b.214).
+    /// loops to the next block instead of surfacing a `RunResult`. Only the
+    /// shell's `exploration/core_outcome_tests/block_end.rs` builds it, to
+    /// drive `core_outcome`'s `BlockEnd` arm (angr-9ke6b.214).
     #[cfg_attr(not(test), allow(dead_code))]
     BlockEnd {
         next_addr: u64,

@@ -83,14 +83,16 @@ fn extract_data_tuple(tuple: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Batch
 ///
 /// # One result per item is a hard contract
 ///
-/// The returned `Vec` is positionally zipped with `items` by every consumer,
-/// so a batch callback that returns a differently-sized list is a wiring bug,
-/// not a degraded mode: `interpreter::prefetch::VEXInterpreter::fetch_pages_batch`
-/// indexes `servable[i]` unchecked and a long list would panic the process
-/// (`panic = "abort"`), while the load-side consumers
-/// (`interpreter::expressions`' `build_ite_load_from_callbacks` /
+/// The returned `Vec` is positionally paired with `items` by every consumer
+/// (through `EngineHost::batch_fetch_pages` / `EngineHost::memory_load_batch`
+/// in `callbacks/host_impl.rs`), so a batch callback that returns a
+/// differently-sized list is a wiring bug, not a degraded mode:
+/// `interpreter::prefetch::VEXInterpreter::fetch_pages_batch` zips the
+/// results with its page list and would map a short list's leading pages
+/// only, while the load-side consumers (`build_ite_load_from_callbacks` /
 /// `build_ite_store_from_callbacks`, via `convert_load_result`) index through
-/// `.get(i)` and would silently drop entries instead (angr-03vl4.5). `batch_fetch_pages`
+/// `.get(i)` and would mint a fresh symbol for a missing entry, every one
+/// shifted by a misordered list (angr-03vl4.5). `batch_fetch_pages`
 /// and `memory_load_batch` are both documented override points, so the length
 /// is checked here — once, for both callers — and a mismatch is a loud
 /// `PyValueError` naming `slot`. `slot` is the Python-side callback name so
@@ -592,7 +594,6 @@ impl PythonCallbacks {
     /// `x + 10 ^ 0x42` instead of losing them to zeros.
     ///
     /// # Arguments
-    /// * `py` - Python GIL token
     /// * `addr` - The memory address to store to
     /// * `value` - The symbolic RustBV value with expression tree
     ///
@@ -704,7 +705,6 @@ impl PythonCallbacks {
     /// which may build ITE chains or use address concretization strategies.
     ///
     /// # Arguments
-    /// * `py` - Python GIL token
     /// * `addr_val` - The symbolic address as a RustBV
     /// * `size` - Number of bytes to load
     ///
@@ -740,7 +740,6 @@ impl PythonCallbacks {
     /// Python can check its procedure registries and return procedure info if available.
     ///
     /// # Arguments
-    /// * `py` - Python GIL token
     /// * `addr` - Address of the unmodeled function
     /// * `symbol_name` - Symbol name if known from binary, None otherwise
     ///

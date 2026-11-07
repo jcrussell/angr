@@ -130,9 +130,9 @@ use pyo3::types::PyBytes;
 use crate::symbolic::RustBV;
 
 /// One entry in the result of a batched memory-load callback:
-/// `(data_bytes, is_symbolic, symbolic_ast)`. Shared with
-/// `interpreter::expressions` which consumes these slices to mint
-/// per-load `RustBV` values.
+/// `(data_bytes, is_symbolic, symbolic_ast)`. `host_impl::host_load` turns
+/// each entry into the PyO3-free `HostLoad` the interpreter consumes, so
+/// the interpreter never sees this type.
 ///
 /// Also the return shape of every single-value data callback that decodes
 /// through `dispatch::extract_data_tuple` (memory load, register get, dirty
@@ -385,13 +385,17 @@ pub struct PythonCallbacks {
     /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
     /// Fires twice per call — once `when="before"` (with the resolved call
     /// target), once `when="after"` (after the Rust call_stack has been
-    /// pushed). Matches Python's callstack.py:386/419 semantics.
+    /// pushed). Matches the `call` BP_BEFORE / BP_AFTER pair in the
+    /// `Ijk_Call` arm of Python's `CallStack._manage`
+    /// (`angr/state_plugins/callstack.py`).
     pub inspect_call: Option<Py<PyAny>>,
     /// Callback for state.inspect return events (Ijk_Ret dispatch).
     /// Signature: `fn(state_id: int, when: str, function_address: int) -> None`.
     /// Fires twice per return — once `when="before"` with the func_addr of
     /// the frame about to be popped, once `when="after"` after the pop.
-    /// Matches Python's callstack.py:430/432 semantics.
+    /// Matches the `return` BP_BEFORE / BP_AFTER pairs in the
+    /// return arms of Python's `CallStack._manage`
+    /// (`angr/state_plugins/callstack.py`).
     pub inspect_return: Option<Py<PyAny>>,
     /// Callback for state.inspect tmp_read events (VEX `RdTmp`).
     /// Signature: `fn(state_id: int, when: str, tmp_num: int,
@@ -403,7 +407,8 @@ pub struct PythonCallbacks {
     /// Callback for state.inspect tmp_write events (VEX `WrTmp`).
     /// Signature mirrors `inspect_tmp_read`; `value_ast` is the value being
     /// stored into the tmp. Fired `when="after"` once the tmp slot has
-    /// been written.
+    /// been written; the `before` phase Python also fires is not
+    /// dispatched.
     pub inspect_tmp_write: Option<Py<PyAny>>,
     /// Callback for state.inspect statement events (per VEX IR statement).
     /// Signature: `fn(state_id: int, when: str, stmt_idx: int) -> None`.
@@ -417,8 +422,9 @@ pub struct PythonCallbacks {
     /// as `None` because Rust IRExpr does not round-trip cleanly into a
     /// pyvex.IRExpr; the BP receives only the computed `expr_result` (the
     /// RustBV reconstructed as a claripy AST). User mutations to
-    /// `expr_result` in BP_AFTER actions are not honored — same MVP gap
-    /// as the other inspect events. Gated on `inspect_event_enabled(InspectBit::Expr)`;
+    /// `expr_result` in BP_AFTER actions are not read back: only
+    /// `mem_read` / `mem_write` consume the callback's return. Gated on
+    /// `inspect_event_enabled(InspectBit::Expr)`;
     /// this dispatch site fires more often than any other (every VEX
     /// expression evaluation), so the bitmask short-circuit is critical.
     pub inspect_expr: Option<Py<PyAny>>,
@@ -446,8 +452,9 @@ pub struct PythonCallbacks {
     /// Callback for state.inspect fork events.
     /// Signature: `fn(state_id: int, when: str) -> None`. Fires
     /// `when='after'` for each forked state created by the deferred-fork
-    /// processing in `exploration/stepping.rs` (both `apply_core_outcome`
-    /// and `process_deferred_forks_into`). The dispatch fires on the
+    /// processing (`apply_core_outcome` in `exploration/stepping.rs` and
+    /// `process_deferred_forks_into` in `exploration/stepping_forks.rs`,
+    /// both through `dispatch_fork_inspect`). The dispatch fires on the
     /// FORKED state's id (matching the `state._inspect("fork", BP_AFTER)`
     /// in Python `SimSuccessors::_preprocess_successor`
     /// (`angr/engines/successors.py`), where `state` is the newly-added

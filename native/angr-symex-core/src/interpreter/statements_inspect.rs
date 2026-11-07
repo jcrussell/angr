@@ -100,9 +100,9 @@ impl<'a> VEXInterpreter<'a> {
     ///
     /// Gated on `inspect_event_enabled(InspectBit::TmpWrite)` so the no-breakpoint case is
     /// one bitmask test per `WrTmp`. Dispatches `when='after'` with the
-    /// written value as `tmp_write_expr`. Fires before the slot mutation
-    /// only when a BP is registered; the mutation itself happens in the
-    /// caller after this returns so the slot is consistent post-dispatch.
+    /// written value as `tmp_write_expr`. The caller (the `WrTmp` arm of
+    /// `execute_stmt_with_callbacks`) has already written the slot, and passes the value
+    /// re-borrowed from it.
     pub(super) fn dispatch_tmp_write_inspect(
         &self,
         callbacks: &dyn EngineHost,

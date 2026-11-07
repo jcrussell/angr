@@ -3595,29 +3595,40 @@ _COPY_NEEDS_MANAGER_MSG = (
 #     events do not need a PythonCallbacks slot because no Rust code path
 #     ever calls into the inspect callback for them.
 #
-# Bits 0..=5 mirror `crate::state::InspectEvent` ordering; bit 4 (fork) is
-# reserved for future wiring; bits 6 and 7 are custom (instruction / irsb)
+# Bits 0..=5 mirror `crate::state::InspectEvent` ordering (bit 4 is fork,
+# dispatched from the shell's deferred-fork processing); bits 6 and 7 are custom (instruction / irsb)
 # with no InspectionManager enum slot in Rust; bits 8 and 9 are custom for
 # call / return (the InspectEvent enum has no slot for them). Bits 10..=12
 # are Python-dispatched (simprocedure / syscall / dirty), fired from the
 # existing Python callback handlers in `rust_callback_dispatch.py` /
 # `rust_manager._cb_dirty_call`.
 #
-# Wiring a new Rust-origin event requires (angr-d46u):
-#   1. Add a row here with a unique bit, attrs, and the when_fired phases
+# Wiring a new Rust-origin event <name> requires (angr-d46u):
+#   1. A row here with a unique bit, attrs, and the when_fired phases
 #      every dispatch site of the event passes.
-#   2. Add a PythonCallbacks slot + setter + dispatch helper in
-#      native/angr/src/callbacks.rs and the interpreter dispatch
-#      helpers.
-#   3. Instrument the corresponding interpreter site in
-#      native/angr-symex-core/src/interpreter/.
-#   4. Add a `_cb_inspect_<name>` method on RustExplorationManager
-#      that builds the attrs dict and calls `_dispatch_inspect_event`.
-#   5. Register the callback in RustExplorationManager.set_callbacks().
+#   2. The matching `InspectBit` row (same bit, same event name) in the
+#      `inspect_events!` table in
+#      native/angr-symex-core/src/interpreter/inspect_bits.rs.
+#   3. An `inspect_<name>` slot in the `with_callback_fields!` list in
+#      native/angr/src/callbacks/mod.rs; `callback_setters!` derives its
+#      `set_inspect_<name>` setter from it.
+#   4. In native/angr/src/callbacks/: an `inspect_dispatch!` entry in
+#      inspect.rs (the `call_inspect_<name>` method), an
+#      `inspect_test_entries!` entry in inspect_test_entries.rs, and an
+#      `INSPECT_DISPATCH_CASES` row in inspect_tests.rs.
+#   5. An `EngineHost::inspect_<name>` method
+#      (native/angr-symex-core/src/interpreter/host.rs), implemented by
+#      `PythonCallbacks` in callbacks/host_impl.rs and by `TestHost`, and
+#      the interpreter dispatch site that calls it behind its `InspectBit`
+#      gate in native/angr-symex-core/src/interpreter/.
+#   6. A `_cb_inspect_<name>` method on RustExplorationManager that
+#      builds the attrs dict and calls `_dispatch_inspect_event`.
+#      `RustExplorationManager.set_callbacks` wires it to
+#      `set_inspect_<name>` by name; there is no per-event registration.
 #
-# For a Python-dispatched event (`dispatch_origin: 'python'`), steps 2/3
-# collapse to "call self._cb_inspect_<name>(...) from the existing Python
-# handler site". No Rust changes are needed.
+# For a Python-dispatched event (`dispatch_origin: 'python'`), only steps
+# 1 and 6 apply: call self._cb_inspect_<name>(...) from the existing Python
+# handler site. No Rust changes are needed.
 #
 # The CI test `test_inspect_allowlist_complete_and_consistent` enforces
 # that every event in `angr.state_plugins.inspect.event_types` is either
@@ -3668,10 +3679,12 @@ _INSPECT_EVENT_SPECS: dict = {
         ),
         "when_fired": frozenset({"after"}),
     },
-    # angr-ysml: fork dispatch fires from `exploration/stepping.rs` for
-    # each forked state created by the deferred-fork processing in
-    # `apply_core_outcome` and `process_deferred_forks_into`. Matches
-    # Python's `engines/successors.py:203` where `state._inspect("fork",
+    # angr-ysml: fork dispatch fires from the shell's `dispatch_fork_inspect`
+    # (native/angr/src/exploration/stepping_forks.rs) for each forked state
+    # created by the deferred-fork processing in `apply_core_outcome`
+    # (stepping.rs) and `process_deferred_forks_into` (stepping_forks.rs).
+    # Matches Python's `SimSuccessors._preprocess_successor`
+    # (`engines/successors.py`), where `state._inspect("fork",
     # BP_AFTER)` fires on the newly-added successor after constraints +
     # ip are applied. The BP fires BEFORE the Rust-side satisfiability
     # check so UNSAT-pruned forks still surface — same pre-discard
@@ -3704,8 +3717,9 @@ _INSPECT_EVENT_SPECS: dict = {
     },
     # angr-4ai9: call/return dispatched from the BlockEnd path of
     # interpreter/execution.rs (Ijk_Call / Ijk_Ret). Fires `before` and
-    # `after` around the Rust call_stack push/pop, matching Python
-    # callstack.py:386/419 (call) and :430/432 (return). Only attribute is
+    # `after` around the Rust call_stack push/pop, matching the `call` /
+    # `return` BP pairs in Python's `CallStack._manage`
+    # (state_plugins/callstack.py). Only attribute is
     # `function_address` (the resolved call target on call; the popped
     # frame's callee on return).
     "call": {
@@ -3726,8 +3740,9 @@ _INSPECT_EVENT_SPECS: dict = {
     # no PythonCallbacks slot is needed. The bit is still flipped in
     # `_update_inspect_bitmask` for consistency, even though Rust doesn't
     # read it. Attrs mirror the Python engine's _inspect call signatures
-    # (sim_procedure.py:246/314 for simprocedure, procedure.py:34/50 for
-    # syscall, engines/vex/heavy/inspect.py:10/22 for dirty). MVP scope:
+    # (`SimProcedure.execute` for simprocedure, `ProcedureMixin.process_procedure`
+    # for syscall, `SimInspectMixin._perform_vex_stmt_Dirty_call` for dirty).
+    # MVP scope:
     # the BP fires with the engine's chosen handler/args/result; user
     # mutations to those attrs in BP_BEFORE actions do NOT influence the
     # engine (Python's _inspect_getattr override path is not honored).
@@ -3768,11 +3783,11 @@ _INSPECT_EVENT_SPECS: dict = {
     # single bitmask test in the no-BP case; with a BP the tmp's value
     # is round-tripped to a claripy AST and dispatched as
     # `tmp_read_expr`. `tmp_write` follows the same pattern in the
-    # `WrTmp` arm, firing `when='after'` after the value is computed
-    # but BEFORE the slot is mutated so the BP sees the value going in.
+    # `WrTmp` arm, firing `when='after'` once the slot is written, with
+    # the written value as `tmp_write_expr`. Neither fires `before`.
     # Both events fire many times per IRSB (every binop arg goes
     # through `RdTmp`); the bitmask short-circuit keeps overhead at
-    # one `AtomicU16::load` per dispatch site when no BP is set.
+    # one `AtomicU32` load per dispatch site when no BP is set.
     "tmp_read": {
         "bit": 13,
         "attrs": (

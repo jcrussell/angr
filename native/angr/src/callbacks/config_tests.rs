@@ -1,12 +1,11 @@
 //! In-module unit tests for `callbacks/config.rs` (angr-c4xcs.7).
 //!
-//! These cover the `ExecutionConfig` pyclass with no Z3 context and no GIL:
-//! its constructor/`__repr__` take no `Python<'_>`.
+//! These cover `PyExecutionConfig`, the Python `ExecutionConfig` class over
+//! the interpreter's `ExecutionConfig`, with no Z3 context and no GIL: its
+//! constructor and `__repr__` take no `Python<'_>`.
 //!
-//! `DeferredFork` had two tests here covering its `#[new]` constructor and
-//! `__repr__`; both went away with that Python surface (angr-03vl4.6). Its
-//! behaviour is covered by the consumers instead —
-//! `exploration::fork_materialize_tests` and `callback_types_tests`.
+//! `DeferredFork` has no Python surface (angr-03vl4.6), so nothing here
+//! covers it; `exploration::fork_materialize_tests` exercises it.
 
 use super::*;
 
