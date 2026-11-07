@@ -99,6 +99,7 @@ from typing import TYPE_CHECKING
 import cle
 import mulpyplexer
 import pyvex
+from capstone import x86 as cs_x86
 from pyvex.errors import PyVEXError
 
 from angr import claripy
@@ -1237,6 +1238,31 @@ def _unresolvable_syscall_jumpkinds(simos, arch) -> list[str]:
         except Exception:  # pylint:disable=broad-exception-caught
             l.debug("syscall_abi probe for %s failed; leaving it to the Python syscall path", jk, exc_info=True)
     return out
+
+
+def _plt_got_slot(obj, insn, op, bits: int) -> int | None:
+    """The GOT slot an x86 PLT entry's ``jmp *mem`` reads, or None for an operand shape no PLT uses.
+
+    The slot depends on the operand's base register: RIP/EIP-relative (x86-64,
+    ``jmp *disp(%rip)``), absolute (non-PIC i386, ``jmp *abs32``), or relative to
+    ``%ebx``, which a PIC i386 PLT holds at ``_GLOBAL_OFFSET_TABLE_``, the start of
+    ``.got.plt`` (angr-vmi2l.245).
+    """
+    mem = op.mem
+    if mem.index != cs_x86.X86_REG_INVALID:
+        return None
+    if mem.base in (cs_x86.X86_REG_RIP, cs_x86.X86_REG_EIP):
+        slot = insn.address + insn.size + mem.disp
+    elif mem.base == cs_x86.X86_REG_INVALID:
+        slot = mem.disp
+    elif mem.base == cs_x86.X86_REG_EBX:
+        got_plt = next((sec for sec in obj.sections if sec.name == ".got.plt"), None)
+        if got_plt is None:
+            return None
+        slot = got_plt.min_addr + mem.disp
+    else:
+        return None
+    return slot & ((1 << bits) - 1)
 
 
 @_install_stash_accessors
@@ -2429,7 +2455,9 @@ class RustExplorationManager(
                         if insn and insn.mnemonic == "jmp":
                             for op in insn.operands:
                                 if op.type == 3:  # CS_OP_MEM
-                                    got_addr = insn.address + insn.size + op.mem.disp
+                                    got_addr = _plt_got_slot(obj, insn, op, self._project.arch.bits)
+                                    if got_addr is None:
+                                        continue
                                     if got_addr in got_to_sym:
                                         sym_name = got_to_sym[got_addr]
                                         if sym_name in proc_by_name:
