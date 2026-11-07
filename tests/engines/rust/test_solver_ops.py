@@ -495,6 +495,29 @@ class TestSolverOperations:
         assert ctx.solution(e, want)
         assert not ctx.solution(e, (want + 1) & 0xFFFFFFFF)
 
+    def test_eval_without_a_model_checks_once(self):
+        """An imported AST with no model answers None after one Z3 check, for
+        a BV and an FP AST alike.
+
+        Regression test (angr-vmi2l.220): eval re-evaluated the clarirs node
+        after the imported AST's None, so an unsat eval paid two checks, and
+        the FP one raised RuntimeError (unsupported sort Float) where the
+        proxy needs None to raise UnsatError.
+        """
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+
+        y = claripy.BVS("y", 64)
+        f = y.raw_to_fp()
+        ctx = RustSolverContext()
+        ctx.add_constraint_ast(f == claripy.FPV(2.5, claripy.FSORT_DOUBLE))
+        ctx.add_constraint_ast(f == claripy.FPV(3.0, claripy.FSORT_DOUBLE))
+
+        for expr in (y, f):
+            _RustExplorationManager.reset_solver_stats()
+            assert ctx.eval(expr) is None
+            assert _RustExplorationManager.get_solver_stats()["z3_check_count"] == 1
+
     def test_fork_constraint_bidirectional_isolation(self):
         """Bidirectional fork isolation: parent and sibling constraints
         added after fork() must not leak across.

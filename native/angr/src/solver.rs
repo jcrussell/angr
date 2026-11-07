@@ -395,33 +395,32 @@ impl RustSolverContext {
 
         let ctx = self.i().ctx();
 
-        // Try standard claripy → RustBV conversion first
-        if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
-            let width = bv.width();
-            if width <= 128 {
-                if let Some(v) = ctx.eval(&bv) {
-                    return Ok(Some(v.into_pyobject(py)?.into()));
-                }
-                // fall through to Z3 AST pointer path
-            } else if let Some(bytes) = ctx.eval_wide(&bv) {
+        // An imported AST answers once: `None` is the context's no-model
+        // answer (unsat, or Unknown at the timeout), and re-evaluating the
+        // node would only rerun the same check (angr-vmi2l.220). The node
+        // path is the fallback for an AST `claripy_to_rustbv` refuses.
+        match claripy_to_rustbv(py, ast, &ctx) {
+            Ok(bv) if bv.width() <= 128 => {
+                return Ok(match ctx.eval(&bv) {
+                    Some(v) => Some(v.into_pyobject(py)?.into()),
+                    None => None,
+                });
+            }
+            Ok(bv) => {
+                let Some(bytes) = ctx.eval_wide(&bv) else {
+                    // SILENT(cat-a): no model is eval's documented None answer.
+                    return Ok(None);
+                };
                 let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
                 let int_class = py.get_type::<pyo3::types::PyInt>();
                 let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
                 return Ok(Some(py_int.into()));
-                // None → fall through to Z3 AST pointer path
             }
+            Err(_) => {}
         }
 
-        // Z3 AST pointer fast path via shared context.
-        // This handles: (1) expressions where claripy_to_rustbv creates a new
-        // Z3 variable that has no constraints (e.g., stdin BVS from Python),
-        // (2) complex expressions containing imported Z3 ASTs.
-        // Using the original Z3 AST pointer preserves identity with
-        // constraints already in the solver.
-        {
-            if let Some(node) = claripy_node(ast) {
-                return self.eval_claripy_node(py, &node);
-            }
+        if let Some(node) = claripy_node(ast) {
+            return self.eval_claripy_node(py, &node);
         }
         Ok(None)
     }
