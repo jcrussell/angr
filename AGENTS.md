@@ -126,7 +126,6 @@ per-decision detail. Look here first, then `bd recall`.
 | Bimodal benchmark variance | docs/advanced-topics/rust_bimodal_variance.rst | benchmark-bimodal-variance-rules |
 | Parallel / Send-Sync design | docs/advanced-topics/rust_parallel_design.rst | rust-python-boundary-audit |
 | Native libVEX lift | docs/advanced-topics/rust_libvex_ffi.rst | — |
-| Wheel distribution | docs/advanced-topics/rust_wheel_distribution.rst | avoid-pip-install-deps |
 | VEX op contribution | docs/extending-angr/rust_vex_ops.rst | invariant-vex-op-no-concrete-zero-fallback |
 | Native SimProcedures & syscalls | docs/extending-angr/simprocedures.rst, docs/extending-angr/native_coverage_matrix.rst | invariant-syscall-arg-extraction |
 | Proc-macro invariants | native/angr-symex-macros/src/lib.rs crate doc | angr-macros-call-site-invariants |

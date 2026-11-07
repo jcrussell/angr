@@ -16,7 +16,6 @@ Advanced Topics
    rust_libvex_ffi
    rust_parallel_design
    rust_proxy_writes_design
-   rust_wheel_distribution
    rust_z3_sharing
    file_system
    ir

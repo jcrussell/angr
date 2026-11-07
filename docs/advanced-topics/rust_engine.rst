@@ -19,7 +19,7 @@ Companion pages:
   rejected, so they are not re-tried.
 * :doc:`rust_z3_sharing`, :doc:`rust_parallel_design`,
   :doc:`rust_lazy_memory_design`, :doc:`rust_proxy_writes_design`,
-  :doc:`rust_libvex_ffi`, :doc:`rust_wheel_distribution` — design notes.
+  :doc:`rust_libvex_ffi` — design notes.
 * :doc:`/extending-angr/native_coverage_matrix`,
   :doc:`/extending-angr/rust_vex_ops`,
   :doc:`/extending-angr/simprocedures` — what is implemented natively

@@ -174,7 +174,7 @@ Hazards of the default-on path
    installed pyvex at runtime and links nothing from it, so the wheel repair
    step has nothing of pyvex's to copy; a second libVEX in the process would
    have independent ``vex_control`` and arena globals and void the same-object
-   parity argument. :doc:`rust_wheel_distribution` covers the repair recipe.
+   parity argument.
 2. **Bench baselines must be measured on the native lift path.**
    ``baseline_timings.json`` is recorded with native lift on, so the fast-tier
    gate measures against native-lift timings; a baseline refreshed with
