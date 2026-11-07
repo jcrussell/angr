@@ -61,12 +61,6 @@ fn test_solver_close_off_owner_is_noop() {
     assert!(ctx.is_closed());
 }
 
-#[test]
-fn test_z3_available() {
-    let available = RustSolverContext::z3_available();
-    assert!(available);
-}
-
 /// Documentation-grade size probe for the `large_enum_variant` allow on
 /// `SolverCtxStorage`. Backs the decision not to box it: `Owned` exists
 /// precisely to skip the alloc that `Shared` (Rc) requires; boxing

@@ -668,12 +668,6 @@ impl RustSolverContext {
         self.i().ctx().unique_name(base)
     }
 
-    /// Check if Z3 is available.
-    #[staticmethod]
-    pub fn z3_available() -> bool {
-        true
-    }
-
     /// Check if this solver context is shared (borrowed from a pending state).
     /// Shared solvers write constraints directly to the state, so constraint
     /// sync after callbacks can be skipped.

@@ -872,7 +872,6 @@ solver context:
    import claripy
 
    ctx = RustSolverContext()
-   print(f"Z3 available: {ctx.z3_available()}")  # True
 
    x = claripy.BVS("x", 32)
    ctx.add_constraint_ast(x > 10)
