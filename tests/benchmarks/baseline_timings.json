@@ -10,7 +10,7 @@
   "CADET_00001_partial": {
     "callback_count": 0,
     "peak_memory_mb": 545.0,
-    "python_time": 11.8,
+    "python_time": 6.397,
     "rust_time": 8.24,
     "state_creations": 0,
     "steps": 0
@@ -26,7 +26,7 @@
   "ais3_crackme": {
     "callback_count": 0,
     "peak_memory_mb": 372.0,
-    "python_time": 2.476,
+    "python_time": 0.958,
     "rust_time": 0.94,
     "state_creations": 0,
     "steps": 94
@@ -98,7 +98,7 @@
   "defcamp_r100": {
     "callback_count": 0,
     "peak_memory_mb": 239.0,
-    "python_time": 1.12,
+    "python_time": 0.703,
     "rust_time": 0.316,
     "state_creations": 0,
     "steps": 17
@@ -106,7 +106,7 @@
   "defcamp_r100__dfs": {
     "callback_count": 0,
     "peak_memory_mb": 239.0,
-    "python_time": 1.12,
+    "python_time": 0.692,
     "rust_time": 0.33,
     "state_creations": 0,
     "steps": 2
@@ -114,7 +114,7 @@
   "defcon2016quals_baby-re": {
     "callback_count": 13,
     "peak_memory_mb": 278.3,
-    "python_time": 1.455,
+    "python_time": 0.653,
     "rust_time": 0.41,
     "state_creations": 13,
     "steps": 40
@@ -146,7 +146,7 @@
   "flareon2015_10": {
     "callback_count": 2,
     "peak_memory_mb": 259.3,
-    "python_time": 7.325,
+    "python_time": 3.835,
     "rust_time": 0.905,
     "state_creations": 2,
     "steps": 1
@@ -154,7 +154,7 @@
   "flareon2015_2": {
     "callback_count": 0,
     "peak_memory_mb": 418.0,
-    "python_time": 4.7,
+    "python_time": 26.483,
     "rust_time": 3.81,
     "state_creations": 0,
     "steps": 0
@@ -178,7 +178,7 @@
   "google2016_unbreakable_0": {
     "callback_count": 0,
     "peak_memory_mb": 414.0,
-    "python_time": 1.338,
+    "python_time": 0.582,
     "rust_time": 0.814,
     "state_creations": 0,
     "steps": 1
@@ -226,7 +226,7 @@
   "mma_howtouse": {
     "callback_count": 1,
     "peak_memory_mb": 351.8,
-    "python_time": 4.247,
+    "python_time": 0.785,
     "rust_time": 7.754,
     "state_creations": 1,
     "steps": 1
@@ -242,7 +242,7 @@
   "sharif7_rev50": {
     "callback_count": 0,
     "peak_memory_mb": 170.9,
-    "python_time": 3.32,
+    "python_time": 1.299,
     "rust_time": 0.163,
     "state_creations": 0,
     "steps": 252
@@ -250,7 +250,7 @@
   "strcpy_find": {
     "callback_count": 97,
     "peak_memory_mb": 201.2,
-    "python_time": 0.89,
+    "python_time": 0.397,
     "rust_time": 0.367,
     "state_creations": 0,
     "steps": 95
