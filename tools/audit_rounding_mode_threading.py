@@ -21,25 +21,30 @@ This script closes the loop the same way ``tools/audit_silent_fallback.py`` and
 baseline of already-known gaps. Only *new* mode-dropping closures fail.
 
 Two detectors run over ``native/angr-vex/src/**/*.rs``, ``native/angr-bv/src/**/*.rs`` and
-``native/angr-symex-core/src/interpreter/**/*.rs`` (test modules excluded).
+``native/angr-symex-core/src/{interpreter,symbolic}/**/*.rs`` (test modules
+excluded). ``symbolic/`` holds the Z3/clarirs FP lowering that consumes the
+mode (``vex_rm`` / ``with_vex_rm``), so a mode dropped there is the same bug.
 
 **Detector 1 (dropped closure mode)** — inside any ``fn <name>_rm(...)``,
 every closure literal of arity >= 2 is checked. Its **last** parameter is the rounding mode by
-convention (``|v, rm|``, ``|a, b, rm|``). A closure is a gap when:
+convention (``|v, rm|``, ``|a, b, rm|``), whatever it is named (``|v, mode|``).
+A closure is a gap when:
 
   * that parameter is named ``_rm`` / ``_`` / any ``_``-prefixed name — an
     explicit "I am discarding the rounding mode", or
-  * it is named ``rm`` but the closure body never mentions ``rm``.
+  * the closure body never mentions it.
 
-**Detector 2 (discarded rm binding)** — a ``let`` binding whose name is
-underscore-prefixed and ends in ``rm`` (``_rm``, ``_vex_rm``, ``_rm_bv``): the
-rounding-mode operand was evaluated and then thrown away. That is the shape
+**Detector 2 (discarded rm binding)** — an underscore-prefixed name containing
+``rm`` (``_rm``, ``_vex_rm``, ``_rm_bv``) in any binding position: a ``let``, a
+fn parameter (``fn try_concrete_binop_rm(opcode, _rm: &RustBV, x)``) or a
+pattern (``let Qop { args: [_rm, a, b, c], .. } = q``). The rounding-mode
+operand was received or evaluated and then thrown away. That is the shape
 ``interpreter/expressions_arith.rs::eval_qop`` carried — it evaluated the Qop's rm
 operand into ``_rm`` and called the rm-less ``VEXOps::qop``, so FMAdd/FMSub
 always computed RNE (angr-03vl4.30). Detector 1 could not see it: ``eval_qop``
 lives outside ``vex/``, is not named ``*_rm`` and uses no closure.
 
-A gap is exempt when the line above the closure or binding (or the closure's own trailing
+A gap is exempt when one of the two lines above the closure or binding (or its own trailing
 comment) documents it with a marker matching :data:`EXEMPT_RE`, i.e. contains
 ``rm-ignored:`` followed by a rationale — the escape hatch for the genuine
 cases (e.g. a libm-backed transcendental where Rust only offers RNE).
@@ -76,7 +81,7 @@ from rust_source_utils import (
 
 # Repo layout: this file lives at <repo>/tools/audit_rounding_mode_threading.py
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCAN = {"native/angr-symex-core": ("interpreter",), "native/angr-vex": ("",), "native/angr-bv": ("",)}
+SCAN = {"native/angr-symex-core": ("interpreter", "symbolic"), "native/angr-vex": ("",), "native/angr-bv": ("",)}
 EXCLUDE = {
     "native/angr-symex-macros": "proc-macro crate: compile-time code generation, none of this gate's runtime patterns",
     "native/angr": "the PyO3 shell: it applies no VEX op itself, the interpreter (in angr-symex-core) does",
@@ -95,9 +100,11 @@ ANY_FN_RE = re.compile(r"\bfn\s+[A-Za-z_][A-Za-z0-9_]*\s*[(<]")
 # A closure header: `|a, b|` / `|v, _rm|`. Excludes `||` (arity 0) and the
 # `a || b` boolean-or shape, since both alternations require an identifier.
 CLOSURE_RE = re.compile(r"\|\s*(?P<params>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*\|")
-# Detector 2: `let _rm = ...` / `let _vex_rm: T = ...` — an evaluated rounding
-# mode bound to a deliberately-unused name, i.e. discarded.
-DISCARDED_RM_RE = re.compile(r"\blet\s+(?P<name>_(?:[A-Za-z0-9_]*_)?rm[A-Za-z0-9_]*)\s*[:=]")
+# Detector 2: an underscore-prefixed rounding-mode name in any binding
+# position — `let _rm = ...`, a fn parameter `_rm: &RustBV`, a pattern
+# `args: [_rm, a, b, c]` — i.e. a mode deliberately left unused. A field or
+# path segment (`x._rm`, `T::_rm`) is not a binding.
+DISCARDED_RM_RE = re.compile(r"(?<![\w.:])(?P<name>_(?:[A-Za-z0-9_]*_)?rm[A-Za-z0-9_]*)\b")
 # Any fn declaration, capturing its name (detector 2 is not scoped to `*_rm`).
 FN_NAMED_RE = re.compile(r"\bfn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[(<]")
 
@@ -176,33 +183,34 @@ def scan_text(rel: str, raw: str) -> list[tuple[str, int, str, str, bool, bool]]
     src = blank_noise(raw)
     raw_lines = raw.splitlines()
 
+    # Closure headers detector 1 judged; detector 2 skips names inside them.
+    judged: list[tuple[int, int]] = []
     for m in CLOSURE_RE.finditer(src):
         fn_name = _enclosing_fn(src, m.start())
         if fn_name is None:
             continue
+        judged.append((m.start(), m.end()))
         params = [p.strip() for p in m.group("params").split(",")]
+        # The last parameter is the mode whatever it is called (`rm`, `mode`):
+        # discarded when `_`-prefixed, dropped when the body never names it.
         rm_param = params[-1]
         body = _closure_body(src, m.end())
-        if rm_param.startswith("_"):
-            drops = True
-        elif rm_param == "rm":
-            drops = not re.search(r"\brm\b", body)
-        else:
-            # Last param is not a rounding mode (e.g. `|lhs, rhs|` in a lane
-            # helper that happens to sit inside a `_rm` fn).
-            continue
+        drops = rm_param.startswith("_") or not re.search(rf"\b{re.escape(rm_param)}\b", body)
         lineno = src.count("\n", 0, m.start()) + 1
         window = raw_lines[max(0, lineno - 3) : lineno]
         exempt = any(EXEMPT_RE.search(line) for line in window)
         hits.append((rel, lineno, fn_name, m.group("params"), drops, exempt))
 
-    # Detector 2: a rounding mode evaluated into an underscore-prefixed
-    # binding, i.e. computed and then discarded (angr-03vl4.30's eval_qop).
+    # Detector 2: a rounding mode bound to an underscore-prefixed name, i.e.
+    # received or computed and then discarded (angr-03vl4.30's eval_qop,
+    # angr-vmi2l.308's `fn ..._rm(opcode, _rm: &RustBV, ..)`).
     for m in DISCARDED_RM_RE.finditer(src):
+        if any(a <= m.start() < b for a, b in judged):
+            continue
         lineno = src.count("\n", 0, m.start()) + 1
         window = raw_lines[max(0, lineno - 3) : lineno]
         exempt = any(EXEMPT_RE.search(line) for line in window)
-        hits.append((rel, lineno, _enclosing_any_fn(src, m.start()), f"let {m.group('name')}", True, exempt))
+        hits.append((rel, lineno, _enclosing_any_fn(src, m.start()), f"bind {m.group('name')}", True, exempt))
     return hits
 
 
@@ -232,8 +240,26 @@ impl VEXOps {
         // rm-ignored: libm is round-to-nearest-even only.
         Self::float_to_int_rm(rm, arg, |v, _rm| v.sin() as u128)
     }
+    fn renamed_rm(rm: RustBV, arg: RustBV) -> R {
+        Self::float_to_int_rm(rm, arg, |v, mode| (v as i16) as u128)
+    }
+    fn renamed_good_rm(rm: RustBV, arg: RustBV) -> R {
+        Self::float_to_int_rm(rm, arg, |v, mode| apply_rounding(v, mode) as u128)
+    }
     fn plain(a: u32) -> u32 {
         (0..a).map(|x, y| x + y).sum()
+    }
+    pub fn param_rm(opcode: u32, _rm: &RustBV, x: &RustBV) -> Option<RustBV> {
+        Some(x.clone())
+    }
+    // rm-ignored: libm only.
+    pub fn param_exempt_rm(opcode: u32, _rm: &RustBV, x: &RustBV) -> Option<RustBV> {
+        Some(x.clone())
+    }
+    fn destructure(&mut self, q: &Qop) -> R {
+        let Qop { op, args: [_rm, a, b, c] } = q;
+        let field = q._rm_like + T::_rm;
+        VEXOps::qop(*op, a, b, c)
     }
     fn eval_qop_like(&mut self) -> R {
         let _rm = self.eval(args[0])?;
@@ -252,8 +278,13 @@ _SELF_TEST_EXPECTED = [
     ("underscore_rm", "v, _rm", True, False),
     ("unused_rm", "v, rm", True, False),
     ("exempt_rm", "v, _rm", True, True),
-    ("eval_qop_like", "let _rm", True, False),
-    ("eval_exempt", "let _vex_rm", True, True),
+    ("renamed_rm", "v, mode", True, False),
+    ("renamed_good_rm", "v, mode", False, False),
+    ("param_rm", "bind _rm", True, False),
+    ("param_exempt_rm", "bind _rm", True, True),
+    ("destructure", "bind _rm", True, False),
+    ("eval_qop_like", "bind _rm", True, False),
+    ("eval_exempt", "bind _vex_rm", True, True),
 ]
 
 
@@ -279,7 +310,7 @@ def self_test() -> int:
         for f in root_failures:
             print(f"  {f}")
         return 1
-    print(f"self-test OK: {len(got)} sites classified as expected (1 threaded, 3 gaps, 2 exempt)")
+    print(f"self-test OK: {len(got)} sites classified as expected (2 threaded, 6 gaps, 3 exempt)")
     return 0
 
 
