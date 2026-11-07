@@ -425,15 +425,21 @@ Supported writes (all immediate, no queueing):
   the state from a read-through proxy, call
   ``mgr._rust_mgr.add_constraints_to_state(state_id, [...])`` directly.
 
-Refused writes:
+Symbolic-address stores:
 
-* ``proxy.memory.store(symbolic_addr, ...)`` raises
-  ``NotImplementedError``. The lazy Multi-cell symbolic-address path
-  exists for the in-engine store but requires solver coordination the
-  proxy lacks. Use a SimProcedure-style hook (``proj.hook(addr, fn)``)
-  for in-exploration symbolic-address writes — SimProcedure callbacks
-  receive a full ``SimState`` and writes are synced back via the lazy
-  Multi-cell path.
+* ``proxy.memory.store(symbolic_addr, data)`` goes through the lazy
+  Multi-cell path (``state_memory_store_symbolic_multi``): a
+  single-solution address stores eagerly, and a multi-valued one installs
+  per-byte alternatives. An address that path cannot route (unbounded or
+  unconstrained) is concretised to one witness from the proxy's solver
+  context and stored there, mapping the page if need be, as angr's
+  ``DefaultMemory`` concretises a write address (angr-p1s02). The store
+  also adds ``addr == witness`` to the Rust state's solver, so a later
+  concretisation of a sibling address on the same base cannot alias it
+  (``RustMemoryProxy._pin_addr_witness``).
+* The one refused symbolic-address store is a guarded (``condition=``) or
+  symbolic-``size`` one: it raises ``NotImplementedError``, because the
+  Multi-cell store has no per-byte guard.
 
 Implementation notes:
 
@@ -2378,11 +2384,12 @@ Caveats specific to ``step()`` dispatch:
 * The proxy does not provide
   :class:`~angr.SimSuccessors`-level introspection (``state.history``
   is the limited :class:`RustHistoryProxy`).
-* Per-state mutations (``state.regs.X = ...``,
-  ``state.solver.add(...)``) **write through** to the live Rust state
-  (``angr-j28e`` / ``angr-qj30`` / ``angr-8oiw``) — see
-  `RustStateProxy write-through contract`_ above.
-  Symbolic-address ``memory.store`` is the one refused write.
+* Register and memory writes (``state.regs.X = ...``,
+  ``state.memory.store(...)``) **write through** to the live Rust state
+  (``angr-j28e`` / ``angr-qj30`` / ``angr-8oiw``), while
+  ``state.solver.add(...)`` is **view-local** to the proxy — see
+  `RustStateProxy write-through contract`_ above. A guarded or
+  symbolic-size store to a symbolic address is the one refused write.
 
 ``mgr.remove_technique(tech)`` mirrors
 :meth:`~angr.sim_manager.SimulationManager.remove_technique`: the

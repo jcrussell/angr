@@ -8,9 +8,10 @@ caching, sync bugs, and the dual-solver problem for non-SimProcedure paths.
 Full SimState creation is only needed for SimProcedure execution (which
 requires angr plugins like posix, filesystem, etc.).
 
-Writes through a proxy (``proxy.regs.<name> = v``, ``proxy.memory.store``,
-``proxy.solver.add``) go straight to the Rust state; the contract is the
-"RustStateProxy write-through contract" section of
+Register and memory writes through a proxy (``proxy.regs.<name> = v``,
+``proxy.memory.store``) go straight to the Rust state, while
+``proxy.solver.add`` is view-local: it lands on the proxy's forked solver
+context. The contract is the "RustStateProxy write-through contract" section of
 ``docs/advanced-topics/rust_engine.rst``, and the design rationale is
 ``docs/advanced-topics/rust_proxy_writes_design.rst``.
 """
