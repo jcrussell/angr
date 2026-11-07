@@ -68,3 +68,18 @@ def test_model_choice_oracle_keeps_the_pinned_answer(name):
         pinned = re.findall(r"^def test\(\):\n\s+assert \w+\(\) == '([^']+)'", f.read(), re.MULTILINE)
     assert pinned and set(pinned) <= MODEL_CHOICE_ORACLES[name].accepted
     assert len(MODEL_CHOICE_ORACLES[name].accepted) > 1
+
+
+@pytest.mark.parametrize(
+    ("py", "rust", "equal"),
+    [
+        ("b'Code_Talkers\\x00\\x00'", "b'Code_Talkers\\xf5\\xf5'", True),
+        ("[b'ab\\x00', b'ef\\x01']", "[b'ab\\xff', b'ef']", True),
+        ("b'flag\\x00{right}'", "b'flag\\x00{wrong}'", False),
+        ("b'\\x01AAAA'", "b'\\x02ZZZZ'", False),
+        ("[b'ab\\x00cd', b'ef']", "[b'ab\\x00XY', b'ef']", False),
+    ],
+)
+def test_normalize_output_strips_only_trailing_fill(py, rust, equal):
+    """Only the escapes ending a byte-string repr are fill; a later byte is an answer (angr-vmi2l.311)."""
+    assert (rr._normalize_output(py) == rr._normalize_output(rust)) is equal

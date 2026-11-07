@@ -631,17 +631,16 @@ def _normalize_output(output):
 
     Z3 model nondeterminism causes unconstrained stdin/stdout bytes to evaluate
     to different fill values between Python and Rust solvers (e.g. \\x00 vs \\xf5).
-    Strip trailing garbage from byte-string reprs by truncating after the last
-    printable ASCII character sequence.
+    Strip only the trailing run of ``\\xNN`` escapes before each byte-string
+    repr's closing quote, so ``b'Code_Talkers\\xf5\\xf5'`` and
+    ``b'Code_Talkers\\x00\\x00'`` compare equal while ``b'flag\\x00{right}'`` and
+    ``b'flag\\x00{wrong}'`` do not. A fill byte that happens to be printable stays
+    in place and reports a mismatch: a loud false positive, never a hidden
+    wrong answer (angr-vmi2l.311).
     """
     import re
 
-    # For byte-string reprs like b'Code_Talkers\xf5\xf5u\xf5...',
-    # find the meaningful prefix: the longest prefix of printable ASCII text
-    # (letters, digits, punctuation) before non-printable sequences dominate.
-    # Strategy: remove any suffix that starts with a \xNN escape and contains
-    # only \xNN escapes and occasional single printable chars.
-    return re.sub(r"(\\x[0-9a-fA-F]{2}[^']*?)(')", r"\2", output)
+    return re.sub(r"(?:\\x[0-9a-fA-F]{2})+(?=')", "", output)
 
 
 def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs", mode="run"):
