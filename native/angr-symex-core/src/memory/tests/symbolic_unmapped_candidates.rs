@@ -142,3 +142,41 @@ fn cross_page_leaf_keeps_mapped_bytes() {
         );
     }
 }
+
+/// The multiwrite store over a candidate page Rust has not fetched from its
+/// lazy region reports `UnmappedPageInRegion` and installs nothing, so the
+/// shell fetches the host's bytes and retries. Its old bare install mapped
+/// the page as zeros, and every byte the store did not cover then read 0
+/// instead of the host's data (angr-vmi2l.350).
+#[test]
+fn multiwrite_store_over_unfetched_lazy_page_maps_nothing() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+    mem.add_lazy_region(0x7000, 0x1000);
+
+    let addr = addr_over(&ctx, "mw_idx", 0x7010, &[0, 1, 3]);
+    let result = mem.store_symbolic_unified_multi(addr, RustBV::concrete(0xAA, 8), &ctx, &concretizer);
+    assert!(
+        matches!(result, Err(MemoryError::UnmappedPageInRegion { page_addr: 0x7000 })),
+        "expected a lazy-page fault for 0x7000, got {result:?}"
+    );
+    assert!(!mem.is_mapped(0x7000), "the faulting store must not map the page");
+}
+
+/// A candidate page in no lazy region comes back `Unmapped` with nothing
+/// mapped either, and the shell hands the store back to the proxy.
+#[test]
+fn multiwrite_store_over_unknown_page_maps_nothing() {
+    let ctx = SymContext::new_mock();
+    let concretizer = AddressConcretizer::new();
+    let mut mem = SymbolicMemory::new(Endness::Little);
+
+    let addr = addr_over(&ctx, "mw_unk_idx", 0x9010, &[0, 1, 3]);
+    let result = mem.store_symbolic_unified_multi(addr, RustBV::concrete(0xAA, 8), &ctx, &concretizer);
+    assert!(
+        matches!(result, Err(MemoryError::Unmapped { .. })),
+        "expected Unmapped, got {result:?}"
+    );
+    assert!(!mem.is_mapped(0x9000), "the faulting store must not map the page");
+}

@@ -34,7 +34,7 @@
 //! | [`SymbolicMemory::store_concrete_le_bytes_automap_internal`] | concrete | W | `Unmapped` (non-lazy only) | **yes**, per chunk | clear |
 //! | [`SymbolicMemory::store_symbolic`] | symbolic (concretizer) | W | `UnmappedPageInRegion` | no | clear (eager ITE per candidate) |
 //! | [`SymbolicMemory::store_symbolic_unified`] | symbolic (concretizer) | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
-//! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (concrete-address path only) | **yes**, zero RW for every candidate | **install** (bare) |
+//! | [`SymbolicMemory::store_symbolic_unified_multi`] | symbolic (multiwrite concretizer) | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | [`SymbolicMemory::store_with_concretization`] | pre-computed result | W | `UnmappedPageInRegion` (lazy), else `Unmapped` | no | **install** (`_safe`) |
 //! | `SymbolicMemory::store_concrete_multi` (`#[cfg(test)]`) | explicit candidate list | W | never — auto-mapped | **yes**, zero RW | **install** (bare, test rig) |
 //!
@@ -879,14 +879,15 @@ impl SymbolicMemory {
     /// [`SymbolicMemory::store_symbolic_unified`] for an address that
     /// carries a `MultiwriteAnnotation` on the Python side (the
     /// `_try_multi_cell_store` wiring, angr-5zw8). It differs from the
-    /// default path in two ways:
+    /// default path in its concretizer only: `concretize_write_multiwrite`
+    /// keeps the Range strategy even when SYMBOLIC_WRITE_ADDRESSES is off.
     ///
-    /// - It concretizes with `concretize_write_multiwrite`, which keeps the
-    ///   Range strategy even when SYMBOLIC_WRITE_ADDRESSES is off.
-    /// - It installs through the bare `install_multi_for_candidates`, which
-    ///   maps a missing candidate page as a zero RW page instead of
-    ///   returning `UnmappedPageInRegion` / `Unmapped`, so it can shadow
-    ///   host backer data the default `_safe` path would have fetched.
+    /// Like the default path it installs through
+    /// `install_multi_for_candidates_safe`, so a missing candidate page comes
+    /// back as `UnmappedPageInRegion` / `Unmapped` with nothing installed.
+    /// The shell's `_state_memory_store_symbolic_multi` maps a lazy-region
+    /// page (host bytes when the host serves it) and retries; mapping it here
+    /// as a zero page would shadow the host's bytes (angr-vmi2l.350).
     pub fn store_symbolic_unified_multi(
         &mut self,
         addr: RustBV,
@@ -923,7 +924,7 @@ impl SymbolicMemory {
             }
             ConcretizationResult::Multiple(addrs) => {
                 let addrs_v: Vec<u64> = addrs.clone();
-                self.install_multi_for_candidates(&addr, &value, &addrs_v)?;
+                self.install_multi_for_candidates_safe(&addr, &value, &addrs_v)?;
                 // angr-62li: hoist the addr-domain disjunction.
                 Self::assert_address_disjunction(&addr, &addrs_v, ctx);
                 Ok(Some(result))
@@ -935,7 +936,7 @@ impl SymbolicMemory {
             } => {
                 let (base, stride, count) = (*base, *stride, *count);
                 let addrs_v = strided_addrs(base, stride, count);
-                self.install_multi_for_candidates(&addr, &value, &addrs_v)?;
+                self.install_multi_for_candidates_safe(&addr, &value, &addrs_v)?;
                 Ok(Some(result))
             }
             other => to_symbolic_address_error(other).map_or(Ok(Some(result)), Err),

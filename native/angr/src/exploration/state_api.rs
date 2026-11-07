@@ -1097,10 +1097,16 @@ impl RustExplorationManager {
     /// `_cb_memory_store_symbolic_full` but installs Multi alternatives at
     /// each concretized byte instead of folding eager ITE chains.
     ///
+    /// The core install maps no page (`install_multi_for_candidates_safe`).
+    /// A lazy-region page it reports missing goes through
+    /// [`Self::map_multi_store_page`] and the store is retried, so a page the
+    /// host backs is fetched rather than shadowed by zeros (angr-vmi2l.350).
+    ///
     /// Returns `true` if the store landed in Rust memory. Returns `false`
-    /// when conversion fails or the address concretization yields
-    /// TooLarge / Failed — caller should fall back to the Python path so
-    /// the write is not silently lost.
+    /// when conversion fails, the address concretization yields
+    /// TooLarge / Failed, or a missing page can be neither fetched nor
+    /// mapped fresh — caller should fall back to the Python path so the
+    /// write is not silently lost.
     pub(crate) fn _state_memory_store_symbolic_multi<'py>(
         &mut self,
         py: Python<'py>,
@@ -1108,36 +1114,96 @@ impl RustExplorationManager {
         addr_ast: &Bound<'py, PyAny>,
         data_ast: &Bound<'py, PyAny>,
     ) -> PyResult<bool> {
-        self.with_state_mut(state_id, |state| {
-            // Scope the immutable solver borrow so the subsequent mutable
-            // memory_store_symbolic_multi call can take its own borrow.
-            let (addr_bv, data_bv) = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx: &SymContext = &sym_ctx;
-                let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
-                    Ok(bv) => bv,
-                    Err(e) => {
-                        log::debug!("state_memory_store_symbolic_multi: addr convert failed: {e}");
-                        return Ok(false);
-                    }
-                };
-                let data_bv = match claripy_to_rustbv(py, data_ast, ctx) {
-                    Ok(bv) => bv,
-                    Err(e) => {
-                        log::debug!("state_memory_store_symbolic_multi: data convert failed: {e}");
-                        return Ok(false);
-                    }
-                };
-                (addr_bv, data_bv)
+        let converted = self.with_state_mut(state_id, |state| {
+            let solver_ref = state.solver();
+            let sym_ctx = solver_ref.borrow();
+            let ctx: &SymContext = &sym_ctx;
+            let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
+                Ok(bv) => bv,
+                Err(e) => {
+                    log::debug!("state_memory_store_symbolic_multi: addr convert failed: {e}");
+                    // SILENT(cat-b): logged above; `None` returns false and the
+                    // caller stores through the Python path instead.
+                    return Ok(None);
+                }
             };
-            match state.memory_store_symbolic_multi(addr_bv, data_bv) {
-                Ok(()) => Ok(true),
+            let data_bv = match claripy_to_rustbv(py, data_ast, ctx) {
+                Ok(bv) => bv,
+                Err(e) => {
+                    log::debug!("state_memory_store_symbolic_multi: data convert failed: {e}");
+                    // SILENT(cat-b): logged above; `None` returns false and the
+                    // caller stores through the Python path instead.
+                    return Ok(None);
+                }
+            };
+            Ok(Some((addr_bv, data_bv)))
+        })?;
+        let Some((addr_bv, data_bv)) = converted else {
+            return Ok(false);
+        };
+        // Each retry maps one page, and a store's candidate set spans a
+        // bounded number of them; the cap only stops a concretizer that
+        // keeps answering with new pages.
+        const MAX_PAGE_RETRIES: usize = 64;
+        for _ in 0..MAX_PAGE_RETRIES {
+            let attempt = self.with_state_mut(state_id, |state| {
+                Ok(state.memory_store_symbolic_multi(addr_bv.clone(), data_bv.clone()))
+            })?;
+            // Only a lazy-region fault is retried. A page in no lazy region
+            // (`Unmapped`) goes back to the proxy, whose single-witness
+            // fallback pins the address it picks (angr-5rjbq).
+            let page_addr = match attempt {
+                Ok(()) => return Ok(true),
+                Err(crate::memory::MemoryError::UnmappedPageInRegion { page_addr }) => page_addr,
                 Err(e) => {
                     log::debug!("state_memory_store_symbolic_multi: store failed: {e:?}");
-                    Ok(false)
+                    return Ok(false);
+                }
+            };
+            if !self.map_multi_store_page(state_id, page_addr)? {
+                return Ok(false);
+            }
+        }
+        log::debug!(
+            "state_memory_store_symbolic_multi: still missing pages after {MAX_PAGE_RETRIES} retries"
+        );
+        Ok(false)
+    }
+
+    /// Map the missing page at `page_addr` for a Multi-cell store, the way
+    /// the interpreter's `fetch_host_pages_for_store` /
+    /// `map_fresh_pages_for_store` do for its own stores: fetch the host's
+    /// bytes when the host serves the page, else map a fresh page through
+    /// `auto_map_zero_page` (zeros or uninitialized per the fill options)
+    /// when the host holds no bytes for it and permissions are not enforced.
+    /// Returns `false` when neither applies (angr-vmi2l.350).
+    fn map_multi_store_page(&mut self, state_id: u64, page_addr: u64) -> PyResult<bool> {
+        let mut fetched = None;
+        let mut host_has_page = false;
+        if let Some(cbs) = self.callbacks.as_ref() {
+            host_has_page = cbs.python_has_page(page_addr);
+            if cbs.has_fetch_page() && cbs.python_can_serve_page(page_addr) {
+                let (data, perms, is_mapped) = cbs.call_fetch_page(page_addr)?;
+                if is_mapped {
+                    fetched = Some((data, perms));
+                } else {
+                    host_has_page = false;
                 }
             }
+        }
+        self.with_state_mut(state_id, |state| {
+            let mem = state.memory_mut();
+            if mem.is_mapped(page_addr) {
+                return Ok(true);
+            }
+            if let Some((data, perms)) = fetched {
+                mem.map_page(page_addr, data, crate::memory::Permission::from_bits(perms));
+                return Ok(true);
+            }
+            if host_has_page || mem.enforce_permissions() {
+                return Ok(false);
+            }
+            Ok(mem.auto_map_zero_page(page_addr))
         })
     }
 
