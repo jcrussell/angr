@@ -55,6 +55,14 @@
     "state_creations": 5,
     "steps": 38
   },
+  "cli_scanf_fgets": {
+    "callback_count": 0,
+    "peak_memory_mb": 186.9,
+    "python_time": null,
+    "rust_time": 0.154,
+    "state_creations": 0,
+    "steps": 16
+  },
   "cmu_binary_bomb_partial": {
     "callback_count": 2,
     "peak_memory_mb": 393.5,

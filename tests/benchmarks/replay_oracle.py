@@ -11,7 +11,7 @@ stdout.
 Only a bench whose entry function returns the found state's ``posix.dumps(0)``
 (possibly stripped) belongs here, and only an x86-64 Linux ELF that runs on
 the host. ``ekopartyctf2016_rev250`` already replays inside its own
-``test()``; the synthetic ``cli_ctype_fprintf`` does too.
+``test()``; the synthetic ``cli_ctype_fprintf`` and ``cli_scanf_fgets`` do too.
 
 The opposite gap is a ``test()`` stricter than its solve script: when the
 script's constraints admit several models, ``test()`` pins the one the Python

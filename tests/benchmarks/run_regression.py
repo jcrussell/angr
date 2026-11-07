@@ -320,6 +320,14 @@ FAST_SUITE = [
     # through proj.factory.simulation_manager so run_single swaps in the Rust
     # engine transparently. Inspect with --dump-counters.
     ("cli_ctype_fprintf", 30, "bfs", True),
+    # scanf/fgets stdin replay bench (angr-vmi2l.342). A checked-in x86-64
+    # ELF (synthetic_examples/cli_scanf_fgets/) reads a number with
+    # scanf("%d") and a line with fgets on angr's default symbolic stdin, so
+    # both run as native procs, and test() replays the found posix.dumps(0)
+    # on the binary. A native scanf that records the wrong stdin bytes fails
+    # --correctness here; nothing else in the corpus drives either proc.
+    # rust_only=True: a correctness surface, not a speed claim.
+    ("cli_scanf_fgets", 30, "bfs", True),
 ]
 
 # Medium tier: 10-60s, run with --full
