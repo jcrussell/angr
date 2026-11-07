@@ -42,6 +42,8 @@ from __future__ import annotations
 
 import pytest
 
+from angr import claripy
+
 # fauxware_project fixture lives in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (
     RUST_EXPLORATION_AVAILABLE,
@@ -714,13 +716,19 @@ class TestParallelCheckpointFrontier:
 
         The Rust ``StashManager`` codec cannot serialize the ``Py<PyAny>``
         overlays (``symbolic_pages`` / ``hook_symbolic_memory`` /
-        ``addr_to_ast``) and restores them empty. Every pbounce state carries
-        them — the values a *Python* SimProcedure handed back live nowhere else
-        — so a bare-Rust envelope silently resumed with those addresses
-        unconstrained. ``dump_snapshot`` now pickles them alongside the Rust
+        ``addr_to_ast``) and restores them empty. A value Python stored or a
+        *Python* SimProcedure handed back lives nowhere else, so a bare-Rust
+        envelope silently resumed with those addresses unconstrained. The
+        overlay used to come from fills the handoff minted at vaddr 0, which it
+        no longer makes (angr-mx00p.132.82). ``dump_snapshot`` now pickles them alongside the Rust
         bytes; this pins the round-trip.
         """
-        mgr, _ = _explore_pbounce_find_k(pbounce_project, 1, monkeypatch, num_find=1)
+        # A value Python stored is what fills the overlays; one in memory no step touches stands in for it.
+        monkeypatch.delenv("RUST_PARALLEL_WORKERS", raising=False)
+        state = _pbounce_state(pbounce_project)
+        state.memory.store(0x5000_0000, claripy.BVS("overlay", 32))
+        mgr = RustExplorationManager(pbounce_project, [state])
+        mgr.explore(find=pbounce_project.loader.find_symbol("reach_target").rebased_addr, num_find=1)
 
         def overlays(m):
             core = m._rust_mgr

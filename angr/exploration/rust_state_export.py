@@ -2308,8 +2308,9 @@ class RustStateExportMixin:
                         if start > pos:
                             state.memory.store(page_addr + pos, data[pos:start], inspect=False, priv=strict)
                         pos = start + size
-                if not symbolic_offsets and runs is None:
-                    self._share_identical_page(state.memory, page_addr, data)
+                if not symbolic_offsets:
+                    if runs is None:
+                        self._share_identical_page(state.memory, page_addr, data)
                     continue
                 regions = self._find_contiguous_regions(symbolic_offsets)
                 self._restore_symbolic_regions(

@@ -409,7 +409,15 @@ class RustStateSyncMixin:
         symbolic_regions: list = []  # (addr, claripy_ast) pairs to import
         self._sync_stack_page(angr_state, rust_state, sp_page, page_size, arch, symbolic_regions)
         self._sync_extra_python_pages(
-            angr_state, rust_state, mapped_page_addrs, symbolic_pages, sp_page, stack_start, stack_base, page_size
+            angr_state,
+            rust_state,
+            mapped_page_addrs,
+            symbolic_pages,
+            sp_page,
+            stack_start,
+            stack_base,
+            page_size,
+            symbolic_regions,
         )
         self._scan_user_symbolic_pages(angr_state, stack_start, stack_base, page_size, symbolic_regions)
 
@@ -613,6 +621,10 @@ class RustStateSyncMixin:
             if obj.binary is None or not hasattr(obj, "sections"):
                 continue
             for section in obj.sections:
+                # A non-allocated ELF section (.comment, .symtab) sits at vaddr 0 and is not in memory: loading it
+                # would mint fills over the low page in this Python state (angr-mx00p.132.82).
+                if not getattr(section, "occupies_memory", True):
+                    continue
                 if section.memsize > 0 and section.memsize < MAX_OVERLAY_SECTION_SIZE:
                     # cat-(b) FALLBACK WITH LOSS: GOT/relocation
                     # overlay failed (load OOB or eval timeout). Rust
@@ -818,6 +830,30 @@ class RustStateSyncMixin:
         for start, size in cls._ultrapage_uninit_runs(page_obj, page_addr, page_size):
             rust_state.mark_memory_uninit(page_addr + start, size)
 
+    @classmethod
+    def _queue_fill_objects(cls, angr_state, page_obj, page_addr: int, page_size: int, out: list) -> None:
+        """Queue the page-local part of each ``symbolic_data`` object holding only default fills for import.
+
+        Python filled those bytes before handoff, so they are neither uninit nor user symbolic data, and concrete_load
+        reads them as zero. A register or constraint may already hold the fill, so it is imported, not re-minted
+        (angr-mx00p.132.82).
+        """
+        seen = set()
+        for mo in getattr(page_obj, "symbolic_data", {}).values():
+            ast = getattr(mo, "object", None)
+            if id(mo) in seen or ast is None or not ast.symbolic or cls._has_user_symbolic_var(ast):
+                continue
+            seen.add(id(mo))
+            lo = max(page_addr, mo.base)
+            hi = min(page_addr + page_size, mo.base + mo.length)
+            if lo >= hi:
+                continue
+            # cat-(b) FALLBACK WITH LOSS: the fill is not imported and that range reads as concrete_load's zeros.
+            with suppress_recoverable():
+                out.append(
+                    (lo, angr_state.memory.load(lo, hi - lo, endness="Iend_BE", inspect=False, disable_actions=True))
+                )
+
     @staticmethod
     def _ultrapage_uninit_runs(page_obj, page_addr: int, page_size: int) -> list:
         """Page-local ``(offset, size)`` runs of never-written bytes on an
@@ -899,12 +935,15 @@ class RustStateSyncMixin:
         stack_start: int,
         stack_base: int,
         page_size: int,
+        symbolic_regions: list,
     ) -> None:
         """Sync non-loader, non-stack pages from the Python state.
 
         Critical for multi-stage explore: pages written during stage 1 (ctype
         tables, heap data, extra stack frames from SimProcedures) must be
-        synced or the Rust engine will read zeros and diverge.
+        synced or the Rust engine will read zeros and diverge. A mapped page's
+        default fills go to ``symbolic_regions`` (``_queue_fill_objects``);
+        its user symbolic data is left to ``_scan_user_symbolic_pages``.
         """
         extra_pages_synced = 0
         # angr-8t45: eager-map all-zero pages too when there aren't many.
@@ -1007,6 +1046,7 @@ class RustStateSyncMixin:
                     if concrete is not None and len(concrete) == page_size:
                         rust_state.map_memory_data(page_addr, concrete, perms)
                         self._mark_uninit_bytes(angr_state, rust_state, page_obj, page_addr, page_size)
+                        self._queue_fill_objects(angr_state, page_obj, page_addr, page_size, symbolic_regions)
                 # Else: store_concrete_automap_internal will auto-allocate
                 # this page on first write via add_lazy_region tracking.
                 lazy_batch.append((page_addr, page_size))
@@ -1071,10 +1111,17 @@ class RustStateSyncMixin:
                 # (Wider impact than (b) per-byte miss because the
                 # whole page is dropped.)
                 with suppress_recoverable():
-                    page_data = angr_state.memory.load(
-                        page_addr, page_size, endness="Iend_BE", inspect=False, disable_actions=True
-                    )
-                    if page_data.symbolic and self._has_user_symbolic_var(page_data):
+                    # A whole-page load would mint a fill for every gap in this Python state, which the lineage
+                    # would never make itself, so an UltraPage is judged by its stored objects (angr-mx00p.132.82).
+                    sd = getattr(pages.get(page_no), "symbolic_data", None)
+                    if sd is not None:
+                        has_user = any(self._has_user_symbolic_var(mo) for mo in sd.values())
+                    else:
+                        page_data = angr_state.memory.load(
+                            page_addr, page_size, endness="Iend_BE", inspect=False, disable_actions=True
+                        )
+                        has_user = page_data.symbolic and self._has_user_symbolic_var(page_data)
+                    if has_user:
                         self._extract_wide_symbolic_regions(angr_state, page_addr, page_size, symbolic_regions)
 
     def _extract_wide_symbolic_regions(self, angr_state, page_addr, page_size, out):

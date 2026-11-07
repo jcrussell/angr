@@ -265,7 +265,7 @@ class TestSyncExtraPagesFastPath:
             stack_start = stack_base - 0x11_0000
             mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
             RustStateSyncMixin._sync_extra_python_pages(
-                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000
+                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000, []
             )
         finally:
             type(rust_state).add_lazy_regions_batch = real_batch
@@ -318,7 +318,7 @@ class TestSyncExtraPagesFastPath:
             stack_start = stack_base - 0x11_0000
             mapped, _ = mgr._map_loader_pages(rust_state, set(), 0x1000)
             RustStateSyncMixin._sync_extra_python_pages(
-                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000
+                mgr, state, rust_state, mapped, set(), sp & ~0xFFF, stack_start, stack_base, 0x1000, []
             )
         finally:
             UltraPage.concrete_load = orig_cl
