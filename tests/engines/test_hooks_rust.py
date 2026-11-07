@@ -252,3 +252,52 @@ class TestHooksRustSmoke:
             f"callback fired {len(fires) - fires_at_unhook} more times after unhook on a live manager."
         )
         assert not mgr.errored, f"live-manager unhook left errored states: {mgr.errored}"
+
+    def test_replace_hook_between_explores_on_a_live_manager(self, fauxware_project):
+        """``proj.hook(addr, New(), replace=True)`` at an address the live
+        manager already registered takes effect on its next step
+        (angr-vmi2l.268).
+
+        The pre-step resync used to diff addresses only, so the replaced
+        strcmp kept Rust's native ``strcmp`` dispatch name and the new
+        Python proc never ran.
+        """
+        proj = fauxware_project
+        sym = proj.loader.find_symbol("strcmp")
+        assert sym is not None and proj.is_symbol_hooked("strcmp")
+
+        fired = []
+
+        class TaggedStrcmp(angr.SimProcedure):
+            def run(self_proc, s1, s2):
+                fired.append(self_proc.state.addr)
+                return 0
+
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        mgr.step()
+        assert sym.rebased_addr in mgr._registered_hooks
+        assert mgr.active, "fauxware ended before strcmp was reached"
+
+        proj.hook(sym.rebased_addr, TaggedStrcmp(), replace=True)
+        mgr.run(max_steps=400)
+
+        assert fired, f"the replaced strcmp never ran on the live manager. Stash counts: {mgr.stash_counts()}"
+        assert mgr._registered_hooks[sym.rebased_addr] is proj._sim_procedures[sym.rebased_addr]
+
+    def test_stub_hooked_after_construction_is_served_natively(self, fauxware_project):
+        """A ``ReturnUnconstrained`` hooked after the manager was built gets
+        the same native stub as one present at construction (angr-vmi2l.268)."""
+        from angr.procedures.stubs.ReturnUnconstrained import ReturnUnconstrained
+
+        proj = fauxware_project
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
+        assert not mgr._rust_mgr.has_native_procedure("zz_late_stub")
+
+        addr = proj.loader.extern_object.allocate()
+        proj.hook(addr, ReturnUnconstrained(display_name="zz_late_stub"))
+        mgr.step()
+
+        assert addr in mgr._registered_hooks
+        assert mgr._rust_mgr.has_native_procedure("zz_late_stub"), (
+            "a ReturnUnconstrained hooked on a live manager must reach the native stub registry"
+        )

@@ -11,7 +11,11 @@ from sortedcontainers import SortedDict
 from angr import claripy
 from angr.errors import SimMemoryMissingError
 from angr.exploration._fallback import suppress_recoverable
-from angr.exploration.rust_callback_dispatch import _proc_no_return, _simproc_dispatch_name
+from angr.exploration.rust_callback_dispatch import (
+    _proc_no_return,
+    _simproc_dispatch_name,
+    _unconstrained_stub_spec,
+)
 from angr.rustylib.vex_engine import arch_register_info
 from angr.storage.memory_mixins.paged_memory.pages import UltraPage
 from angr.storage.memory_object import SimMemoryObject
@@ -232,16 +236,17 @@ class RustStateSyncMixin:
             self._stats_hook_sync_skips += 1
             return
 
-        # Fast path: identical key sets -> no hooks added or removed.
-        # `set == dict_keys` compares as sets without materializing a copy of
-        # the keys, so this stays cheap for small hook tables. Replaces the old
-        # len-equality fast path, which missed equal-count remove+add swaps and
-        # never detected removals (proj.unhook on a live manager) at all
-        # (angr-969g).
+        # Fast path: every hooked address still maps to the proc Rust was
+        # given. Keyed on identity as well as address, so a
+        # `proj.hook(addr, New(), replace=True)` re-registers (angr-vmi2l.268);
+        # a key-only diff kept Rust's old dispatch name at that address.
+        # Removals (proj.unhook on a live manager) are caught by the length
+        # check (angr-969g).
         sim_procedures = self._project._sim_procedures
         registered = self._registered_hooks
-        keys = sim_procedures.keys()
-        if registered == keys:
+        if len(registered) == len(sim_procedures) and all(
+            registered.get(addr) is proc for addr, proc in sim_procedures.items()
+        ):
             self._stats_hook_sync_skips += 1
             return
 
@@ -250,27 +255,47 @@ class RustStateSyncMixin:
         removed = [addr for addr in registered if addr not in sim_procedures]
         if removed:
             self._rust_mgr.unregister_simprocedures(removed)
-            registered.difference_update(removed)
+            for addr in removed:
+                del registered[addr]
             if _DBG:
                 l.debug(f"Unregistered {len(removed)} stale hooks from Rust")
 
+        changed = [(addr, proc) for addr, proc in sim_procedures.items() if registered.get(addr) is not proc]
+        if changed:
+            self._register_hooks(changed)
+            if _DBG:
+                l.debug(f"Synced {len(changed)} dynamically created or replaced hooks")
+
+    def _register_hooks(self, hooks) -> None:
+        """Register ``(addr, proc)`` hooks with Rust and record them in ``_registered_hooks``.
+
+        The one registration path for construction (`_register_simprocedures`),
+        the pre-step resync and an immediate continuation hook, so each sends
+        the same dispatch name (`_simproc_dispatch_name`) and a plain
+        ``ReturnUnconstrained`` gets its native stub (`_unconstrained_stub_spec`)
+        whichever path saw it first (angr-vmi2l.268). Rust's
+        ``register_simprocedures`` overwrites an address already present.
+        ``_registered_hooks`` maps addr -> proc, holding the proc so its
+        identity cannot be recycled while the resync compares it.
+        """
         procs = []
-        for addr in keys:
-            if addr in registered:
-                continue
-            proc = sim_procedures[addr]
+        # display_name -> return width, for the ReturnUnconstrained stubs the
+        # native registry serves itself.
+        stubs: dict[str, int] = {}
+        for addr, proc in hooks:
             name = _simproc_dispatch_name(proc, self._project)
             num_args = getattr(proc, "num_args", 0) or 0
-            no_return = _proc_no_return(proc)
-            procs.append((addr, name, num_args, no_return))
-            registered.add(addr)
+            procs.append((addr, name, num_args, _proc_no_return(proc)))
+            self._registered_hooks[addr] = proc
+            spec = _unconstrained_stub_spec(proc, self._project)
+            if spec is not None:
+                stubs.setdefault(*spec)
             if _DBG:
-                l.debug(f"Syncing dynamically created hook at 0x{addr:x}: {name}")
-
+                l.debug(f"Registering hook at 0x{addr:x}: {name}")
         if procs:
             self._rust_mgr.register_simprocedures(procs)
-            if _DBG:
-                l.debug(f"Synced {len(procs)} dynamically created hooks")
+        if stubs:
+            self._rust_mgr.register_unconstrained_stubs(list(stubs.items()))
 
     @staticmethod
     def _supported_register_names(arch) -> list:

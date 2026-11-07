@@ -129,8 +129,6 @@ from angr.exploration.rust_callback_dispatch import (
     RustCallbackDispatchMixin,
     _pending_syscall_resume,
     _proc_no_return,
-    _simproc_dispatch_name,
-    _unconstrained_stub_spec,
 )
 from angr.exploration.rust_perf_tracker import PerformanceTracker
 from angr.exploration.rust_state_binding import binding_of
@@ -1685,7 +1683,7 @@ class RustExplorationManager(
         # SimProcedures can create continuation hooks via self.call() which
         # need to be registered with Rust before exploration continues
         # (Must be initialized before _register_simprocedures() is called)
-        self._registered_hooks: set = set()
+        self._registered_hooks: dict = {}  # addr -> proc (see _register_hooks)
 
         # Set up callbacks
         _t0 = time.perf_counter_ns()
@@ -3569,29 +3567,9 @@ class RustExplorationManager(
         self._rust_mgr.set_prefer_native_library_hooks(self._prefer_native_library_hooks)
 
     def _register_simprocedures(self):
-        """Register SimProcedures with the Rust manager."""
-        procs = []
-        # display_name -> return width, for the ReturnUnconstrained stubs the
-        # native registry serves itself (see _unconstrained_stub_spec).
-        stubs: dict[str, int] = {}
-
-        # Get hooked addresses from project
+        """Register the project's SimProcedures with the Rust manager."""
         if hasattr(self._project, "_sim_procedures"):
-            for addr, proc in self._project._sim_procedures.items():
-                name = _simproc_dispatch_name(proc, self._project)
-                num_args = getattr(proc, "num_args", 0) or 0
-                no_return = _proc_no_return(proc)
-                procs.append((addr, name, num_args, no_return))
-                # Track this hook as registered
-                self._registered_hooks.add(addr)
-                spec = _unconstrained_stub_spec(proc, self._project)
-                if spec is not None:
-                    stubs.setdefault(*spec)
-
-        if procs:
-            self._rust_mgr.register_simprocedures(procs)
-        if stubs:
-            self._rust_mgr.register_unconstrained_stubs(list(stubs.items()))
+            self._register_hooks(self._project._sim_procedures.items())
 
     def _extract_continuation_data(self, state: angr.SimState):
         """Extract SimProcedure continuation data from a state's callstack.

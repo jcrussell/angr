@@ -1234,18 +1234,12 @@ class RustCallbackDispatchMixin:
                     # C1 Fix: Register continuation hook with Rust IMMEDIATELY
                     # so Rust doesn't error trying to execute the continuation
                     # before the next _sync_hooks_before_step() pass.
-                    if cont_addr_int in self._registered_hooks:
-                        continue
                     cont_proc = self._project._sim_procedures.get(cont_addr_int)
-                    if not cont_proc:
+                    if not cont_proc or self._registered_hooks.get(cont_addr_int) is cont_proc:
                         continue
-                    cont_name = _simproc_dispatch_name(cont_proc, self._project)
-                    cont_num_args = getattr(cont_proc, "num_args", 0) or 0
-                    cont_no_return = _proc_no_return(cont_proc)
-                    self._rust_mgr.register_simprocedures([(cont_addr_int, cont_name, cont_num_args, cont_no_return)])
-                    self._registered_hooks.add(cont_addr_int)
+                    self._register_hooks([(cont_addr_int, cont_proc)])
                     if _DBG:
-                        l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}: {cont_name}")
+                        l.debug(f"Immediately registered continuation hook at 0x{cont_addr_int:x}")
             except MemoryError:
                 raise
             except Exception as e:
