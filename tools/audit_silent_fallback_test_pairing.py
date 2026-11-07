@@ -25,7 +25,8 @@ crash". `cat_a` (expected control flow) is deliberately exempt -- there is no
 
 The rule this script enforces: a diff that adds a new `silent_default!(cat_b`
 or `silent_default!(cat_c` invocation, or a new `// SILENT(cat-b):` /
-`// SILENT(cat-c):` comment, in `native/angr/src/*.rs` must *also* touch at
+`// SILENT(cat-c):` comment (on its own line, trailing code, or as a
+`///` / `//!` doc comment), in `native/angr/src/*.rs` must *also* touch at
 least one test file in the same diff. It cannot verify the test actually
 covers the right thing -- that is unavoidably a human-review judgment call --
 so a structurally-present pairing passes with a note asking the reviewer to
@@ -51,7 +52,9 @@ same-line `cat_b|cat_c` match would miss.
   skip git entirely. Used by ``--self-test`` and by anyone who wants to feed a
   pre-built diff (e.g. from ``git diff`` piped through a filter).
 - ``--base-ref <ref>``: diff ``<ref>...HEAD`` (merge-base form) if `<ref>` is
-  locally resolvable, else diff literally against `<ref>`.
+  locally resolvable, else diff literally against `<ref>` if ``git rev-parse``
+  accepts it as a range (``a..b``); anything else raises ``NoDiffRangeError``.
+  A mistyped ref must not fall through to an empty diff.
 - Otherwise, PR context: GitHub Actions sets ``GITHUB_BASE_REF`` (just the
   branch name, e.g. ``master``) for ``pull_request`` events. `actions/checkout`
   defaults to a shallow, single-branch clone of the PR's own ref, so
@@ -77,6 +80,8 @@ same-line `cat_b|cat_c` match would miss.
   ``NoDiffRangeError`` rather than silently falling through to an empty diff:
   this script's entire purpose is catching silent failures, so it must not
   become one itself.
+- Whatever the range, a ``git diff`` that exits non-zero raises
+  ``GitDiffError`` (exit 1), never an empty diff and an "OK".
 
 Usage::
 
@@ -89,7 +94,7 @@ Exit 0 = OK (no new cat_b/cat_c sites, or a test file was also touched),
 1 = new cat_b/cat_c site(s) with no test file touched anywhere in the diff,
     OR no usable diff range could be determined (see ``NoDiffRangeError``
     above -- refusing to silently report OK when the comparison base is
-    unknown).
+    unknown), OR ``git diff`` itself failed (``GitDiffError``).
 Pure stdlib; shells out to ``git`` only to acquire the diff (not needed for
 ``--diff-file`` / ``--self-test``).
 """
@@ -131,7 +136,10 @@ def src_prefixes(repo_root: Path = REPO_ROOT) -> list[str]:
 
 # See the module docstring's "Site detection" paragraph for why these two
 # alternatives (and not a same-line `cat_b|cat_c` match) are the right shape.
-TAG_COMMENT_RE = re.compile(r"^//\s*SILENT\(cat-[bc]\):")
+# The tag may open the line, trail code (`expr.ok(); // SILENT(cat-c): ..`) or
+# sit in a doc comment (`/// SILENT(cat-c): ..`); a backquoted mention in prose
+# (`` `// SILENT(cat-c): ..` ``) has no whitespace before the `//` and is not a tag.
+TAG_COMMENT_RE = re.compile(r"(?:^|\s)//[/!]?\s*SILENT\(cat-[bc]\):")
 MACRO_CALL_RE = re.compile(r"silent_default!\(")
 
 HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -163,7 +171,9 @@ def determine_range(explicit_base: str | None) -> tuple[str, str]:
     if explicit_base:
         if _ref_exists(explicit_base):
             return f"{explicit_base}...HEAD", f"explicit --base-ref {explicit_base} (merge-base diff)"
-        return explicit_base, f"explicit --base-ref {explicit_base} (literal range)"
+        if _git(["rev-parse", "--revs-only", explicit_base]).stdout.strip():
+            return explicit_base, f"explicit --base-ref {explicit_base} (literal range)"
+        raise NoDiffRangeError(f"could not resolve --base-ref {explicit_base!r} as a ref or a range")
 
     base_ref = os.environ.get("GITHUB_BASE_REF")  # set only for pull_request[_target] events
     if base_ref:
@@ -205,23 +215,31 @@ def determine_range(explicit_base: str | None) -> tuple[str, str]:
     )
 
 
+class GitDiffError(RuntimeError):
+    """Raised when ``git diff`` exits non-zero.
+
+    An empty diff here would print "OK" for a comparison that never ran, the
+    same failure shape ``NoDiffRangeError`` exists to prevent.
+    """
+
+
+def _git_diff_stdout(args: list[str]) -> str:
+    proc = _git(args)
+    if proc.returncode != 0:
+        raise GitDiffError(f"`git {' '.join(args)}` failed (exit {proc.returncode}): {proc.stderr.strip()}")
+    return proc.stdout
+
+
 def _run_diff(range_arg: str, pathspecs: Sequence[str]) -> str:
     args = ["diff", "--unified=0", "--no-color", range_arg]
     if pathspecs:
         args += ["--", *pathspecs]
-    proc = _git(args)
-    if proc.returncode != 0:
-        print(f"warning: `git diff {' '.join(args)}` failed: {proc.stderr.strip()}", file=sys.stderr)
-        return ""
-    return proc.stdout
+    return _git_diff_stdout(args)
 
 
 def _run_name_only(range_arg: str) -> list[str]:
-    proc = _git(["diff", "--name-only", range_arg])
-    if proc.returncode != 0:
-        print(f"warning: `git diff --name-only {range_arg}` failed: {proc.stderr.strip()}", file=sys.stderr)
-        return []
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    stdout = _git_diff_stdout(["diff", "--name-only", range_arg])
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
 
 
 def parse_added_lines(diff_text: str) -> list[tuple[str, int, str]]:
@@ -262,11 +280,11 @@ def _is_new_lossy_site(stripped: str) -> bool:
     commented-out ``silent_default!(cat_b, ...)`` call, or a doc comment that
     merely *mentions* the macro as a usage example -- see `lib.rs`'s own doc
     comment for the macro -- is correctly not a site). A non-comment line
-    counts via the macro-call form.
+    counts via the macro-call form or a trailing tag comment.
     """
     if stripped.startswith("//"):
         return bool(TAG_COMMENT_RE.match(stripped))
-    return bool(MACRO_CALL_RE.search(stripped))
+    return bool(MACRO_CALL_RE.search(stripped) or TAG_COMMENT_RE.search(stripped))
 
 
 def find_new_sites(diff_text: str, prefixes: Sequence[str]) -> list[tuple[str, int, str]]:
@@ -380,6 +398,33 @@ _SELF_TEST_CASES: list[tuple[str, str, list[str], int]] = [
         1,
     ),
     (
+        "trailing tag comment cat-c after code, no test touched -> FAIL",
+        _synthetic_diff(
+            "native/angr-symex-core/src/arch/mod.rs",
+            ["let sp = read_sp().ok(); // SILENT(cat-c): a missing SP reads as None."],
+        ),
+        ["native/angr-symex-core/src/arch/mod.rs"],
+        1,
+    ),
+    (
+        "doc-comment tag cat-b, no test touched -> FAIL",
+        _synthetic_diff(
+            "native/angr-symex-core/src/arch/mod.rs",
+            ["/// SILENT(cat-b): an unknown register reads as zero.", "fn reg() -> u64 { 0 }"],
+        ),
+        ["native/angr-symex-core/src/arch/mod.rs"],
+        1,
+    ),
+    (
+        "backquoted tag mentioned in doc prose -> PASS, not a site",
+        _synthetic_diff(
+            "native/angr-symex-core/src/arch/mod.rs",
+            ["/// Tag an expected discard with `// SILENT(cat-b): <why>`."],
+        ),
+        ["native/angr-symex-core/src/arch/mod.rs"],
+        0,
+    ),
+    (
         "tag comment cat-a (exempt) -> PASS, not even flagged",
         _synthetic_diff(
             "native/angr-symex-core/src/state/mod.rs",
@@ -484,11 +529,11 @@ def _commit_all(repo, message: str) -> None:
     subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
 
 
-def _run_script_subprocess(repo):
+def _run_script_subprocess(repo, *extra_args: str):
     env = dict(os.environ)
     env.pop("GITHUB_BASE_REF", None)  # simulate a push/merge_group trigger, not pull_request
     return subprocess.run(
-        [sys.executable, "tools/audit_silent_fallback_test_pairing.py"],
+        [sys.executable, "tools/audit_silent_fallback_test_pairing.py", *extra_args],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -603,8 +648,46 @@ def _self_test_shallow_clone_deepens_and_succeeds() -> str | None:
     return None
 
 
+def _self_test_unresolvable_base_ref_fails_loudly() -> str | None:
+    """A mistyped ``--base-ref`` in a repo whose ``HEAD~1`` does exist must not print OK."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="audit_pairing_selftest_badref_") as tmp:
+        repo = Path(tmp)
+        _init_git_repo(repo)
+        _write_tool_copies(repo / "tools")
+        _write_workspace(repo)
+        (repo / "native" / "angr" / "src").mkdir(parents=True)
+        for version in ("v1", "v2"):
+            (repo / "native" / "angr" / "src" / "placeholder.rs").write_text(f"// placeholder {version}\n")
+            _commit_all(repo, f"commit {version}")
+
+        proc = _run_script_subprocess(repo, "--base-ref", "origin/mastr")
+        if proc.returncode == 0 or "OK:" in proc.stdout:
+            return (
+                f"bad --base-ref scenario: expected a loud failure, got exit {proc.returncode}, stdout {proc.stdout!r}"
+            )
+        if "could not resolve --base-ref" not in proc.stderr:
+            return f"bad --base-ref scenario: expected the unresolved-ref error on stderr, got {proc.stderr!r}"
+    return None
+
+
+def _self_test_git_diff_failure_raises() -> str | None:
+    """``_run_diff`` / ``_run_name_only`` raise on a failing ``git diff`` instead of returning nothing."""
+    bogus = "refs/heads/audit-pairing-selftest-no-such-ref"
+    for name, call in (("_run_diff", lambda: _run_diff(bogus, ())), ("_run_name_only", lambda: _run_name_only(bogus))):
+        try:
+            call()
+        except GitDiffError:
+            continue
+        return f"{name}: a failing `git diff` returned normally instead of raising GitDiffError"
+    return None
+
+
 _GIT_RANGE_SELF_TEST_SCENARIOS = [
     ("no parent commit, no origin -> fails loudly, never OK", _self_test_no_parent_commit_fails_loudly),
+    ("unresolvable --base-ref -> fails loudly, never OK", _self_test_unresolvable_base_ref_fails_loudly),
+    ("git diff failure -> GitDiffError, never an empty diff", _self_test_git_diff_failure_raises),
     ("shallow clone with real history -> deepens HEAD~1, succeeds", _self_test_shallow_clone_deepens_and_succeeds),
 ]
 
@@ -673,12 +756,12 @@ def main() -> int:
 
     try:
         range_arg, description = determine_range(args.base_ref)
-    except NoDiffRangeError as exc:
+        print(f"diff range: {description}", file=sys.stderr)
+        site_diff_text = _run_diff(range_arg, prefixes)
+        touched = _run_name_only(range_arg)
+    except (NoDiffRangeError, GitDiffError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
-    print(f"diff range: {description}", file=sys.stderr)
-    site_diff_text = _run_diff(range_arg, prefixes)
-    touched = _run_name_only(range_arg)
     code, message = evaluate(site_diff_text, touched, prefixes)
     print(message)
     return code
