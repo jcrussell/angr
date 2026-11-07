@@ -189,7 +189,7 @@ fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
         ctx.assume_true(
             &addr_var
                 .eq(&RustBV::concrete(0x1000, 64))
-                .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
+                .or(&addr_var.eq(&RustBV::concrete(0x1080, 64))),
         );
         (addr_var, RustBV::concrete(value as u128, 32))
     };

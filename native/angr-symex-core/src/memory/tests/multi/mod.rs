@@ -55,9 +55,14 @@ mod payload;
 /// (angr-9ke6b.194) use a Max-only chain for unannotated addresses,
 /// which yields a single address and installs no Multi cells. See
 /// `AddressConcretizer::write_range_applies`.
+///
+/// The tests' candidates sit pages apart, and Range refuses a set spread
+/// wider than its limit (Python's default is 128 bytes), so the limit is
+/// widened.
 fn multi_write_concretizer() -> AddressConcretizer {
     AddressConcretizer {
         symbolic_write_addresses: true,
+        write_range_limit: 0x10000,
         ..AddressConcretizer::new()
     }
 }

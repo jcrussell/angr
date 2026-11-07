@@ -290,6 +290,8 @@ fn test_pending_write_flush_signals_lazy_unmapped_candidate() {
     // SYMBOLIC_WRITE_ADDRESSES: without it the write chain is Max-only and
     // collapses to a Single candidate, never reaching materialize_pending_ite.
     concretizer.symbolic_write_addresses = true;
+    // The candidates sit a page apart: widen Range's limit past their span.
+    concretizer.write_range_limit = 0x10000;
 
     let mut mem = SymbolicMemory::new(Endness::Little);
     // Page 0x1000 is real; page 0x2000 is unmapped but inside a lazy region.

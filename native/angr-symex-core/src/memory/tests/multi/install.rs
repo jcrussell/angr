@@ -127,7 +127,11 @@ fn test_store_concrete_multi_fork_independence() {
 #[test]
 fn test_store_symbolic_unified_multi_multiple_round_trip() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    // Candidates a page apart: widen Range's limit past their span.
+    let concretizer = AddressConcretizer {
+        write_range_limit: 0x10000,
+        ..AddressConcretizer::new()
+    };
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x4000, Permission::RWX);
 

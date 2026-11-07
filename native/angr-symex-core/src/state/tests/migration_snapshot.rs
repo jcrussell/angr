@@ -90,8 +90,10 @@ fn test_migrate_carries_multi_cell_bytes() {
         );
         (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
     };
+    // The candidates sit a page apart: widen Range's limit past their span.
     let concretizer = crate::symbolic::concretize::AddressConcretizer {
         symbolic_write_addresses: true,
+        write_range_limit: 0x10000,
         ..crate::symbolic::concretize::AddressConcretizer::new()
     };
     let ctx = state.solver().clone();

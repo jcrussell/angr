@@ -32,7 +32,11 @@ use super::super::*;
 #[test]
 fn test_symbolic_load_cross_page_multiple_solutions() {
     let ctx = SymContext::new_mock();
-    let concretizer = AddressConcretizer::new();
+    // The solutions sit a page apart: widen Range's limit past their span.
+    let concretizer = AddressConcretizer {
+        read_range_limit: 0x10000,
+        ..AddressConcretizer::new()
+    };
 
     let mut mem = SymbolicMemory::new(Endness::Little);
     mem.map(0x1000, 0x1000, Permission::RWX);

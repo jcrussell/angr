@@ -120,7 +120,7 @@ fn shadow_probe_migrate_does_not_mutate_the_live_state() {
             ctx.assume_true(
                 &addr_var
                     .eq(&RustBV::concrete(0x1000, 64))
-                    .or(&addr_var.eq(&RustBV::concrete(0x2000, 64))),
+                    .or(&addr_var.eq(&RustBV::concrete(0x1080, 64))),
             );
             (addr_var, RustBV::concrete(0xCAFE_BABEu128, 32))
         };
