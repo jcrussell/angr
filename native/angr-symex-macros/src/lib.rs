@@ -76,12 +76,17 @@
 //! (`syscalls::support::BoundedArg`, `arch::AddrOrSymbolic` — the refusal arm
 //! must be written before the code compiles); then an attribute macro that
 //! checks a whole impl/struct (`steady_guard_checked`, `MergePolicy`), which
-//! is opt-out and catches every site structurally; then a baseline-gated
-//! script (`tools/audit_*.py`), which only catches what a text heuristic can
-//! name — reach for it only when no structural wrapper is expressible, e.g.
-//! cross-file prose citations. Pairing an opt-in macro with a coverage script
-//! was tried (`audit_steady_guard_coverage.py`) and retired: its name-prefix
-//! heuristic missed a real mutator under another name.
+//! is opt-out within that impl/struct and catches every site in it
+//! structurally; then a baseline-gated script (`tools/audit_*.py`), which
+//! only catches what a text heuristic can name — reach for it only when no
+//! structural wrapper is expressible, e.g. cross-file prose citations.
+//! Pairing an opt-in macro with a coverage script was tried
+//! (`audit_steady_guard_coverage.py`) and retired: its name-prefix heuristic
+//! missed a real mutator under another name. The block-level attribute still
+//! has to be written on each block, and `tools/audit_steady_guard_blocks.py`
+//! checks that: every `#[pymethods] impl RustExplorationManager` carries
+//! `steady_guard_checked` above its `#[pymethods]`. That is a fixed
+//! attribute-path match, not a name heuristic.
 //!
 //! # Test surface
 //!
@@ -196,6 +201,11 @@ fn takes_mut_self(recv: &Receiver) -> bool {
 /// itself resolved as an attribute macro. Using it outside a
 /// `#[steady_guard_checked]` impl block is a hard "cannot find attribute
 /// macro" compile error rather than a silent no-op.
+///
+/// The check covers only the blocks this attribute is written on. A
+/// `#[pymethods] impl RustExplorationManager` that leaves it off is caught by
+/// `tools/audit_steady_guard_blocks.py`, not by rustc. Write it above
+/// `#[pymethods]`, because attributes expand top-down.
 #[proc_macro_attribute]
 pub fn steady_guard_checked(attr: TokenStream, item: TokenStream) -> TokenStream {
     steady_guard_checked_impl(attr.into(), item.into()).into()
