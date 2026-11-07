@@ -66,8 +66,12 @@ What does not fix it
 Pinning Z3's seeds narrows the spread but does not collapse it
 (:doc:`rust_engine_decisions`), so ``--deterministic`` stays a
 diagnostic knob for reproducing one slow path, not a gating default.
-No engine-side lever moves these benches; the residual is a solver
-floor (:doc:`rust_engine_decisions`, *Solver*).
+No lever over Z3's search moves these benches; the residual is a
+solver floor (:doc:`rust_engine_decisions`, *Solver*). The solver
+*mode* is the exception: a hash-cracker query that wanders on Z3's
+non-incremental path can be quick on its incremental core, which is why
+a never-pushed solver's check is capped and then switched
+(:doc:`rust_engine_decisions`, *Solver*).
 
 Reproducing
 -----------

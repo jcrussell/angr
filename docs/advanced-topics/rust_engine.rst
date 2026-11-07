@@ -3248,7 +3248,8 @@ The benches that stay below 1.0x fall into two classes:
   and their handling is in :doc:`rust_bimodal_variance`. Why this class
   is a solver floor rather than engine work is recorded in
   :doc:`rust_engine_decisions` (*Solver*); the ``ANGR_Z3_TACTIC``
-  knob above is the only one that moves them.
+  knob above is the only one that moves them, beyond the engine's own
+  capped switch to Z3's incremental core recorded there.
 * **Callback-heavy benches.** Every Python SimProcedure, hook or syscall
   fallback crosses the FFI boundary and re-enters Python's state
   machinery. The levers are the native registries

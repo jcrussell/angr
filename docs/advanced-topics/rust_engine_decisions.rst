@@ -53,9 +53,24 @@ latitude that these keys do not bind. The supported determinism knob is
 (``angr-9w6ad``, ``angr-34w``). The benches that stay slower than Python
 spend their wall time in ``solver.check()`` / ``eval_upto``; two
 independent spikes (deterministic seeding, a lazy-solving engagement
-audit) found no engine-side lever. They are tracked as bimodal
+audit) found no lever over Z3's search. They are tracked as bimodal
 (:doc:`rust_bimodal_variance`) and are not re-triaged as optimization
-candidates.
+candidates. The one engine-side lever found since is the solver *mode*,
+below.
+
+**A never-pushed solver gets one capped non-incremental attempt**
+(``angr-vmi2l.345``). A fresh ``z3::Solver`` checked without a push or
+assumptions runs Z3's combined solver1 (the tactic path); once pushed it
+runs solver2 (the incremental core) for good, and neither wins
+everywhere: defcon2016quals_baby-re's eval takes milliseconds on solver1
+and seconds on solver2, google2016_unbreakable_1's takes tens of seconds
+on solver1 and a few on solver2. Forcing either mode
+(``ignore_solver1``) loses one of them, and Z3's ``solver2_timeout``
+falls back in the wrong order (incremental first). So
+``mode_ladder_check`` (``symbolic/solver_build.rs``) caps the solver1
+attempt at ``SOLVER1_BUDGET_MS``; on a timeout it switches the solver
+with an empty push/pop and reruns inside the rest of the configured
+timeout. ``z3_solver_mode_switch`` counts the switches.
 
 **``solver.is_true`` / ``is_false`` stay structural** (``angr-vmi2l.339``).
 The Rust context answered them with a solver query (``!can_be_false``),

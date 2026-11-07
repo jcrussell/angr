@@ -273,6 +273,23 @@ impl SymContext {
         self.with_z3_solver(|solver| format!("{solver}"))
     }
 
+    /// One check on `solver` through [`mode_ladder_check`], with this
+    /// context's timeout. A shared lineage solver is always incremental: it
+    /// holds a frame per branch (angr-vmi2l.345).
+    fn checked(&self, solver: &z3::Solver, site: CheckSite) -> z3::SatResult {
+        if self.lineage.lock().is_some() {
+            self.solver_incremental.set(true);
+        }
+        mode_ladder_check(solver, site, self.timeout_ms(), &self.solver_incremental)
+    }
+
+    /// `solver.push()`, recording that the solver is now incremental so a
+    /// later [`Self::checked`] skips the capped non-incremental attempt.
+    fn push_incremental(&self, solver: &z3::Solver) {
+        solver.push();
+        self.solver_incremental.set(true);
+    }
+
     /// Test-only: pin the solver's `rlimit` (resource budget) so the next
     /// check aborts to a Z3 Unknown deterministically — the stand-in for a
     /// timeout that a wall-clock `timeout_ms` cannot give a test without
@@ -333,7 +350,7 @@ impl SymContext {
         // returns the stale false even once the timeout budget would allow a
         // real answer (angr-ph300.43).
         let result: Option<bool> = self.with_z3_solver(|solver| {
-            let decided = timed_check(solver, CheckSite::Satisfiable).decided();
+            let decided = self.checked(solver, CheckSite::Satisfiable).decided();
             if decided == Some(true) {
                 // Populate model_cache — get_model is essentially free
                 // after a successful check, and the model lets
@@ -434,7 +451,7 @@ impl SymContext {
                     Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
                     // can_be_true=true is proven by the model. Check the
                     // other direction (¬cond) with Z3.
-                    solver.push();
+                    self.push_incremental(solver);
                     solver.assert(bool_ast.not());
                     // A Z3 Unknown (timeout) here must NOT prune the false
                     // branch: only a decided Unsat proves ¬cond infeasible
@@ -448,7 +465,7 @@ impl SymContext {
                 Some(false) => {
                     Z3_BRANCH_MODEL_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
                     // can_be_false=true is proven by the model. Check cond.
-                    solver.push();
+                    self.push_incremental(solver);
                     solver.assert(&bool_ast);
                     // Unknown must not prune the true branch (angr-ph300.43):
                     // only a decided Unsat (Some(false)) makes it infeasible.
@@ -465,7 +482,7 @@ impl SymContext {
                     // pre-fix `matches!(_, Sat)` treated a timeout on the cond
                     // check as "cond infeasible" and returned (false, true),
                     // silently killing the feasible true branch.
-                    solver.push();
+                    self.push_incremental(solver);
                     solver.assert(&bool_ast);
                     let cond_check = self.check_branch_side(solver, CheckSite::BranchTrue);
                     solver.pop(1);
@@ -477,7 +494,7 @@ impl SymContext {
                         return (false, true); // Must be false-only
                     }
 
-                    solver.push();
+                    self.push_incremental(solver);
                     solver.assert(bool_ast.not());
                     let can_false =
                         self.check_branch_side(solver, CheckSite::BranchFalse) != Some(false);
@@ -496,7 +513,7 @@ impl SymContext {
     /// assumes still has a witness and its next `is_sat_checked` skips Z3
     /// (angr-vmi2l.318).
     fn check_branch_side(&self, solver: &z3::Solver, site: CheckSite) -> Option<bool> {
-        let decided = timed_check(solver, site).decided();
+        let decided = self.checked(solver, site).decided();
         if decided == Some(true)
             && let Some(model) = solver.get_model()
         {
@@ -576,7 +593,7 @@ impl SymContext {
         let _class =
             query_class::scope(|| query_class::classify_eval(bv, &self.get_assumed_constraints()));
         self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Eval).decided() {
+            match self.checked(solver, CheckSite::Eval).decided() {
                 Some(true) => {
                     self.sat_cache.set(Some(true));
                 }
@@ -666,7 +683,7 @@ impl SymContext {
         let seeded = self.cached_model_eval_with(ast, &extract);
 
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
 
             let mut remaining = n;
             if let Some(value) = seeded {
@@ -680,7 +697,7 @@ impl SymContext {
                 // Only a decided Unsat means "no more solutions"; Unknown, and
                 // likewise a missing model or a failed extraction, leave the
                 // remainder of the feasible set unknown.
-                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                match self.checked(solver, CheckSite::EvalUpto).decided() {
                     Some(true) => {}
                     Some(false) => break,
                     None => {
@@ -762,7 +779,7 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             // Proceed only on a decided Sat; both Unsat and Unknown yield None
             // (this path never wrote sat_cache — preserve that, angr-ph300.43).
-            if timed_check(solver, CheckSite::Eval).decided() != Some(true) {
+            if self.checked(solver, CheckSite::Eval).decided() != Some(true) {
                 return None;
             }
 
@@ -838,7 +855,7 @@ impl SymContext {
             query_class::classify_eval_many(bvs, &self.get_assumed_constraints())
         });
         self.with_z3_solver(|solver| {
-            match timed_check(solver, CheckSite::Eval).decided() {
+            match self.checked(solver, CheckSite::Eval).decided() {
                 Some(true) => self.sat_cache.set(Some(true)),
                 // Unknown (None, timeout) must not pin the context unsat
                 // (angr-ph300.43); only a decided Unsat does.
@@ -944,14 +961,14 @@ impl SymContext {
             return None;
         }
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
             let mut values = Vec::with_capacity(parts.len());
             for (ast, width) in parts {
                 // The pins asserted below are satisfiable by construction, so an
                 // unsat here can only come from the base constraint set. A Z3
                 // Unknown (timeout) aborts without pinning sat_cache=false — the
                 // base set's satisfiability stays undetermined (angr-ph300.43).
-                match timed_check(solver, CheckSite::Eval).decided() {
+                match self.checked(solver, CheckSite::Eval).decided() {
                     Some(true) => {}
                     Some(false) => {
                         solver.pop(1);
@@ -1043,7 +1060,7 @@ impl SymContext {
         let mut results = Vec::with_capacity(n);
         let mut undecided = false;
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
 
             let mut lo: u128 = 0;
             for _ in 0..n {
@@ -1053,7 +1070,7 @@ impl SymContext {
                 // Stop on anything but a decided Sat (Unsat = exhausted,
                 // Unknown = undetermined); the prefix stays a valid set, and the
                 // two reasons are reported apart (angr-03vl4.85).
-                match timed_check(solver, CheckSite::EvalUpto).decided() {
+                match self.checked(solver, CheckSite::EvalUpto).decided() {
                     Some(true) => {}
                     Some(false) => break,
                     None => {
@@ -1221,7 +1238,7 @@ impl SymContext {
         // — safe for both the None (per-context) and Some (shared-lineage)
         // dispatch paths.
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
 
             let max_val = max_val_for_width(width);
             let (half_lo, half_hi): (u128, u128) = if signed {
@@ -1243,10 +1260,10 @@ impl SymContext {
                 let preferred_reachable = if witness_in_preferred {
                     true
                 } else {
-                    solver.push();
+                    self.push_incremental(solver);
                     let zero = make_bv_const(0, width);
                     solver.assert(dir.sign_probe(&ast, &zero));
-                    let check = timed_check(solver, dir.init_site());
+                    let check = self.checked(solver, dir.init_site());
                     solver.pop(1);
                     match check.decided() {
                         // Some(true)=preferred half reachable, Some(false)=the
@@ -1361,7 +1378,7 @@ impl SymContext {
         // its pre-closure depth — safe for both the None (per-context) and
         // Some (shared-lineage) dispatch paths.
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
 
             // Binary search for min in [0, hi_seed], then max in [lo_seed, max_val].
             let min_val = bsearch_min(solver, &ast, width, 0, hi_seed, |a, m| a.bvule(m));
@@ -1463,13 +1480,13 @@ impl SymContext {
         // the Z3 scope stack returns to its pre-closure depth — safe for both
         // the None (per-context) and Some (shared-lineage) dispatch paths.
         self.with_z3_solver(|solver| {
-            solver.push();
+            self.push_incremental(solver);
             solver.assert(&constraint);
             // `value` is a solution only if pinning it is a decided Sat; a
             // timeout (None) cannot prove feasibility, so it is conservatively
             // "not a solution" — preserving this query's original behavior while
             // making the Unknown handling explicit (angr-qwyti.3).
-            let result = timed_check(solver, CheckSite::Satisfiable).decided() == Some(true);
+            let result = self.checked(solver, CheckSite::Satisfiable).decided() == Some(true);
             solver.pop(1);
             result
         })

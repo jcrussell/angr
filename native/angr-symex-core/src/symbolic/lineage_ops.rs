@@ -190,6 +190,7 @@ impl SymContext {
             None => {
                 let solver = self.solver();
                 solver.push();
+                self.solver_incremental.set(true);
                 // Release the per-context z3::Solver guard before the
                 // lock-independent atomic so the hottest lock in the engine
                 // is not held across the fetch_add (clippy nursery

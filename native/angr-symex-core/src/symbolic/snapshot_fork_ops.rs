@@ -607,6 +607,7 @@ impl SymContext {
             ),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(None),
+            solver_incremental: Cell::new(false),
             // angr-gorvf.16: carry the parent's SAT/model witness into the
             // child. The child's frozen constraint set is exactly the parent's
             // full set at fork time (freeze_into_shared moved every local

@@ -190,9 +190,7 @@ FAST_SUITE = [
     ("defcamp_r100", 30, "bfs", False),
     ("ais3_crackme", 30, "bfs", False),
     ("google2016_unbreakable_0", 30, "bfs", False),
-    # 60, not 30: the correctness pass runs at 2x, and a ~57 s run sat at the
-    # old 60 s edge (angr-vmi2l.340).
-    ("google2016_unbreakable_1", 60, "bfs", True),
+    ("google2016_unbreakable_1", 30, "bfs", True),
     ("strcpy_find", 30, "bfs", False),
     ("flareon2015_2", 30, "bfs", False),
     ("unmapped_analysis", 30, "bfs", True),
@@ -412,15 +410,13 @@ PINNED_RUST_TIMES = {
     # across the qfbv / bit-blast / simplify tactic pipelines; narrowing the
     # 32/64-bit arithmetic to the 8 bits compared made it 50 s. The engine's
     # fixed seed lands on 18.95-19.37 s (5 standalone runs), so the 3.5 s
-    # rust-symex pin was a different term shape's luck, not a target. The
-    # same luck has since moved to 55-59 s standalone (angr-vmi2l.340): the
-    # Python engine's eval of that query takes ~24 s, so the 1.6 s python_time
-    # is not comparable. Z3's incremental core solves the dumped query in
-    # 1.8-3.6 s across six seeds, but forcing it (`ignore_solver1`) makes
-    # defcon2016quals_baby-re's one eval 4 s instead of 5 ms, so it is not a
-    # blanket switch (angr-vmi2l.345). 64 clears the standalone maximum by
-    # the ~15% in-gate load allowance the pins above settled on.
-    "google2016_unbreakable_1": 64.0,
+    # rust-symex pin was a different term shape's luck, not a target. That
+    # luck was Z3's non-incremental path (55-59 s, angr-vmi2l.340); the check
+    # now gets SOLVER1_BUDGET_MS there and reruns on the incremental core
+    # (mode_ladder_check, angr-vmi2l.345), which lands on 2.99-3.06 s in 5
+    # standalone runs. 3.5 clears that maximum by the ~15% in-gate load
+    # allowance the pins above settled on.
+    "google2016_unbreakable_1": 3.5,
     # angr-x6t9o. Bimodal (angr-5cx4r) *and* load-sensitive: 12 consecutive
     # ralph gate runs read 2.87-3.14s while standalone runs on the same commit
     # read 2.45-2.51s, because the gate always runs right after `cargo test

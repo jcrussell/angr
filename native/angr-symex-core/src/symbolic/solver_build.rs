@@ -7,7 +7,7 @@
 //! live in [`super::stats`].
 //!
 //! Crate-visible surface: [`build_solver`], [`build_solver_params`],
-//! [`timed_check`], [`sample_simplify_skip`]. The env-spec helpers
+//! [`timed_check`], [`mode_ladder_check`], [`sample_simplify_skip`]. The env-spec helpers
 //! (`tactic_spec`, `qfbv_smart_threshold`, `simplify_sample_stride`) and the
 //! [`TacticSpec`] enum stay private to this module.
 //!
@@ -172,6 +172,71 @@ pub(crate) fn timed_check(solver: &z3::Solver, site: CheckSite) -> z3::SatResult
         z3::SatResult::Unknown => Z3_TIMEOUT_COUNT.fetch_add(1, Ordering::Relaxed),
     };
     result
+}
+
+/// Budget, in ms, for Z3's non-incremental path before [`mode_ladder_check`]
+/// moves a solver to its incremental core.
+///
+/// A `z3::Solver` that has never been pushed and is checked without
+/// assumptions runs the combined solver's solver1 (the tactic path); once it
+/// has been pushed it runs solver2 (the incremental SMT core) for good.
+/// Neither wins everywhere: defcon2016quals_baby-re's eval takes milliseconds
+/// on solver1 and seconds on solver2, google2016_unbreakable_1's takes tens
+/// of seconds on solver1 and about one on solver2 (angr-vmi2l.345,
+/// memory `z3-incremental-vs-tactic-solver-mode`). Z3's own
+/// `solver2_timeout` falls back in the other order.
+pub(crate) const SOLVER1_BUDGET_MS: u32 = 1_000;
+
+/// Set only the solver's `timeout`; `Z3_solver_set_params` merges, so every
+/// other param it holds stays.
+fn set_check_timeout(solver: &z3::Solver, timeout_ms: u32) {
+    let mut params = z3::Params::new();
+    params.set_u32("timeout", timeout_ms);
+    solver.set_params(&params);
+}
+
+/// [`timed_check`] for a solver that may still be on Z3's non-incremental
+/// path. `incremental` records whether `solver` has left it (a push, a
+/// shared lineage solver, or an earlier ladder); `timeout_ms` is the
+/// configured budget for the whole check.
+///
+/// On the non-incremental path the check first runs capped at
+/// [`SOLVER1_BUDGET_MS`]. If that times out, an empty push/pop switches the
+/// solver to its incremental core and the check reruns with what is left of
+/// `timeout_ms`, so the pair never takes longer than one plain check. Any
+/// other outcome, including an `Unknown` that is not a timeout (an rlimit
+/// abort, incompleteness), is returned as is: `Unknown` stays `Unknown`
+/// (`invariant-z3-unknown-not-unsat`).
+pub(crate) fn mode_ladder_check(
+    solver: &z3::Solver,
+    site: CheckSite,
+    timeout_ms: u32,
+    incremental: &std::cell::Cell<bool>,
+) -> z3::SatResult {
+    if incremental.get() || timeout_ms <= SOLVER1_BUDGET_MS {
+        return timed_check(solver, site);
+    }
+    set_check_timeout(solver, SOLVER1_BUDGET_MS);
+    let start = std::time::Instant::now();
+    let first = timed_check(solver, site);
+    let timed_out = first.decided().is_none()
+        && solver
+            .get_reason_unknown()
+            .is_some_and(|reason| reason.contains("timeout") || reason.contains("canceled"));
+    let spent_ms = u32::try_from(start.elapsed().as_millis()).unwrap_or(u32::MAX);
+    let remaining_ms = timeout_ms.saturating_sub(spent_ms);
+    if !timed_out || remaining_ms == 0 {
+        set_check_timeout(solver, timeout_ms);
+        return first;
+    }
+    solver.push();
+    solver.pop(1);
+    incremental.set(true);
+    SOLVER_MODE_SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);
+    set_check_timeout(solver, remaining_ms);
+    let second = timed_check(solver, site);
+    set_check_timeout(solver, timeout_ms);
+    second
 }
 
 /// Single forcing-function for interpreting a Z3 `check()` outcome
@@ -518,5 +583,89 @@ mod extra_params_tests {
     #[test]
     fn empty_spec_yields_no_params() {
         assert!(parse_extra_params("").is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "test code: unwrap/expect are the idiomatic assertion form and are not input-reachable. The module `deny` overrides lib.rs's crate-wide `cfg_attr(test, allow(..))`, hence the explicit opt-out"
+)]
+mod mode_ladder_tests {
+    use super::{CheckSite, SOLVER1_BUDGET_MS, SatOutcome, build_solver, mode_ladder_check};
+    use crate::symbolic::SymContext;
+    use std::cell::Cell;
+    use z3::ast::BV;
+
+    /// Factor a 64-bit product into two non-trivial 32-bit halves: past any
+    /// small budget on either Z3 path, so every check here times out. (Two
+    /// factors both just under 2^32 would solve at once.)
+    fn assert_semiprime(solver: &z3::Solver, name: &str) {
+        let x = BV::new_const(format!("{name}_x"), 64);
+        let y = BV::new_const(format!("{name}_y"), 64);
+        let n = BV::from_u64(2_860_486_313u64 * 3_267_000_013u64, 64);
+        let one = BV::from_u64(1, 64);
+        let limit = BV::from_u64(u64::from(u32::MAX), 64);
+        solver.assert(x.bvmul(&y).eq(&n));
+        solver.assert(x.bvugt(&one));
+        solver.assert(y.bvugt(&one));
+        solver.assert(x.bvule(&limit));
+        solver.assert(y.bvule(&limit));
+    }
+
+    /// A timed-out capped attempt switches the solver to incremental and
+    /// reruns inside what is left of the budget, so the pair stays an
+    /// `Unknown` within about one configured timeout.
+    #[test]
+    fn capped_timeout_switches_to_incremental_within_budget() {
+        let timeout_ms = SOLVER1_BUDGET_MS + 500;
+        let solver = build_solver(timeout_ms);
+        assert_semiprime(&solver, "ladder_switch");
+        let incremental = Cell::new(false);
+        let start = std::time::Instant::now();
+        let result = mode_ladder_check(&solver, CheckSite::Satisfiable, timeout_ms, &incremental);
+        let elapsed = start.elapsed().as_millis();
+        assert_eq!(result.decided(), None);
+        assert!(incremental.get(), "a capped timeout must switch the solver");
+        assert!(
+            elapsed < u128::from(timeout_ms) + 1_000,
+            "the ladder took {elapsed} ms against a {timeout_ms} ms budget"
+        );
+    }
+
+    /// A decided check, and an `Unknown` that is not a timeout (an rlimit
+    /// abort), leave the solver on the non-incremental path.
+    #[test]
+    fn decided_and_rlimit_unknown_do_not_switch() {
+        let solver = build_solver(30_000);
+        let x = BV::new_const("ladder_easy_x", 8);
+        solver.assert(x.eq(BV::from_u64(7, 8)));
+        let incremental = Cell::new(false);
+        let easy = mode_ladder_check(&solver, CheckSite::Satisfiable, 30_000, &incremental);
+        assert_eq!(easy.decided(), Some(true));
+        assert!(!incremental.get());
+
+        let starved = build_solver(30_000);
+        assert_semiprime(&starved, "ladder_rlimit");
+        let mut params = z3::Params::new();
+        params.set_u32("rlimit", 1);
+        starved.set_params(&params);
+        let result = mode_ladder_check(&starved, CheckSite::Satisfiable, 30_000, &incremental);
+        assert_eq!(result.decided(), None);
+        assert!(!incremental.get(), "an rlimit abort is not a timeout");
+    }
+
+    /// A context push marks its solver incremental; a fork's fresh solver
+    /// starts on the non-incremental path again.
+    #[test]
+    fn push_marks_incremental_and_fork_resets() {
+        let ctx = SymContext::new();
+        assert!(!ctx.solver_incremental.get());
+        ctx.push();
+        ctx.pop();
+        assert!(ctx.solver_incremental.get());
+        let child = ctx.fork();
+        assert!(!child.solver_incremental.get());
     }
 }

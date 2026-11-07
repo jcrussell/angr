@@ -176,6 +176,11 @@ pub struct SymContext {
     /// `pub(super)` so `set_timeout` in `transaction_ops.rs`
     /// can re-apply params without forcing lazy materialization.
     pub(super) solver: Mutex<Option<z3::Solver>>,
+    /// Whether `solver` has left Z3's non-incremental path: set by a push
+    /// and by [`mode_ladder_check`].
+    /// A fresh solver (construction, or the cold start after `fork`) starts
+    /// on it, so both constructors reset this to `false` (angr-vmi2l.345).
+    pub(super) solver_incremental: Cell<bool>,
     /// Cached SAT result, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
     /// (slice 7, angr-wf6f) can read/write it.
@@ -341,6 +346,7 @@ impl SymContext {
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver: Mutex::new(Some(solver)),
+            solver_incremental: Cell::new(false),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
             alt_model_cache: RefCell::new(None),
