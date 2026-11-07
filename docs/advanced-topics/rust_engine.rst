@@ -1448,8 +1448,9 @@ The Python-side option set lives in
 ``get_state_options_py``); writing to ``state.options.add(X)`` through
 the proxy stores the value but does not change Rust behavior unless
 this matrix shows otherwise. Options Rust mirrors (``_NATIVE_SIMOPTIONS``,
-``STRICT_PAGE_ACCESS``, ``LAZY_SOLVES``, …) are read from the seed state
-once, so a later proxy or export write to one of them is advisory too.
+``STRICT_PAGE_ACCESS``, …) are read from the seed state once, so a later
+proxy or export write to one of them is advisory too. ``LAZY_SOLVES`` is
+the exception: it is read from the store before every run.
 That set and the ``globals`` dict beside it (``_py_state_globals``) are
 the state's one store: a proxy, the stash mirror ``mgr.active[i]``, every
 other export and a Python callback frame all read and write it, and a
@@ -1467,13 +1468,23 @@ Honored options
      - Where Rust reads it
      - Effect
    * - ``LAZY_SOLVES``
-     - ``rust_manager.py::_phase_activate`` (re-checked at ``explore()`` time)
-     - Calls ``set_lazy_solves(True)``; Rust skips per-block satisfiability
-       checks.
+     - ``rust_manager.py::_latch_lazy_solves``, from each state's options
+       store before every ``explore()`` / ``step()``, and per state in
+       ``_step_ids_once``
+     - Rust skips per-block satisfiability checks. The switch is
+       manager-wide, so it is set *and cleared* from the states about to
+       run; an ``explore()`` or ``step()`` over active states that disagree
+       hands a not-yet-stepped default-routed manager to Python and
+       otherwise raises ``NotImplementedError``.
    * - ``ZERO_FILL_UNCONSTRAINED_MEMORY``
-     - ``rust_manager.py::_phase_activate``
-     - Calls ``set_zero_fill_unconstrained(True)``; uninitialized memory
-       reads return ``BVV(0, n)`` instead of fresh symbols.
+     - ``rust_manager.py::_add_rust_state`` (per state); seed agreement in
+       ``_phase_activate``
+     - Uninitialized memory reads return ``BVV(0, n)`` instead of fresh
+       symbols. The page callbacks serve every state from one seed's memory,
+       so a ``RustExplorationManager`` whose seeds disagree raises; a
+       Rust-default ``simulation_manager()`` routes them to Python, and the
+       backend steps a state that differs from those it already holds on
+       Python.
    * - ``APPROXIMATE_MEMORY_INDICES``
      - ``rust_manager.py::_phase_activate`` (forwarded to
        ``configure_concretization_strategies``)

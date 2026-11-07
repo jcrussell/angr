@@ -128,6 +128,10 @@ def _explore_target(condition, static_addrs):
     return matches
 
 
+# SimOptions the Rust engine applies to a whole run rather than per state (angr-vmi2l.241).
+_MANAGER_WIDE_OPTIONS = ("LAZY_SOLVES", "ZERO_FILL_UNCONSTRAINED_MEMORY")
+
+
 class RustBackend(SimulationBackend):
     """Steps the states the Rust engine supports, one block per step.
 
@@ -201,6 +205,9 @@ class RustBackend(SimulationBackend):
         self._ownership = _LineageMarks()
         self._counters = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
         self._mgr: RustExplorationManager | None = None
+        # The ZERO_FILL_UNCONSTRAINED_MEMORY of every state claimed so far, which the private manager's seeds
+        # must agree on (RustExplorationManager._phase_activate); None before the first claim.
+        self._zero_fill: bool | None = None
         # Ids of the Rust states waiting in _PARKED.
         self._resident: set[int] = set()
         # The finalizer of the export each resident id was handed out as; it queues the id in
@@ -224,6 +231,8 @@ class RustBackend(SimulationBackend):
         self._simgr = weakref.ref(simgr)
         reason = self.decline_reason(simgr, state, successor_func, run_args)
         if reason is None:
+            if self._zero_fill is None:
+                self._zero_fill = "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options
             self._ownership.set(state, _OWNED)
             self._counters["claimed"] += 1
             return True, ""
@@ -259,6 +268,9 @@ class RustBackend(SimulationBackend):
         refused = self._option_refusals(state.options)
         if refused:
             return "state options not honored by the rust engine: " + ", ".join(refused)
+        if self._zero_fill not in (None, "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options):
+            # The private manager's page callbacks serve every state from one seed's memory (angr-vmi2l.241).
+            return "ZERO_FILL_UNCONSTRAINED_MEMORY differs from the states the rust engine already holds"
         events = _unsupported_inspect_events(state)
         if events:
             return "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
@@ -394,12 +406,18 @@ class RustBackend(SimulationBackend):
             (states if self.decline_reason(simgr, state, None, {}) is None else held).append(state)
         if not states:
             return False
+        if any(len({name in state.options for state in states}) > 1 for name in _MANAGER_WIDE_OPTIONS):
+            # One native run has one manager-wide setting of each; per-step routing steps each state under its own
+            # LAZY_SOLVES (RustExplorationManager._step_ids_once) and declines a differing zero fill (angr-vmi2l.241).
+            return False
         limiter = self._fast_path_limiter(simgr, stash, states)
         dfs = self._fast_path_dfs(simgr, stash, explorer)
         if limiter is False or dfs is False or (limiter is not None and dfs is not None):
             return False
         if held and (limiter is not None or dfs is not None):
             return False
+        if self._zero_fill is None:
+            self._zero_fill = "ZERO_FILL_UNCONSTRAINED_MEMORY" in states[0].options
         for state in states:
             self._ownership.set(state, _OWNED)
         self._explore_native(simgr, stash, states, explorer, limiter, dfs, n, held)

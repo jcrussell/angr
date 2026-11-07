@@ -518,6 +518,15 @@ def rust_engine_eligible(project, states, kwargs) -> tuple[bool, str]:
         if events:
             return False, "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
 
+    # The Rust engine applies these manager-wide (angr-vmi2l.241).
+    mixed = [
+        name
+        for name in ("LAZY_SOLVES", "ZERO_FILL_UNCONSTRAINED_MEMORY")
+        if len({name in getattr(state, "options", ()) for state in states or ()}) > 1
+    ]
+    if mixed:
+        return False, "state options set on only some seeds: " + ", ".join(mixed)
+
     return True, "rust engine supports this project's engine, state options, kwargs, and inspect breakpoints"
 
 
@@ -1709,6 +1718,9 @@ class RustExplorationManager(
         # state the pre-step produced). `explore()` consumes this once, then
         # drops the refs.
         self._preinit_seeds: list[tuple[int, angr.SimState, list[tuple[str, int | None]]]] = []
+        # Every seed's ZERO_FILL_UNCONSTRAINED_MEMORY, which they must agree on (_phase_activate); None before
+        # the first seed.
+        self._seed_zero_fill: bool | None = None
 
         # Lazy SimState references handed out by _get_stash_states. Keyed by
         # Rust state id so repeated stash reads return the same wrapper
@@ -1862,6 +1874,7 @@ class RustExplorationManager(
                 self._initial_seed_states = [_pristine_seed_copy(s) for s in active_states]
                 self._frontier_is_seeds = True
                 self._seed_of_state_id = {}
+            seed_concretization = None
             for seed_index, state in enumerate(active_states):
                 # Detect state options
                 if hasattr(state, "options"):
@@ -1874,12 +1887,18 @@ class RustExplorationManager(
                     try:
                         from angr import sim_options as o
 
-                        if o.LAZY_SOLVES in state.options:
-                            self._rust_mgr.set_lazy_solves(True)
-                            l.debug("Enabled lazy_solves mode from state options")
-                        if o.ZERO_FILL_UNCONSTRAINED_MEMORY in state.options:
-                            self._rust_mgr.set_zero_fill_unconstrained(True)
-                            l.debug("Enabled zero_fill_unconstrained from state options")
+                        # LAZY_SOLVES is latched from the stepped states at each run
+                        # (_latch_lazy_solves) and ZERO_FILL_UNCONSTRAINED_MEMORY per state
+                        # by _add_rust_state (angr-vmi2l.241). The page callbacks answer
+                        # from one seed's memory, though, so the seeds must agree on it.
+                        zero_fill = o.ZERO_FILL_UNCONSTRAINED_MEMORY in state.options
+                        if self._seed_zero_fill not in (None, zero_fill):
+                            raise NotImplementedError(
+                                "RustExplorationManager: ZERO_FILL_UNCONSTRAINED_MEMORY is set on some seeds "
+                                "and not others; the Rust engine's page callbacks serve every state from one "
+                                "seed's memory, so build one manager per setting."
+                            )
+                        self._seed_zero_fill = zero_fill
                         # Configure concretization strategies to match Python's
                         use_approx = o.APPROXIMATE_MEMORY_INDICES in state.options
                         sym_write = o.SYMBOLIC_WRITE_ADDRESSES in state.options
@@ -1900,7 +1919,7 @@ class RustExplorationManager(
                                     if hasattr(strat, "_limit"):
                                         write_limit = strat._limit
                                         break
-                        self._rust_mgr.configure_concretization_strategies(
+                        concretization = (
                             use_approx,
                             read_limit,
                             write_limit,
@@ -1908,6 +1927,16 @@ class RustExplorationManager(
                             avoid_multi_reads,
                             avoid_multi_writes,
                         )
+                        if seed_index and concretization != seed_concretization:
+                            # One manager-wide concretizer: a later seed must not overwrite an
+                            # earlier one's (angr-vmi2l.241).
+                            raise NotImplementedError(
+                                "RustExplorationManager: the seeds differ in their memory concretization "
+                                "options or strategy limits, which the Rust engine applies manager-wide; "
+                                "build one manager per configuration."
+                            )
+                        seed_concretization = concretization
+                        self._rust_mgr.configure_concretization_strategies(*concretization)
                         l.debug(
                             "Configured concretization: approx=%s, read_limit=%d, "
                             "write_limit=%d, sym_write=%s, avoid_reads=%s, "
@@ -4420,7 +4449,9 @@ class RustExplorationManager(
         # Get state IDs before adding (to find the new one)
         ids_before = set(self._rust_mgr.get_state_ids(stash))
 
-        # Add to Rust manager
+        # Add to Rust manager. add_state copies the manager's zero-fill switch onto the
+        # state's own memory, so set it from this state alone (angr-vmi2l.241).
+        self._rust_mgr.set_zero_fill_unconstrained("ZERO_FILL_UNCONSTRAINED_MEMORY" in angr_state.options)
         self._rust_mgr.add_state(stash, rust_state)
 
         # Get state IDs after adding to find the newly added state ID
@@ -5098,6 +5129,7 @@ class RustExplorationManager(
         unhonored += [f"stash={stash!r}"] if stash != "active" else []
         unhonored += ["cfg"] if cfg is not None else []
         unhonored += ["avoid_priority"] if avoid_priority else []
+        unhonored += self._mixed_lazy_solves()
         if self._refuse_or_hand_off("explore", unhonored):
             if until is not None:
                 kwargs["until"] = until
@@ -5172,21 +5204,8 @@ class RustExplorationManager(
         # Set num_find
         self._rust_mgr.set_num_find(num_find)
 
-        # Re-check state options that may have been set after construction
-        # (e.g., sm.one_active.options.add(LAZY_SOLVES) after simgr creation)
-        try:
-            from angr import sim_options as o
-
-            for state in self._state_cache.values():
-                if hasattr(state, "options") and o.LAZY_SOLVES in state.options:
-                    self._rust_mgr.set_lazy_solves(True)
-                    l.debug("Enabled lazy_solves from cached state options at explore() time")
-                    break
-        except (ImportError, AttributeError):
-            # cat-(a) EXPECTED CONTROL FLOW: sim_options unavailable or
-            # LAZY_SOLVES symbol absent in this angr build; lazy_solves stays
-            # at the value set during construction.
-            pass
+        # Options added or removed since construction count (angr-vmi2l.241).
+        self._latch_lazy_solves(self._rust_mgr.get_state_ids("active"))
 
         # Reset solver profiling stats for this exploration run
         try:
@@ -6364,10 +6383,12 @@ class RustExplorationManager(
             Self, for chaining.
         """
         unhonored = sorted(k for k, v in kwargs.items() if not (k == "stash" and v == "active"))
+        unhonored += self._mixed_lazy_solves()
         if self._refuse_or_hand_off("step", unhonored):
             for _ in range(n):
                 self.step(**kwargs)
             return self
+        self._latch_lazy_solves(self._rust_mgr.get_state_ids("active"))
 
         # Re-entry into Rust execution invalidates the state-export cache:
         # any previously-cached Python mirrors are about to go stale.
@@ -6521,6 +6542,8 @@ class RustExplorationManager(
         try:
             for sid in wanted:
                 rust.move_state(sid, _STEP_ROUND_QUEUE, "active")
+                # Each state steps alone, so it steps under its own LAZY_SOLVES.
+                self._latch_lazy_solves([sid])
                 self._stats_ffi_crossings += 1
                 event = rust.run(1)
                 rust.sync_state_index()
@@ -6841,6 +6864,32 @@ class RustExplorationManager(
                 self._hand_off_to_python(python_reason, stashes=self._handoff_stashes())
                 return self.use_technique(technique)
         return use_technique(self, technique, **kwargs)
+
+    def _mixed_lazy_solves(self) -> list[str]:
+        """``["LAZY_SOLVES on only some active states"]`` when the active states disagree on it, else ``[]``.
+
+        Rust's lazy-solves switch is manager-wide (``set_lazy_solves``), so a run over states that disagree would
+        prune one side's forks as the other side asks (angr-vmi2l.241). Reads each state's options store, after
+        taking in what a stash mirror gained or lost.
+        """
+        self._reconcile_mirror_options()
+        if len(self._lazy_solves_of(self._rust_mgr.get_state_ids("active"))) > 1:
+            return ["LAZY_SOLVES on only some active states"]
+        return []
+
+    def _lazy_solves_of(self, state_ids) -> set[bool]:
+        """Whether each of ``state_ids`` has LAZY_SOLVES in its options store, as a set."""
+        return {"LAZY_SOLVES" in self.get_state_options_py(sid) for sid in state_ids}
+
+    def _latch_lazy_solves(self, state_ids) -> None:
+        """Set Rust's manager-wide lazy-solves switch to what ``state_ids`` agree on, on or off.
+
+        Called before every run, so an option added or removed since construction counts. A caller that steps
+        states which disagree refuses first (:meth:`_mixed_lazy_solves`); with no states it is left as it is.
+        """
+        values = self._lazy_solves_of(state_ids)
+        if len(values) == 1:
+            self._rust_mgr.set_lazy_solves(values.pop())
 
     def _refuse_or_hand_off(self, method: str, unhonored: list[str]) -> bool:
         """Fail loudly on SimulationManager arguments *method* cannot honor; True when the manager handed off.
