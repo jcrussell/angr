@@ -1879,6 +1879,9 @@ class RustExplorationManager(
         # nested inspect dispatch on the same manager. uq4n.4 covers
         # the full guard test.
         self._inspect_dispatch_depth = 0
+        # (event, attr) pairs whose ignored BP write already warned, so
+        # `_warn_ignored_inspect_writes` logs each once (angr-vmi2l.206).
+        self._inspect_ignored_write_warned: set[tuple[str, str]] = set()
         # Lazy RustInspectProxy instance (one per manager, shared across proxies).
         self._inspect_proxy: RustInspectProxy | None = None
 
@@ -3057,6 +3060,8 @@ class RustExplorationManager(
         """
         try:
             proxy = self._dispatch_inspect_event(event_type, state_id, when, **attrs)
+            if proxy is not None:
+                self._warn_ignored_inspect_writes(proxy, event_type, when, _inject, attrs)
             if _inject is not None and proxy is not None:
                 mutated = getattr(proxy, _inject)
                 if mutated is not _original:
@@ -3068,6 +3073,31 @@ class RustExplorationManager(
             # injected value) is lost and execution goes on without it.
             l.warning("inspect %s dispatch failed: %s: %s", event_type, type(e).__name__, e)
         return None
+
+    def _warn_ignored_inspect_writes(self, proxy, event_type: str, when: str, inject, attrs: dict) -> None:
+        """Warn once per (event, attr) when a BP replaced an attr nobody reads back.
+
+        Python angr reads back attrs such as ``reg_write_expr`` or
+        ``expr_result`` after a BP fires; the Rust engine reads back only
+        the one `inject` attr (rust_engine.rst "Read-only (mutations
+        ignored)"), so any other replaced attr would otherwise drop with no
+        signal (angr-vmi2l.206). Same identity check as the write-back: an
+        in-place mutation of a staged object is not seen.
+        """
+        for name, original in attrs.items():
+            if name == inject or getattr(proxy, name, original) is original:
+                continue
+            key = (event_type, name)
+            if key in self._inspect_ignored_write_warned:
+                continue
+            self._inspect_ignored_write_warned.add(key)
+            l.warning(
+                "inspect %s (when=%s): the BP's write to %s is ignored by the Rust engine, "
+                "which keeps the original value (this warning is shown once per event and attribute)",
+                event_type,
+                when,
+                name,
+            )
 
     def _cb_inspect_mem_read(
         self,

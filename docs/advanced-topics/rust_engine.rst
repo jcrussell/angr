@@ -2143,6 +2143,10 @@ the Rust dispatch site (``call_inspect_mem_read`` /
 * ``simprocedure_result`` — always ``None``; not capturable in this MVP.
 * All remaining attributes on every other event are read-only.
 
+A BP that replaces a read-only attribute (the same identity check) logs a
+warning naming the event and attribute, once per pair per manager, since
+Python angr would have used the new value (angr-vmi2l.206).
+
 Unsupported events
 ~~~~~~~~~~~~~~~~~~
 
