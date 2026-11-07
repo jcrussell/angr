@@ -157,6 +157,16 @@ memory onto the proxy by default; registers and constraints keep
 diff-and-push at the callback boundary. The write-through contract is
 in :doc:`rust_engine`.
 
+**Adopting the source manager's core for a multi-stage explore was
+removed** (angr-vmi2l.2). A manager built from another manager's found
+state used to take over that manager's Rust core and reset it to the one
+state, which emptied the source manager's stashes, broke its sibling
+found states and dropped the new constructor's settings. It was kept to
+avoid a lossy constraint transfer between managers. ``_add_rust_state``
+now copies the state into a fresh core and moves its constraints by Z3
+pointer, so the stages share no core. ``reset_for_stage`` stays as a Rust
+primitive with no Python caller.
+
 Engine selection
 ----------------
 

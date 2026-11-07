@@ -1395,12 +1395,14 @@ class RustExplorationManager(
                 self._parallel_workers_env_value = max(1, int(os.environ["RUST_PARALLEL_WORKERS"]))
             except (ValueError, TypeError):
                 self._parallel_workers_env_value = 1
-        # Init pipeline sequenced into four named phases (angr-wqao.4).
+        # Init pipeline sequenced into named phases (angr-wqao.4).
         # boot:       construct the Rust manager + apply basic config.
         # config:     resolve gate flags, init counters/caches, register
         #             callbacks + simprocedures.
-        # link_state: multi-stage-reuse short-circuit (Python SimState↔Rust id).
-        # activate:   add initial states to the Rust 'active' stash.
+        # activate:   add initial states to the Rust 'active' stash. A state
+        #             found by another manager is copied in, never adopted
+        #             with that manager's core (angr-vmi2l.2):
+        #             ``_add_rust_state`` moves its constraints by Z3 pointer.
         self._phase_boot(
             project,
             save_unconstrained,
@@ -1432,8 +1434,6 @@ class RustExplorationManager(
                 self._pending_symlinks[str(link)] = (
                     target if isinstance(target, (bytes, bytearray)) else str(target).encode()
                 )
-        if self._phase_link_state(active_states):
-            return
         self._phase_activate(active_states)
 
     def _phase_boot(
@@ -1790,47 +1790,8 @@ class RustExplorationManager(
         # Used to restore stdin content on found states that were forked purely in Rust.
         self._stdin_content: list = []
 
-    def _phase_link_state(self, active_states):
-        """Phase 3 (link_state): multi-stage-reuse short-circuit.
-
-        Returns True when an existing Rust manager was reused (init should
-        stop here), False when a fresh manager must add its initial states.
-        """
-        # Multi-stage explore reuse: if the initial state came from a previous
-        # RustExplorationManager for the same project, reuse the old Rust manager
-        # instead of creating a new one. This avoids lossy constraint transfer
-        # that fails after many stages (Z3 dedup causes UNSAT, claripy loses constraints).
-        self._reused_from = None
-        if active_states:
-            _single = active_states[0] if isinstance(active_states, (list, tuple)) else active_states
-            old_mgr = getattr(getattr(_single, "scratch", None), "rust_mgr", None)
-            old_state_id = getattr(getattr(_single, "scratch", None), "rust_found_state_id", None)
-            if old_mgr is not None and old_state_id is not None:
-                try:
-                    old_mgr.reset_for_stage(old_state_id)
-                    # Reuse the old Rust manager — it has the correct solver state
-                    self._rust_mgr = old_mgr
-                    self._reused_from = old_state_id
-                    # Cache the angr state with the reused state ID
-                    self._state_cache[old_state_id] = _single
-                    self._state_roots[old_state_id] = old_state_id
-                    l.debug(f"Multi-stage reuse: reset manager for state {old_state_id}")
-                    # Skip ALL remaining init — callbacks, binary, simprocedures
-                    # are already set up on the old manager
-                    self._perf_stats.set_init_phase("total", time.perf_counter_ns() - self._init_start)
-                    return True
-                except MemoryError:
-                    raise
-                except Exception as e:
-                    # cat-(b) FALLBACK WITH LOSS: multi-stage manager reuse failed;
-                    # falls back to building a fresh Rust manager from this state.
-                    # Already debug-logs the cause.
-                    l.debug(f"Multi-stage reuse failed, falling back to normal init: {e}")
-
-        return False
-
     def _phase_activate(self, active_states):
-        """Phase 4 (activate): add initial states to the Rust 'active' stash."""
+        """Phase 3 (activate): add initial states to the Rust 'active' stash."""
         # Add initial states
         if active_states:
             # Handle single state or list of states
@@ -4440,8 +4401,8 @@ class RustExplorationManager(
             # (angr-tvpk). Two paths,
             # mutually exclusive:
             #   - Cross-manager transfer (state came from a previous
-            #     RustExplorationManager and the early-reuse branch in __init__
-            #     did NOT take): copy Z3 ASTs by pointer from the old solver.
+            #     RustExplorationManager): copy Z3 ASTs by pointer from the
+            #     old solver.
             #     Lossless and avoids a claripy round-trip.
             #   - Fresh Python state: install angr_state.solver.constraints.
             # Removed: the claripy round-trip via export_state_constraints
