@@ -922,7 +922,9 @@ fn handle_native_resume_core(
             if let Some(rv) = ret_val {
                 ctx.cc.write_proc_return(&mut state, rv);
             }
-            state.set_pc(frame.caller_return_addr);
+            // Unwinds the frame of the call into the hook, which the guest
+            // routine's `ret` onto the sentinel never popped (angr-vmi2l.44).
+            state.return_from_procedure(frame.caller_return_addr);
         }
         Ok(ProcOutcome::CallAndResume {
             target,

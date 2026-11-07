@@ -3131,7 +3131,7 @@ class TestNativePthreadOnce:
         main = call_once() + call_once() + bytes([0xEB, 0xFE])  # jmp $
         return func + main, self.LOAD + len(func)
 
-    def test_pthread_once_runs_init_exactly_once(self):
+    def _run(self, max_steps: int) -> tuple[RustExplorationManager, bytes, int]:
         from angr import claripy
 
         blob, main_addr = self._blob()
@@ -3152,8 +3152,12 @@ class TestNativePthreadOnce:
         state.memory.store(self.MARKER, claripy.BVV(0, 8))
 
         mgr = RustExplorationManager(proj, [state])
+        mgr.run(max_steps=max_steps)
+        return mgr, blob, main_addr
+
+    def test_pthread_once_runs_init_exactly_once(self):
         # main: 2 calls; each: pthread_once + (first only) func + resume; self-loop.
-        mgr.run(max_steps=40)
+        mgr, blob, main_addr = self._run(max_steps=40)
 
         stats = mgr._rust_mgr.native_procedure_stats()
         assert stats["call_counts"].get("pthread_once", 0) >= 1, (
@@ -3175,6 +3179,17 @@ class TestNativePthreadOnce:
         # (the self-loop), not stranded at the sentinel or in func.
         pc = s.solver.eval(s.regs.pc)
         assert main_addr <= pc < self.LOAD + len(blob), f"control must resume in main after the sub-call; pc={pc:#x}"
+
+    def test_sub_call_return_unwinds_the_hooked_call_frame(self):
+        # The first call returns through the resume sentinel; its final return
+        # must unwind the `call rax` frame like a plain return does, so at the
+        # self-loop the call stack holds no frame from either call
+        # (angr-vmi2l.44).
+        mgr, blob, _ = self._run(max_steps=12)
+        self_loop = self.LOAD + len(blob) - 2  # the trailing `jmp $`
+        [sid] = mgr._rust_mgr.get_state_ids("active")
+        assert mgr.active_proxies()[0].addr == self_loop
+        assert list(mgr._rust_mgr.get_state_call_stack(sid)) == []
 
 
 class TestReturnUnconstrainedStub:

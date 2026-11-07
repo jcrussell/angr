@@ -211,7 +211,9 @@ impl RustExplorationManager {
                 // Resume the original caller. The guest routine's `ret` already
                 // consumed the sentinel return slot (stack-return ABI advances
                 // SP), so unlike the fresh-entry return path we do NOT adjust SP.
-                state.set_pc(frame.caller_return_addr);
+                // The unwind drops the frame of the call into the hook, which
+                // that `ret` onto the sentinel never popped (angr-vmi2l.44).
+                state.return_from_procedure(frame.caller_return_addr);
             }
             Ok(ProcOutcome::CallAndResume {
                 target,

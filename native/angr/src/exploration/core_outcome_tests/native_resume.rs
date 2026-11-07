@@ -159,13 +159,22 @@ fn push_resume_frame(state: &mut RustSimState, resume_tag: u32, proc_name: &str)
 }
 
 /// Happy path: `ProcOutcome::Return` lands the state at the *frame's*
-/// `caller_return_addr` (not [sp]), writes the return register, and drains the
-/// resume stack.
+/// `caller_return_addr` (not [sp]), writes the return register, drains the
+/// resume stack, and unwinds the call frame of the call into the hook, which
+/// the guest routine's `ret` onto the sentinel never popped (angr-vmi2l.44).
 #[test]
 fn native_resume_core_returns_to_caller_and_drains_frame() {
+    const OUTER_RET: u64 = 0x40_9000;
     pyo3::Python::initialize();
     pyo3::Python::attach(|_py| {
         let outcome = dispatch_native_resume(|state| {
+            state.push_call(0x40_8000, 0x40_1000, OUTER_RET, 0x7fff_0100);
+            state.push_call(
+                RESUME_CALLER_RET - 2,
+                0x50_0000,
+                RESUME_CALLER_RET,
+                0x7fff_0000,
+            );
             push_resume_frame(state, ResumeTestProc::TAG_RETURN, "resume_core_test");
         });
         match outcome.ret {
@@ -174,6 +183,8 @@ fn native_resume_core_returns_to_caller_and_drains_frame() {
                 let out = &succ[0].0;
                 assert_eq!(out.pc(), RESUME_CALLER_RET);
                 assert!(out.native_resume_stack().is_empty(), "frame popped");
+                let returns: Vec<u64> = out.call_stack().iter().map(|f| f.return_addr).collect();
+                assert_eq!(returns, [OUTER_RET], "hook call frame unwound, outer kept");
                 // saved_arg + 1 = 42 proves resume() ran with the saved args.
                 let ret_reg = RustExplorationManager::new("amd64", None)
                     .unwrap()
