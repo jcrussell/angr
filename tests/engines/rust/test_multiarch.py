@@ -777,6 +777,32 @@ class TestMultiArchSupport:
         )
 
     @pytest.mark.parametrize(
+        ("d1", "expected"),
+        [
+            (struct.unpack("<Q", struct.pack("<d", 2.0))[0], struct.unpack("<Q", struct.pack("<d", 1.0))[0]),
+            (struct.unpack("<Q", struct.pack("<d", 1.0))[0], struct.unpack("<Q", struct.pack("<d", 2.0))[0]),
+            (0, 0x7FE0_0000_0000_0000),
+            (1, 0x7FE0_0000_0000_0000),
+            (0xFFF0_0000_0000_0000, 0x8000_0000_0000_0000),
+        ],
+    )
+    def test_aarch64_frecpx_matches_hardware(self, d1, expected):
+        """``frecpx d0, d1`` lifts to ``Iop_RecpExpF64``, which the Python
+        engine cannot run, so the expected values are ARM ``FPRecpX``:
+        ``sign : NOT(exp) : 0``, and ``sign : 0x7FE : 0`` for a zero or
+        denormal (angr-vmi2l.68).
+        """
+        code = struct.pack("<II", 0x5EE1F820, 0x14000000)  # frecpx d0, d1 ; b .
+        proj = angr.load_shellcode(code, arch="AARCH64", load_address=0x1000)
+        st = proj.factory.blank_state(addr=0x1000)
+        st.regs.d1 = d1
+        st.regs.fpcr = 0
+        mgr = RustExplorationManager(proj, [st])
+        mgr.explore(find=0x1004, max_steps=5)
+        assert len(mgr.found) == 1, mgr.stash_counts()
+        assert mgr.found[0].solver.eval(mgr.found[0].regs.d0) == expected
+
+    @pytest.mark.parametrize(
         ("arch_name", "shellcode_hex", "width", "src_regs", "dst_regs"),
         [
             # vmov d0, d1 ; vmov d2, d31 ; b .   (vmov Dd, Dm == vorr Dd, Dm, Dm)

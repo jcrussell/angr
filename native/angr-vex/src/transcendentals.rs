@@ -151,48 +151,33 @@ pub fn pins_triop(opcode: u32) -> bool {
     )
 }
 
-/// IEEE 754 reciprocal exponent (ARM AArch64 FRECPX semantics).
-/// Returns 2^(-Exp(x)) preserving sign; special-cases NaN/0/Inf per the
-/// architecture reference.
-fn recip_exp_f64(x: f64) -> f64 {
-    if x.is_nan() {
-        return f64::NAN;
+/// ARM `FPRecpX` (AArch64 `frecpx`) on the raw bits of an IEEE binary float
+/// with `exp_bits` exponent and `frac_bits` fraction bits. A NaN returns the
+/// input quieted (sign and payload kept); an exponent field of zero (zero or
+/// denormal) gives `sign : Ones(exp_bits)-1 : 0`; anything else, infinities
+/// included, gives `sign : NOT(exp) : 0`. Exact bit arithmetic, no rounding.
+fn recip_exp_bits(bits: u64, exp_bits: u32, frac_bits: u32) -> u64 {
+    let exp_mask = (1u64 << exp_bits) - 1;
+    let frac_mask = (1u64 << frac_bits) - 1;
+    let exp = (bits >> frac_bits) & exp_mask;
+    if exp == exp_mask && bits & frac_mask != 0 {
+        return bits | (1u64 << (frac_bits - 1));
     }
-    if x == 0.0 {
-        return f64::INFINITY.copysign(x);
-    }
-    if x.is_infinite() {
-        return 0.0_f64.copysign(x);
-    }
-    let bits = x.to_bits();
-    let biased = ((bits >> 52) & 0x7ff) as i32;
-    let unbiased = if biased == 0 {
-        // Subnormal — treat as smallest normal exponent for the estimate.
-        -1022
+    let sign = bits & (1u64 << (exp_bits + frac_bits));
+    let new_exp = if exp == 0 {
+        exp_mask - 1
     } else {
-        biased - 1023
+        !exp & exp_mask
     };
-    let new_biased = ((1023 - unbiased).clamp(0, 0x7fe)) as u64;
-    let sign = bits & 0x8000_0000_0000_0000;
-    f64::from_bits(sign | (new_biased << 52))
+    sign | (new_exp << frac_bits)
+}
+
+fn recip_exp_f64(x: f64) -> f64 {
+    f64::from_bits(recip_exp_bits(x.to_bits(), 11, 52))
 }
 
 fn recip_exp_f32(x: f32) -> f32 {
-    if x.is_nan() {
-        return f32::NAN;
-    }
-    if x == 0.0 {
-        return f32::INFINITY.copysign(x);
-    }
-    if x.is_infinite() {
-        return 0.0_f32.copysign(x);
-    }
-    let bits = x.to_bits();
-    let biased = ((bits >> 23) & 0xff) as i32;
-    let unbiased = if biased == 0 { -126 } else { biased - 127 };
-    let new_biased = ((127 - unbiased).clamp(0, 0xfe)) as u32;
-    let sign = bits & 0x8000_0000;
-    f32::from_bits(sign | (new_biased << 23))
+    f32::from_bits(recip_exp_bits(u64::from(x.to_bits()), 8, 23) as u32)
 }
 
 test_submod!("transcendentals_tests.rs" => tests);

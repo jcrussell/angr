@@ -6,17 +6,11 @@ use super::*;
 fn bv64(f: f64) -> RustBV {
     RustBV::concrete(f.to_bits() as u128, 64)
 }
-fn bv32(f: f32) -> RustBV {
-    RustBV::concrete(f.to_bits() as u128, 32)
-}
 fn rm() -> RustBV {
     RustBV::concrete(0, 32)
 }
 fn extract_f64(bv: RustBV) -> f64 {
     f64::from_bits(bv.as_u128().unwrap() as u64)
-}
-fn extract_f32(bv: RustBV) -> f32 {
-    f32::from_bits(bv.as_u128().unwrap() as u32)
 }
 
 fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
@@ -104,18 +98,32 @@ fn unknown_opcode_returns_none() {
 
 #[test]
 fn recip_exp_specials() {
-    // 2.0 → exponent 1 → 2^-1 = 0.5
-    let r = try_concrete_binop_rm(IOP_RECPEXP_F64, &rm(), &bv64(2.0)).unwrap();
-    assert_eq!(extract_f64(r), 0.5);
-    // 4.0 → exponent 2 → 2^-2 = 0.25
-    let r = try_concrete_binop_rm(IOP_RECPEXP_F64, &rm(), &bv64(4.0)).unwrap();
-    assert_eq!(extract_f64(r), 0.25);
-    // 0 → +inf
-    let r = try_concrete_binop_rm(IOP_RECPEXP_F64, &rm(), &bv64(0.0)).unwrap();
-    assert_eq!(extract_f64(r), f64::INFINITY);
-    // f32: 8.0 → exponent 3 → 2^-3 = 0.125
-    let r = try_concrete_binop_rm(IOP_RECPEXP_F32, &rm(), &bv32(8.0)).unwrap();
-    assert_eq!(extract_f32(r), 0.125);
+    // ARM FPRecpX (angr-vmi2l.68): sign : NOT(exp) : 0, exp 0 → Ones-1.
+    let f64_case = |x: u64| {
+        let r = try_concrete_binop_rm(IOP_RECPEXP_F64, &rm(), &RustBV::concrete(u128::from(x), 64));
+        r.unwrap().as_u128().unwrap() as u64
+    };
+    assert_eq!(f64_case(2.0f64.to_bits()), 1.0f64.to_bits());
+    assert_eq!(f64_case(1.0f64.to_bits()), 2.0f64.to_bits());
+    assert_eq!(f64_case(4.0f64.to_bits()), 0.5f64.to_bits());
+    assert_eq!(f64_case(0.0f64.to_bits()), 0x7FE0_0000_0000_0000);
+    assert_eq!(f64_case((-0.0f64).to_bits()), 0xFFE0_0000_0000_0000);
+    // Smallest denormal: exponent field 0 → 2^1023.
+    assert_eq!(f64_case(1), 0x7FE0_0000_0000_0000);
+    assert_eq!(f64_case(f64::INFINITY.to_bits()), 0);
+    assert_eq!(f64_case(f64::NEG_INFINITY.to_bits()), 0x8000_0000_0000_0000);
+    // Signalling NaN with payload 1, negative: quieted, payload and sign kept.
+    assert_eq!(f64_case(0xFFF0_0000_0000_0001), 0xFFF8_0000_0000_0001);
+
+    let f32_case = |x: u32| {
+        let r = try_concrete_binop_rm(IOP_RECPEXP_F32, &rm(), &RustBV::concrete(u128::from(x), 32));
+        r.unwrap().as_u128().unwrap() as u32
+    };
+    assert_eq!(f32_case(8.0f32.to_bits()), 0.25f32.to_bits());
+    assert_eq!(f32_case(0.0f32.to_bits()), 0x7F00_0000);
+    assert_eq!(f32_case(1), 0x7F00_0000);
+    assert_eq!(f32_case(f32::NEG_INFINITY.to_bits()), 0x8000_0000);
+    assert_eq!(f32_case(0x7F80_0001), 0x7FC0_0001);
 }
 
 /// angr-9ke6b.233 end-to-end: the pyvex opcode *string* must reach the libm
