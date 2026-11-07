@@ -35,6 +35,21 @@ if TYPE_CHECKING:
 l = logging.getLogger(name=__name__)
 
 
+def _as_sim_state(thing) -> SimState | None:
+    """*thing* as a SimState to seed a SimulationManager, or None when it is not one.
+
+    A ``RustExplorationManager`` stash entry is a ``_LazySimStateRef``, which is not a ``SimState``; it seeds a manager
+    as the SimState it materializes, as a Python-engine stash entry would (angr-vmi2l.19).
+    """
+    if isinstance(thing, SimState):
+        return thing
+    from angr.exploration.rust_state_export import _LazySimStateRef  # pylint:disable=import-outside-toplevel
+
+    if isinstance(thing, _LazySimStateRef):
+        return thing._materialize()
+    return None
+
+
 class AngrObjectFactory:
     """
     This factory provides access to important analysis elements.
@@ -235,10 +250,11 @@ class AngrObjectFactory:
         if thing is None:
             thing = [self.entry_state()]
         elif isinstance(thing, (list, tuple)):
-            if any(not isinstance(val, SimState) for val in thing):
+            thing = [_as_sim_state(val) for val in thing]
+            if any(val is None for val in thing):
                 raise AngrError("Bad type to initialize SimulationManager")
-        elif isinstance(thing, SimState):
-            thing = [thing]
+        elif (state := _as_sim_state(thing)) is not None:
+            thing = [state]
         else:
             raise AngrError(f"BadType to initialize SimulationManager: {thing!r}")
 
