@@ -832,6 +832,26 @@ fn deallocate_null_addr_returns_einval() {
 }
 
 #[test]
+fn deallocate_end_wrapping_to_zero_returns_einval() {
+    // deallocate.py computes `addr + length` as a 32-bit BV: 0x2000 +
+    // 0xFFFFE000 wraps to 0, so it returns EINVAL and unmaps nothing.
+    let h = NativeDeallocateSyscall;
+    let mut state = x86_state_with_buf();
+    let outcome = h
+        .call(
+            &mut state,
+            &[RustBV::concrete(0x2000, 32), RustBV::concrete(0xFFFF_E000, 32)],
+        )
+        .expect("ok");
+    assert!(matches!(
+        outcome,
+        SyscallOutcome::Continue { ret } if ret == CGC_EINVAL
+    ));
+    assert!(state.memory().is_mapped(0x2000u64));
+    assert!(state.cgc_sinkholes().is_empty());
+}
+
+#[test]
 fn deallocate_unmaps_region_and_records_sinkhole() {
     let h = NativeDeallocateSyscall;
     let mut state = x86_state_with_buf();

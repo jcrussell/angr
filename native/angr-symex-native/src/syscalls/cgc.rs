@@ -608,11 +608,15 @@ impl NativeSyscall for NativeDeallocateSyscall {
         if addr & PAGE_MASK != 0 || length == 0 || addr == 0 {
             return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
         }
-        let end_excl = match addr.checked_add(length) {
-            Some(v) => v,
-            None => return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL }),
+        // deallocate.py adds `addr + length` as an arch-width BV, so a sum
+        // of exactly 2^width wraps to 0 and is EINVAL (angr-vmi2l.143).
+        let width = args[0].width();
+        let word_mask = if width >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << width) - 1
         };
-        if end_excl == 0 {
+        if addr.wrapping_add(length) & word_mask == 0 {
             return Ok(SyscallOutcome::Continue { ret: CGC_EINVAL });
         }
 
@@ -624,9 +628,9 @@ impl NativeSyscall for NativeDeallocateSyscall {
         // as a no-op.
         let mut allowed = 0u64;
         while allowed < aligned_length {
-            // wrapping_add: aligned_length rounds length up to the next page,
-            // so addr+allowed can exceed the addr.checked_add(length) bound
-            // already validated above by up to one page.
+            // wrapping_add: like deallocate.py's page walk, the probe is
+            // not reduced to the arch width, and aligned_length rounds
+            // length up to the next page.
             let probe = addr.wrapping_add(allowed);
             if !state.memory().is_mapped(probe) {
                 break;
