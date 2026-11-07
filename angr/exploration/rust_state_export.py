@@ -554,7 +554,7 @@ class RustSolverFallback:
             # _sync_cached_state re-runs), and the old instance's cached fork
             # was captured BEFORE that stepping — so it must be refreshed, not
             # left stale (angr-hv4lt.9).
-            existing._rebind_for_resync(self._state_id)
+            existing._rebind_for_resync(self._state_id, self._rust_mgr)
             return
         setattr(solver, self._ATTACH_FLAG, True)
         setattr(solver, self._INSTANCE_ATTR, self)
@@ -564,7 +564,7 @@ class RustSolverFallback:
         solver.max = self.max
         solver.satisfiable = self.satisfiable
 
-    def _rebind_for_resync(self, state_id):
+    def _rebind_for_resync(self, state_id, rust_mgr):
         """Refresh this already-attached fallback for a re-synced state.
 
         Called when ``_sync_cached_state`` re-attaches for a state_id whose
@@ -572,7 +572,10 @@ class RustSolverFallback:
         same id, invisible to the Python mirror). Drops the
         cached fork so the next eval/min/max/satisfiable re-forks from the
         CURRENT Rust state, and rewinds the replay cursor so all caller-added
-        Python constraints are re-applied onto the fresh fork.
+        Python constraints are re-applied onto the fresh fork. ``rust_mgr`` is
+        the core that now holds ``state_id``: a state imported from another
+        manager is re-attached to the importing core (angr-f4ldp), and keeping
+        the source core would fork the wrong state and keep that core alive.
         """
         ctx = self.__dict__.get("_cached_rust_ctx")
         if ctx is not None:
@@ -584,6 +587,7 @@ class RustSolverFallback:
             self._cached_rust_ctx = None
             self._cached_rust_ctx_owner = None
         self._state_id = state_id
+        self._rust_mgr = rust_mgr
         self._synced_constraint_count = self._initial_constraint_count
 
     def _get_rust_ctx(self):

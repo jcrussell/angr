@@ -188,6 +188,27 @@ def _options_on(state) -> set:
     return {name for name, value in state.options._options.items() if value is True}
 
 
+def _pristine_seed_copy(state):
+    """A copy of seed ``state`` with plugins of its own, for ``_initial_seed_states``.
+
+    A seed exported by another manager is a live view of that manager's Rust
+    state, so a plain copy kept its proxies, and through them the source manager
+    and its core, alive for as long as this manager lives. A multi-stage loop
+    (``simgr = factory.simgr(simgr.found[0])``) then kept every earlier stage's
+    manager alive and ran out of memory (angr-f4ldp). The copy gets a Python
+    solver holding the Rust path constraints (``rust_solver=False``), since a
+    ``RustSolverFallback`` would hold the source core too.
+    """
+    copy = state.copy()
+    binding = binding_of(copy)
+    if binding is not None:
+        exporter = getattr(binding.owner, "manager", None)
+        if exporter is None:
+            raise SimStateError(f"cannot add {state!r}: it is a view of a Rust state whose manager is gone")
+        exporter._detach_export_proxies(copy, binding.state_id, rust_solver=False)
+    return copy
+
+
 def _is_rust_memory_proxy(plugin) -> bool:
     """True when ``plugin`` is a ``RustMemoryProxy`` (the callback state's memory).
 
@@ -1810,7 +1831,7 @@ class RustExplorationManager(
             # re-seeding (the retry passes copies of these and must not
             # overwrite the pristine originals).
             if not getattr(self, "_phase2_reseeding", False):
-                self._initial_seed_states = [s.copy() for s in active_states]
+                self._initial_seed_states = [_pristine_seed_copy(s) for s in active_states]
                 self._frontier_is_seeds = True
                 self._seed_of_state_id = {}
             for seed_index, state in enumerate(active_states):
@@ -4425,6 +4446,11 @@ class RustExplorationManager(
                             f"Rust manager (state {old_state_id}), sat={sat}"
                         )
                         installed = True
+                    # The mirror cached below now stands for actual_state_id:
+                    # point its solver fallback and the scratch transfer
+                    # attributes at this core, or they keep the source core
+                    # alive and answer for the source state (angr-f4ldp).
+                    self._attach_rust_solver_fallback(angr_state, actual_state_id)
                 except MemoryError:
                     raise
                 except (AttributeError, Exception) as e:
