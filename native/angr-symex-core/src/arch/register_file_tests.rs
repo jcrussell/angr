@@ -45,6 +45,42 @@ fn test_register_file_symbolic() {
     assert!(rax.is_symbolic());
 }
 
+/// The per-block `checkpoint` shares the overlay map, and a concrete write
+/// that clears no overlay leaves it shared, so a state carrying many
+/// unconstrained-register fill overlays does not copy them every block
+/// (angr-vmi2l.349). Writes that add or clear an overlay copy it, and neither
+/// the checkpoint nor a fork sibling sees them; `restore` brings them back.
+#[test]
+fn checkpoint_shares_overlays_until_an_overlay_write() {
+    let mut regs = RegisterFile::new(Box::new(AMD64));
+    regs.put_reg("rbx", RustBV::symbol("rbx_fill", 64));
+    regs.put_reg("rcx", RustBV::symbol("rcx_fill", 64));
+    let sibling = regs.fork();
+    assert!(Arc::ptr_eq(&regs.symbolic, &sibling.symbolic));
+
+    let cp = regs.checkpoint();
+    regs.put_reg("rax", RustBV::concrete(7, 64));
+    regs.put_reg("rip", RustBV::concrete(0x1000, 64));
+    assert!(
+        Arc::ptr_eq(&regs.symbolic, &cp.symbolic),
+        "a concrete write that clears no overlay must not copy the map"
+    );
+
+    // Clearing one overlay (concrete rbx) and adding one (symbolic rdx) copy.
+    regs.put_reg("rbx", RustBV::concrete(3, 64));
+    regs.put_reg("rdx", RustBV::symbol("rdx_new", 64));
+    assert!(!Arc::ptr_eq(&regs.symbolic, &cp.symbolic));
+    assert_eq!(regs.get_reg("rbx").unwrap().as_u64(), Some(3));
+    assert!(regs.get_reg("rdx").unwrap().is_symbolic());
+    assert!(sibling.get_reg("rbx").unwrap().is_symbolic());
+    assert_eq!(sibling.get_reg("rdx").unwrap().as_u64(), Some(0));
+
+    regs.restore(cp);
+    assert!(regs.get_reg("rbx").unwrap().is_symbolic());
+    assert_eq!(regs.get_reg("rdx").unwrap().as_u64(), Some(0));
+    assert_eq!(regs.get_reg("rax").unwrap().as_u64(), Some(0));
+}
+
 /// `copy_to_bytes` must report a now-symbolic register as zero, not as the
 /// concrete value it held before the symbolic write (angr-9ke6b.5). `put`'s
 /// symbolic branch only touches the `symbolic` map, so the stale bytes are

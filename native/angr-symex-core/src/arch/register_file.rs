@@ -52,7 +52,7 @@ impl RegisterFile {
         let containment = (!is_le).then(|| build_containment(arch.as_ref()));
         RegisterFile {
             data: Arc::new(vec![0; size]),
-            symbolic: FxHashMap::default(),
+            symbolic: Arc::default(),
             arch,
             containment,
         }
@@ -253,7 +253,7 @@ impl RegisterFile {
         // E.g., reading al (offset=16, size=1) when rax (offset=16, size=8) is symbolic
         // Already handled above. But also check for sub-register reads at higher offsets
         // E.g., reading ah (offset=17, size=1) when rax (offset=16, size=8) is symbolic
-        for (&sym_offset, sym_val) in &self.symbolic {
+        for (&sym_offset, sym_val) in self.symbolic.iter() {
             if sym_offset < offset
                 && offset.saturating_add(size) <= sym_offset.saturating_add(sym_val.width() / 8)
             {
@@ -268,7 +268,7 @@ impl RegisterFile {
         // or reading eax when ah (offset=9, size=1) is symbolic.
         // The `sym_offset == offset` half of this is what the same-offset arm at
         // the top of this function short-circuits; see the comment there.
-        for (&sym_offset, sym_val) in &self.symbolic {
+        for (&sym_offset, sym_val) in self.symbolic.iter() {
             let sym_size = sym_val.width() / 8;
             if sym_offset >= offset
                 && sym_offset.saturating_add(sym_size) <= offset.saturating_add(size)
@@ -370,14 +370,14 @@ impl RegisterFile {
             // Writing to the LOW portion of a wider symbolic
             let upper = wider_sym.extract(wider_sym.width() - 1, write_bits);
             let composed = upper.concat(&value);
-            self.symbolic.insert(offset, composed);
+            Arc::make_mut(&mut self.symbolic).insert(offset, composed);
             // Also update concrete data for the written portion if concrete
             self.mirror_concrete_bytes(offset, &value);
             return;
         }
         // Also check if writing to the middle/upper portion of a wider symbolic.
         // E.g., writing ch (8-bit at offset 13) when ecx (32-bit at offset 12) is symbolic.
-        for (&sym_offset, sym_val) in &self.symbolic {
+        for (&sym_offset, sym_val) in self.symbolic.iter() {
             let sym_size = sym_val.width() / 8;
             if sym_offset < offset
                 && offset.saturating_add(size) <= sym_offset.saturating_add(sym_size)
@@ -405,7 +405,7 @@ impl RegisterFile {
                 for part in &parts[1..] {
                     composed = composed.concat(part);
                 }
-                self.symbolic.insert(sym_offset, composed);
+                Arc::make_mut(&mut self.symbolic).insert(sym_offset, composed);
                 // Update concrete data for the written portion if concrete
                 self.mirror_concrete_bytes(offset, &value);
                 return;
@@ -421,10 +421,11 @@ impl RegisterFile {
                 .filter(|&&k| k >= offset && k < offset.saturating_add(size) && k != offset)
                 .copied()
                 .collect();
+            let symbolic = Arc::make_mut(&mut self.symbolic);
             for k in overlapping {
-                self.symbolic.remove(&k);
+                symbolic.remove(&k);
             }
-            self.symbolic.insert(offset, value);
+            symbolic.insert(offset, value);
             return;
         }
 
@@ -446,17 +447,21 @@ impl RegisterFile {
                 for (i, slot) in data[start..end].iter_mut().enumerate() {
                     *slot = u128_le_byte(v, i);
                 }
-                // Clear any symbolic overlay at this offset
-                self.symbolic.remove(&offset);
-                // Also remove any narrower symbolic overlays within our range
+                // Clear every symbolic overlay starting inside the written
+                // range (the one at `offset` included). Collected first so a
+                // write that clears none leaves the map's `Arc` shared, which
+                // keeps the per-block `checkpoint` O(1).
                 let overlapping: Vec<u32> = self
                     .symbolic
                     .keys()
                     .filter(|&&k| k >= offset && k < offset.saturating_add(size))
                     .copied()
                     .collect();
-                for k in overlapping {
-                    self.symbolic.remove(&k);
+                if !overlapping.is_empty() {
+                    let symbolic = Arc::make_mut(&mut self.symbolic);
+                    for k in overlapping {
+                        symbolic.remove(&k);
+                    }
                 }
             }
         }
@@ -530,7 +535,7 @@ impl RegisterFile {
         let len = std::cmp::min(bytes.len(), self.data.len());
         Arc::make_mut(&mut self.data)[..len].copy_from_slice(&bytes[..len]);
         // Clear symbolic overlays since we're replacing with concrete values
-        self.symbolic.clear();
+        self.symbolic = Arc::default();
     }
 
     /// Copy concrete register values to a byte slice.
@@ -550,7 +555,7 @@ impl RegisterFile {
     pub fn copy_to_bytes(&self, bytes: &mut [u8]) {
         let len = std::cmp::min(bytes.len(), self.data.len());
         bytes[..len].copy_from_slice(&self.data[..len]);
-        for (&offset, sym_val) in &self.symbolic {
+        for (&offset, sym_val) in self.symbolic.iter() {
             let start = std::cmp::min(offset as usize, len);
             let end = std::cmp::min(start + (sym_val.width() / 8) as usize, len);
             bytes[start..end].fill(0);
@@ -563,7 +568,7 @@ impl RegisterFile {
             // O(1) Arc refcount bump; the buffer is copied lazily on the
             // first write to either parent or child via `Arc::make_mut`.
             data: Arc::clone(&self.data),
-            symbolic: self.symbolic.clone(),
+            symbolic: Arc::clone(&self.symbolic),
             arch: self.arch.clone(),
             containment: self.containment.clone(),
         }
@@ -571,12 +576,13 @@ impl RegisterFile {
 
     /// Capture the register contents for a later [`Self::restore`].
     ///
-    /// O(1) for the byte image (an `Arc` bump; a write after this copies it
-    /// once) plus a clone of the symbolic overlay map.
+    /// O(1): an `Arc` bump each for the byte image and the symbolic overlay
+    /// map. A later write copies each at most once, and a block that adds or
+    /// clears no overlay never copies the map (angr-vmi2l.349).
     pub fn checkpoint(&self) -> RegisterCheckpoint {
         RegisterCheckpoint {
             data: Arc::clone(&self.data),
-            symbolic: self.symbolic.clone(),
+            symbolic: Arc::clone(&self.symbolic),
         }
     }
 
@@ -803,7 +809,7 @@ impl RegisterFile {
         }
 
         for (offset, val) in updates {
-            self.symbolic.insert(offset, val);
+            Arc::make_mut(&mut self.symbolic).insert(offset, val);
             merged = true;
         }
         // Drop overlays strictly inside a widened span. This subsumes rather
@@ -812,7 +818,7 @@ impl RegisterFile {
         // inner offset merged earlier in this same loop is already represented
         // in the wide value at `offset`.
         for (offset, size) in widened {
-            self.symbolic
+            Arc::make_mut(&mut self.symbolic)
                 .retain(|&k, _| !(k > offset && k < offset.saturating_add(size)));
         }
 

@@ -356,8 +356,12 @@ pub struct RegisterFile {
     /// The whole body of [`Self::merge`] targets this map — per-offset ITEs,
     /// the widening arm, and the subsumption pass that drops overlays a wide
     /// merge now covers. Reads `data` (see above), hence `joint`.
+    ///
+    /// `Arc`-wrapped like `data`, so `fork` and the per-block `checkpoint`
+    /// share it O(1) and a write copies it through `Arc::make_mut` only when
+    /// it adds or clears an overlay (angr-vmi2l.349).
     #[merge_policy = "joint"]
-    symbolic: FxHashMap<u32, RustBV>,
+    symbolic: Arc<FxHashMap<u32, RustBV>>,
     /// Architecture information.
     ///
     /// Merge-invariant: merge arms are fork siblings, and no API reassigns a
@@ -383,7 +387,7 @@ pub struct RegisterFile {
 /// for a live file, so only the byte image and the symbolic overlay are kept.
 pub struct RegisterCheckpoint {
     data: Arc<Vec<u8>>,
-    symbolic: FxHashMap<u32, RustBV>,
+    symbolic: Arc<FxHashMap<u32, RustBV>>,
 }
 
 /// Serde shadow form for [`RegisterFile`].
@@ -421,7 +425,7 @@ impl From<RegisterFile> for RegisterFileData {
         let register_be = rf.containment.is_some();
         RegisterFileData {
             data: Arc::unwrap_or_clone(rf.data),
-            symbolic: rf.symbolic.into_iter().collect(),
+            symbolic: Arc::unwrap_or_clone(rf.symbolic).into_iter().collect(),
             arch_name,
             register_be,
         }
@@ -448,7 +452,7 @@ impl TryFrom<RegisterFileData> for RegisterFile {
         let mut data = vec![0u8; size];
         let copy_len = d.data.len().min(size);
         data[..copy_len].copy_from_slice(&d.data[..copy_len]);
-        let symbolic: FxHashMap<u32, RustBV> = d.symbolic.into_iter().collect();
+        let symbolic: Arc<FxHashMap<u32, RustBV>> = Arc::new(d.symbolic.into_iter().collect());
         let containment = (d.register_be).then(|| build_containment(arch.as_ref()));
         Ok(RegisterFile {
             data: Arc::new(data),
