@@ -10,6 +10,23 @@
 
 use super::*;
 
+/// A `mem_read` / `mem_write` breakpoint's override, when it is `size` bytes
+/// wide; otherwise `None`, so the engine keeps its original value.
+///
+/// A wrong-width override would corrupt the ops downstream of the load or
+/// the store, so it is rejected, and the rejection logs at warn naming the
+/// event and both widths: the user asked for a value the engine does not
+/// use (angr-vmi2l.205).
+pub(super) fn sized_override(event: &str, bv: RustBV, size: usize) -> Option<RustBV> {
+    let (got, want) = (bv.width(), size * 8);
+    silent_default!(
+        cat_c,
+        (usize::try_from(got).ok() == Some(want)).then_some(Some(bv)),
+        None,
+        "state.inspect '{event}' override is {got} bits, not the {want}-bit access; keeping the original value"
+    )
+}
+
 impl<'a> VEXInterpreter<'a> {
     /// Shared prelude for the `dispatch_*_inspect` methods: whether a
     /// breakpoint is registered for `event`. The host converts the value and
@@ -54,9 +71,7 @@ impl<'a> VEXInterpreter<'a> {
             Endness::Little => "Iend_LE",
             Endness::Big => "Iend_BE",
         };
-        // The user injected a new value via state.inspect.mem_read_expr;
-        // reject a width mismatch defensively so a bad override can't
-        // silently corrupt downstream ops.
+        // The user injected a new value via state.inspect.mem_read_expr.
         let bv = self.fire_inspect(callbacks, || {
             callbacks.inspect_mem_read(
                 self.ctx,
@@ -69,11 +84,7 @@ impl<'a> VEXInterpreter<'a> {
                 condition,
             )
         })?;
-        if bv.width() == (size * 8) as u32 {
-            Some(bv)
-        } else {
-            None
-        }
+        sized_override("mem_read", bv, size)
     }
 
     /// Fire a `reg_read` inspect callback into Python for a VEX `Get`.

@@ -36,6 +36,11 @@ Detected shapes (deliberately narrow -- the noisy ``.unwrap_or*`` /
   * ``.ok();``           -- Result->Option swallow discarding the error; the
     same line matcher also catches it as the tail of a ``let`` binding
     (``let x = f().ok();``), the bound form
+  * ``.ok()?`` / ``.ok()??`` -- the error becomes a bare ``None`` return
+  * a one-line closure ending ``.ok())`` -- the closure's return drops it
+
+``.ok()`` straight after a ``try_from(..)`` / ``try_into()`` call is not a
+site: an integer conversion's error says nothing a log line could add.
 
 Test modules and the modules in ``UPSTREAM_OWNED`` (taken verbatim from
 upstream angr, so not ours to tag) are not scanned.
@@ -57,6 +62,7 @@ import argparse
 import re
 import sys
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 
 # The scanner below is this gate's own; only root resolution is shared.
@@ -89,11 +95,60 @@ BASELINE_PATH = REPO_ROOT / "tools" / "silent_fallback_baseline.txt"
 # Where a match counts is :func:`_has_tag`'s business (angr-vmi2l.309).
 TAG_RE = re.compile(r"//\s*SILENT\(cat-[abc]\):|silent_default!\(")
 
-# Each shape: (name, compiled matcher over the *stripped* line).
-SHAPES: list[tuple[str, re.Pattern[str]]] = [
-    ("return-ok-none", re.compile(r"return Ok\(None\)")),
+OK_CALL = ".ok()"
+# The conversions whose error carries nothing to log: an out-of-range integer
+# is the whole story, so `usize::try_from(x).ok()?` is not a swallow.
+CONVERSIONS = ("try_from", "try_into")
+IDENT_RE = re.compile(r"[A-Za-z0-9_]+$")
+
+
+def _is_conversion(code: str, ok_at: int) -> bool:
+    """Whether the `.ok()` at ``code[ok_at:]`` follows a ``try_from(..)`` /
+    ``try_into()`` call, matched back over its balanced argument list."""
+    end = ok_at - 1
+    if end < 0 or code[end] != ")":
+        return False
+    depth = 0
+    for i in range(end, -1, -1):
+        depth += {")": 1, "(": -1}.get(code[i], 0)
+        if depth == 0:
+            name = IDENT_RE.search(code[:i])
+            return name is not None and name.group(0) in CONVERSIONS
+    return False
+
+
+def _ok_calls(code: str) -> list[int]:
+    """The offset just past every non-conversion `.ok()` in ``code``."""
+    found, at = [], code.find(OK_CALL)
+    while at != -1:
+        if not _is_conversion(code, at):
+            found.append(at + len(OK_CALL))
+        at = code.find(OK_CALL, at + 1)
+    return found
+
+
+# A one-line closure whose body ends in `.ok()`: `|py| f(py).ok())`, the
+# closure's return discarding the error (angr-vmi2l.205).
+CLOSURE_TAIL_RE = re.compile(r"\|[^|]*\|[^|]*\.ok\(\)\)+[;,]?\s*$")
+
+
+def _ok_propagate(code: str) -> bool:
+    """`.ok()?` / `.ok()??`: the error becomes a bare `None` return."""
+    return any(code.startswith("?", end) for end in _ok_calls(code))
+
+
+def _ok_closure_tail(code: str) -> bool:
+    tail = CLOSURE_TAIL_RE.search(code)
+    return tail is not None and any(end == code.rfind(OK_CALL, 0, tail.end()) + len(OK_CALL) for end in _ok_calls(code))
+
+
+# Each shape: (name, predicate over the *stripped*, comment-free line).
+SHAPES: list[tuple[str, Callable[[str], bool]]] = [
+    ("return-ok-none", re.compile(r"return Ok\(None\)").search),
     # Match `=> return Ok(None),` arms too (covered by the substring above).
-    ("ok-swallow", re.compile(r"\.ok\(\);\s*$")),
+    ("ok-swallow", re.compile(r"\.ok\(\);\s*$").search),
+    ("ok-propagate", _ok_propagate),
+    ("ok-closure-tail", _ok_closure_tail),
 ]
 
 
@@ -168,7 +223,7 @@ def _code(stripped: str) -> str:
 
 def _is_site(stripped: str) -> bool:
     """Whether a stripped, non-comment line carries one of ``SHAPES``."""
-    return not stripped.startswith("//") and any(m.search(_code(stripped)) for _, m in SHAPES)
+    return not stripped.startswith("//") and any(matches(_code(stripped)) for _, matches in SHAPES)
 
 
 def _has_tag(lines: list[str], idx: int) -> bool:
@@ -200,8 +255,8 @@ def scan_text(rel: str, text: str) -> list[tuple[str, int, str, str, bool]]:
         if stripped.startswith("//"):
             continue
         code = _code(stripped)
-        for shape, matcher in SHAPES:
-            if matcher.search(code):
+        for shape, matches in SHAPES:
+            if matches(code):
                 hits.append((rel, idx + 1, shape, code, _has_tag(lines, idx)))
                 break
     return hits
@@ -224,8 +279,9 @@ def scan() -> list[tuple[str, int, str, str, bool]]:
 
 
 # Synthetic sources for --self-test. The untagged file carries each detected
-# shape (bare `return Ok(None)`, bare `.ok();`, the `let` tail) plus
-# must-NOT-fire controls; the tagged file is the same sites, each with a
+# shape (bare `return Ok(None)`, bare `.ok();`, the `let` tail, `.ok()?`,
+# `.ok()??`, a closure tail) plus must-NOT-fire controls (a `try_from` /
+# `try_into` conversion, inline and as a closure tail); the tagged file is the same sites, each with a
 # `// SILENT(cat-b):` tag (one of them trailing). They are separate texts so
 # the tagged one cannot bind into the untagged one.
 _SELF_TEST_UNTAGGED = """\
@@ -241,6 +297,16 @@ fn swallow(&self) {
     let page = self.load(addr).ok();
     let kept = self.load(addr).ok().unwrap_or_default();
 }
+fn propagate(&self) -> Option<u64> {
+    let m = claripy_module(py).ok()?;
+    let v = self.call(m).ok()??;
+    let off = usize::try_from(addr.wrapping_sub(base)).ok()?;
+    let w: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+    Python::attach(|py| convert(py, v).ok())
+}
+fn chained(&self) -> Option<u8> {
+    self.get().and_then(|v| u8::try_from(v).ok())
+}
 """
 _SELF_TEST_TAGGED = """\
 fn early(&self) -> Result<Option<u64>> {
@@ -254,6 +320,13 @@ fn swallow(&self) {
     // SILENT(cat-b): why
     self.flush().ok();
     let page = self.load(addr).ok(); // SILENT(cat-b): why
+}
+fn propagate(&self) -> Option<u64> {
+    let m = claripy_module(py).ok()?; // SILENT(cat-b): why
+    // SILENT(cat-b): why
+    let v = self.call(m).ok()??;
+    // SILENT(cat-b): why
+    Python::attach(|py| convert(py, v).ok())
 }
 """
 # Neighbour-tag evasions (angr-vmi2l.309): in each, a tag or a
@@ -298,6 +371,9 @@ _SELF_TEST_EXPECTED_UNTAGGED = [
     ("return-ok-none", "return Ok(None);", False),
     ("ok-swallow", "self.flush().ok();", False),
     ("ok-swallow", "let page = self.load(addr).ok();", False),
+    ("ok-propagate", "let m = claripy_module(py).ok()?;", False),
+    ("ok-propagate", "let v = self.call(m).ok()??;", False),
+    ("ok-closure-tail", "Python::attach(|py| convert(py, v).ok())", False),
 ]
 _SELF_TEST_EXPECTED_TAGGED = [(shape, code, True) for shape, code, _ in _SELF_TEST_EXPECTED_UNTAGGED]
 
@@ -326,7 +402,7 @@ def self_test() -> int:
     untagged = [h for h in scan_text("fixture.rs", _SELF_TEST_UNTAGGED) if not h[4]]
     baseline = Counter([_key("fixture.rs", "return-ok-none", "return Ok(None);")])
     fresh = [h[3] for h in new_untagged(untagged, baseline)]
-    if fresh != ["self.flush().ok();", "let page = self.load(addr).ok();"]:
+    if fresh != [code for shape, code, _ in _SELF_TEST_EXPECTED_UNTAGGED if shape != "return-ok-none"]:
         failures.append(f"baseline: got {fresh}")
     if stale_baseline(untagged, baseline):
         failures.append(f"baseline: a used line reads stale: {stale_baseline(untagged, baseline)}")
@@ -370,7 +446,8 @@ def self_test() -> int:
             print(f"  {f}")
         return 1
     print(
-        "self-test OK: untagged return Ok(None) / .ok(); / let-tail flagged, "
+        "self-test OK: untagged return Ok(None) / .ok(); / let-tail / .ok()? / .ok()?? / closure-tail flagged, "
+        "try_from / try_into conversions skipped, "
         "the same sites tagged SILENT(cat-b) above or trailing pass, a neighbour's tag exempts nothing, "
         "the baseline counts occurrences and reports stale lines, test-file and upstream-owned skips honoured; "
         "an unclassified member, a missing root and a low file count fail"

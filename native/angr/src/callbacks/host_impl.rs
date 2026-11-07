@@ -12,19 +12,62 @@ use crate::interpreter::{
 };
 use crate::symbolic::{RustBV, SymContext};
 
-/// `value` as a claripy AST, or `None` when the export fails (the breakpoint
-/// is then skipped: a missing claripy or an unexportable value must not halt
-/// exploration).
-fn to_claripy(value: &RustBV) -> Option<Py<PyAny>> {
+/// `value` as a claripy AST for the `event` breakpoint, or `None` when the
+/// export fails. The breakpoint is then skipped, since a missing claripy or an
+/// unexportable value must not halt exploration, but the skip is logged at
+/// warn: the user's breakpoint silently not firing is the wrong answer
+/// (angr-vmi2l.205).
+fn to_claripy(value: &RustBV, event: &str) -> Option<Py<PyAny>> {
     Python::attach(|py| {
-        let claripy_mod = claripy_module(py).ok()?;
-        rustbv_to_claripy(py, value, &claripy_mod).ok()
+        let exported =
+            claripy_module(py).and_then(|claripy_mod| rustbv_to_claripy(py, value, &claripy_mod));
+        Some(silent_default!(
+            cat_c,
+            exported,
+            return None,
+            |err| "state.inspect '{event}' breakpoint skipped: exporting its value to claripy failed: {err}"
+        ))
+    })
+}
+
+/// The override a value-injecting breakpoint (`mem_read` / `mem_write`) left
+/// in its `<event>_expr` attr, imported as a `RustBV`.
+///
+/// `None` when the breakpoint left the value alone, when the dispatch raised
+/// (logged through [`note_inspect_error`] like every sibling event), or when
+/// the importer rejects the override (a Python int, an FP AST, an op it does
+/// not take). That last case logs at warn naming the event and the override,
+/// since the user asked for a value the engine then does not use
+/// (angr-vmi2l.205). The caller keeps its original value whenever this is
+/// `None`.
+fn inspect_override(
+    ctx: &SymContext,
+    dispatched: PyResult<Option<Py<PyAny>>>,
+    event: &str,
+) -> Option<RustBV> {
+    let mutated = match dispatched {
+        Ok(mutated) => mutated?,
+        Err(err) => {
+            note_inspect_error(Err(err), event);
+            return None;
+        }
+    };
+    Python::attach(|py| {
+        let ast = mutated.bind(py);
+        Some(silent_default!(
+            cat_c,
+            claripy_to_rustbv(py, ast, ctx),
+            return None,
+            |err| "state.inspect '{event}' override {ast} rejected ({err}); keeping the original value"
+        ))
     })
 }
 
 /// A claripy AST from Python as a `RustBV`, or `None` when it is not one or
 /// does not convert (the caller then mints a fresh symbol or keeps its value).
 fn from_claripy(ctx: &SymContext, ast: &Py<PyAny>) -> Option<RustBV> {
+    // SILENT(cat-b): a host load the importer rejects falls back to its
+    // bytes or a fresh symbol, the caller's documented `None` arm.
     Python::attach(|py| claripy_to_rustbv(py, ast.bind(py), ctx).ok())
 }
 
@@ -194,23 +237,21 @@ impl EngineHost for PythonCallbacks {
         endness: &str,
         condition: Option<&RustBV>,
     ) -> Option<RustBV> {
-        let value_ast = to_claripy(value)?;
+        let value_ast = to_claripy(value, "mem_read")?;
         let condition_ast = match condition {
-            Some(guard) => Some(to_claripy(guard)?),
+            Some(guard) => Some(to_claripy(guard, "mem_read")?),
             None => None,
         };
-        let mutated = self
-            .call_inspect_mem_read(
-                state_id,
-                when,
-                addr,
-                size,
-                Some(&value_ast),
-                endness,
-                condition_ast.as_ref(),
-            )
-            .ok()??;
-        from_claripy(ctx, &mutated)
+        let dispatched = self.call_inspect_mem_read(
+            state_id,
+            when,
+            addr,
+            size,
+            Some(&value_ast),
+            endness,
+            condition_ast.as_ref(),
+        );
+        inspect_override(ctx, dispatched, "mem_read")
     }
 
     fn inspect_mem_write(
@@ -224,33 +265,35 @@ impl EngineHost for PythonCallbacks {
         endness: &str,
         condition: Option<&RustBV>,
     ) -> Option<RustBV> {
-        let value_ast = to_claripy(value)?;
+        let value_ast = to_claripy(value, "mem_write")?;
         let condition_ast = match condition {
-            Some(guard) => Some(to_claripy(guard)?),
+            Some(guard) => Some(to_claripy(guard, "mem_write")?),
             None => None,
         };
         let addr_obj = match addr.as_u64() {
-            Some(addr) => {
-                Python::attach(|py| addr.into_pyobject(py).map(|a| a.into_any().unbind())).ok()?
-            }
-            None => to_claripy(addr)?,
+            // u64 -> Python int cannot fail: its error type is `Infallible`.
+            Some(addr) => Python::attach(|py| match addr.into_pyobject(py) {
+                Ok(int) => int.into_any().unbind(),
+                Err(never) => match never {},
+            }),
+            None => to_claripy(addr, "mem_write")?,
         };
-        let mutated = self
-            .call_inspect_mem_write(
-                state_id,
-                when,
-                &addr_obj,
-                size,
-                Some(&value_ast),
-                endness,
-                condition_ast.as_ref(),
-            )
-            .ok()??;
-        from_claripy(ctx, &mutated)
+        let dispatched = self.call_inspect_mem_write(
+            state_id,
+            when,
+            &addr_obj,
+            size,
+            Some(&value_ast),
+            endness,
+            condition_ast.as_ref(),
+        );
+        inspect_override(ctx, dispatched, "mem_write")
     }
 
     fn inspect_reg_read(&self, state_id: i64, when: &str, offset: u32, size: u32, value: &RustBV) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "reg_read") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_reg_read(state_id, when, offset, size, Some(&ast)),
             "reg_read",
@@ -258,7 +301,9 @@ impl EngineHost for PythonCallbacks {
     }
 
     fn inspect_reg_write(&self, state_id: i64, when: &str, offset: u32, size: u32, value: &RustBV) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "reg_write") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_reg_write(state_id, when, offset, size, Some(&ast)),
             "reg_write",
@@ -266,7 +311,9 @@ impl EngineHost for PythonCallbacks {
     }
 
     fn inspect_tmp_read(&self, state_id: i64, when: &str, tmp: u32, value: &RustBV) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "tmp_read") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_tmp_read(state_id, when, tmp, Some(&ast)),
             "tmp_read",
@@ -274,7 +321,9 @@ impl EngineHost for PythonCallbacks {
     }
 
     fn inspect_tmp_write(&self, state_id: i64, when: &str, tmp: u32, value: &RustBV) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "tmp_write") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_tmp_write(state_id, when, tmp, Some(&ast)),
             "tmp_write",
@@ -282,12 +331,16 @@ impl EngineHost for PythonCallbacks {
     }
 
     fn inspect_expr(&self, state_id: i64, when: &str, value: &RustBV) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "expr") else {
+            return;
+        };
         note_inspect_error(self.call_inspect_expr(state_id, when, Some(&ast)), "expr");
     }
 
     fn inspect_exit(&self, state_id: i64, when: &str, target: u64, jumpkind: &str, guard: &RustBV) {
-        let Some(ast) = to_claripy(guard) else { return };
+        let Some(ast) = to_claripy(guard, "exit") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_exit(state_id, when, target, jumpkind, Some(&ast)),
             "exit",
@@ -302,7 +355,9 @@ impl EngineHost for PythonCallbacks {
         addr: &RustBV,
         result: Option<Vec<u64>>,
     ) {
-        let Some(ast) = to_claripy(addr) else { return };
+        let Some(ast) = to_claripy(addr, "address_concretization") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_address_concretization(state_id, when, action, &ast, result),
             "address_concretization",
@@ -317,7 +372,9 @@ impl EngineHost for PythonCallbacks {
         size_bits: u32,
         value: &RustBV,
     ) {
-        let Some(ast) = to_claripy(value) else { return };
+        let Some(ast) = to_claripy(value, "symbolic_variable") else {
+            return;
+        };
         note_inspect_error(
             self.call_inspect_symbolic_variable(state_id, when, name, size_bits, &ast),
             "symbolic_variable",

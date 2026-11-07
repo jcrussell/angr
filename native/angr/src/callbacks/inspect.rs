@@ -155,10 +155,10 @@ inspect_dispatch! {
     ///
     /// Caller is expected to gate this on `inspect_event_enabled(InspectBit::MemRead)` for
     /// the common no-breakpoint case. A raising breakpoint comes back as
-    /// `Err`, but the production caller (`EngineHost::inspect_mem_read` in
-    /// `callbacks/host_impl.rs`) discards it and keeps the loaded value: a
-    /// breakpoint never aborts the step that fired it (see
-    /// `note_inspect_error`).
+    /// `Err`, which the production caller (`EngineHost::inspect_mem_read` in
+    /// `callbacks/host_impl.rs`) logs through `note_inspect_error` before
+    /// keeping the loaded value: a breakpoint never aborts the step that
+    /// fired it.
     ///
     /// Returns the value the user's BP action left in `state.inspect.
     /// mem_read_expr` when it differs from what we passed in (value

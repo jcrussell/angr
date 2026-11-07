@@ -2102,15 +2102,18 @@ the rest fire read-only (mutations are ignored).
   loaded result. The override is converted back to a ``RustBV`` via
   ``claripy_to_rustbv`` and used in place of the load. A width mismatch
   (the override's bit-width ≠ ``mem_read_length * 8``) is rejected
-  defensively and the original value stands.
+  and the original value stands, as it does when ``claripy_to_rustbv``
+  rejects the override (a Python int, an FP AST); either rejection logs a
+  warning naming the event (angr-vmi2l.205).
 * ``mem_write_expr`` — a ``mem_write`` BP_BEFORE that assigns
   ``state.inspect.mem_write_expr`` substitutes the new value for the
   stored data *before* it is committed (angr-inh0). The ``mem_write``
   event now fires twice per ``IRStmt::Store`` to mirror Python angr:
   ``when='before'`` (pre-commit, injection point) and ``when='after'``
   (post-commit, informational). The override is width-guarded against
-  ``mem_write_length * 8`` exactly like ``mem_read_expr``; a mismatch is
-  rejected and the original value is stored. A guarded ``IRStmt::StoreG``
+  ``mem_write_length * 8`` exactly like ``mem_read_expr``; a mismatch or an
+  override the importer rejects is refused with a warning, and the original
+  value is stored. A guarded ``IRStmt::StoreG``
   (an ARM ``strhi``) fires the same pair, and a guarded ``IRStmt::LoadG``
   fires ``mem_read``, unless the guard is provably false; the guard is
   ``mem_write_condition`` / ``mem_read_condition`` (``guard == 1``), as in

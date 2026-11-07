@@ -56,9 +56,7 @@ impl<'a> VEXInterpreter<'a> {
             Endness::Big => "Iend_BE",
         };
         // The user injected a new value via state.inspect.mem_write_expr
-        // (only meaningful for when='before', pre-store; angr-inh0). Reject a
-        // width mismatch defensively so a bad override can't silently corrupt
-        // the store.
+        // (only meaningful for when='before', pre-store; angr-inh0).
         let bv = self.fire_inspect(callbacks, || {
             callbacks.inspect_mem_write(
                 self.ctx,
@@ -71,11 +69,7 @@ impl<'a> VEXInterpreter<'a> {
                 condition,
             )
         })?;
-        if bv.width() == (data_size * 8) as u32 {
-            Some(bv)
-        } else {
-            None
-        }
+        super::expressions_inspect::sized_override("mem_write", bv, data_size)
     }
 
     /// Fire a `reg_write` inspect callback into Python for a VEX `Put`.
