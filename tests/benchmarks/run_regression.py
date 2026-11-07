@@ -658,7 +658,7 @@ def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs", mode="run"):
             (name, engine, examples_dir, mem_limit_mb, strategy),
             {"mode": mode},
         )
-        return async_result.get(timeout=timeout)
+        return _require_rust_manager(async_result.get(timeout=timeout), engine)
     except multiprocessing.TimeoutError:
         pool.terminate()
         return {"ok": False, "error": f"timeout after {timeout}s"}
@@ -668,6 +668,24 @@ def run_one(name, engine, timeout, mem_limit_mb, strategy="bfs", mode="run"):
     finally:
         pool.terminate()
         pool.join()
+
+
+def _require_rust_manager(result, engine):
+    """Fail an ok ``engine="rust"`` run that built no Rust manager.
+
+    ``engine_patch`` hands a manager built from angr internals, or with a
+    non-empty ``techniques=``, to the Python ``SimulationManager``. A bench
+    whose every manager takes that route would pass the correctness and
+    timing passes on the Python engine. Mirrors the ``managers_built == 0``
+    guard in ``run_leak_check._run_iters_in_child`` (angr-vmi2l.312).
+    """
+    if engine == "rust" and result.get("ok") and not result.get("rust_managers_built"):
+        return {
+            **result,
+            "ok": False,
+            "error": "no RustExplorationManager was built: the bench ran on the Python engine",
+        }
+    return result
 
 
 # Benches whose own test() cannot pass on ANY engine in this environment, so

@@ -280,6 +280,9 @@ def _run_in_child(
     rust_mgr_instance = None
     # What answers stats / perf_report: the manager itself, or the simgr's RustBackend.
     rust_api = None
+    # Every manager _make_rust_manager built. Zero under engine="rust" means
+    # engine_patch sent each one to the Python engine (angr-vmi2l.312).
+    rust_managers_built = 0
     snapshots: list = []
     original_sm = None
     original_simgr = None
@@ -300,7 +303,8 @@ def _run_in_child(
         from angr.exploration import RustExplorationManager
 
         def _make_rust_manager(project, states):
-            nonlocal rust_mgr_instance, rust_api
+            nonlocal rust_mgr_instance, rust_api, rust_managers_built
+            rust_managers_built += 1
             if os.environ.get(SIMGR_BACKEND_ENV):
                 return _make_simgr_with_backend(project, states)
             rust_mgr_instance = rust_api = RustExplorationManager(
@@ -578,6 +582,7 @@ def _run_in_child(
             "perf_report": perf_report,
             "peak_memory_mb": peak_memory_mb,
             "snapshots": snapshots if diff_state else None,
+            "rust_managers_built": rust_managers_built,
         }
 
     finally:
