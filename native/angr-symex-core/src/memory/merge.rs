@@ -49,11 +49,37 @@ impl SymbolicMemory {
         reason = "`s_multi`/`o_multi` are `page.has_multi() && page.is_multi(i)` bitmap reads taken from the same byte index a few lines above, and that bit is set only alongside the `multi_objects` entry for the byte's address — so both lookups are proved by the guard that gates this branch, and neither depends on guest input"
     )]
     pub fn merge(&mut self, other: &SymbolicMemory, merge_cond_other: &RustBV) -> bool {
+        // Exhaustive, no `..` (angr-vmi2l.228): a new field is a compile error
+        // here until it is either read below (an unused binding fails
+        // `-D warnings`) or bound to `_` with the reason `self`'s value stands.
+        let SymbolicMemory {
+            pages: o_pages,
+            symbolic_objects: o_symbolic_objects,
+            // Fork siblings share it; see the field doc.
+            default_permissions: _,
+            endness: o_endness,
+            dirty_pages: o_dirty_pages,
+            lazy_regions: o_lazy_regions,
+            symbolic_spans: o_symbolic_spans,
+            multi_objects: o_multi_objects,
+            pending_writes: o_pending_writes,
+            // SimOption mirrors, identical across fork siblings.
+            zero_fill_unconstrained: _,
+            enforce_permissions: _,
+            enforce_nx: _,
+            // Bumped by `set_multi_alternatives` for every merge-installed
+            // Multi cell, not copied from `other`; see the field doc.
+            multi_versions: _,
+            // Validated by fingerprint on every hit; see the field doc.
+            wider_load_cache: _,
+            imported_addrs: o_imported_addrs,
+            fillers: o_fillers,
+        } = other;
         let mut merged = false;
 
         // Collect all page numbers from both memories
         let self_pages: std::collections::HashSet<u64> = self.pages.keys().copied().collect();
-        let other_pages: std::collections::HashSet<u64> = other.pages.keys().copied().collect();
+        let other_pages: std::collections::HashSet<u64> = o_pages.keys().copied().collect();
         let all_pages: std::collections::HashSet<u64> =
             self_pages.union(&other_pages).copied().collect();
 
@@ -70,7 +96,7 @@ impl SymbolicMemory {
 
         for &page_num in &all_pages {
             let self_page = self.pages.get(&page_num);
-            let other_page = other.pages.get(&page_num);
+            let other_page = o_pages.get(&page_num);
 
             let base_addr = Address(PageIndex::from_raw(page_num).base_addr());
             // A page only one arm holds is not "unchanged" on the other arm:
@@ -166,8 +192,7 @@ impl SymbolicMemory {
                         .multi_objects
                         .get(&addr)
                         .expect("s_multi implies a payload");
-                    let op_pl = other
-                        .multi_objects
+                    let op_pl = o_multi_objects
                         .get(&addr)
                         .expect("o_multi implies a payload");
                     let mut alts = Vec::with_capacity(sp_pl.len() + op_pl.len() + 1);
@@ -206,14 +231,14 @@ impl SymbolicMemory {
                     self.endness,
                 );
                 let other_val = Self::merge_byte_value(
-                    &other.symbolic_objects,
-                    &other.symbolic_spans,
-                    &other.multi_objects,
+                    o_symbolic_objects,
+                    o_symbolic_spans,
+                    o_multi_objects,
                     addr,
                     o_byte,
                     o_sym,
                     o_multi,
-                    other.endness,
+                    *o_endness,
                 );
 
                 let ite_val = merge_cond_other.ite(&other_val, &self_val);
@@ -269,8 +294,7 @@ impl SymbolicMemory {
         // such: it keeps that 0, its reading before angr-vmi2l.325, rather
         // than an ITE against a filler only a later load would mint.
         for page_num in &all_pages {
-            if let (Some(sp), Some(op)) = (self.pages.get_mut(page_num), other.pages.get(page_num))
-            {
+            if let (Some(sp), Some(op)) = (self.pages.get_mut(page_num), o_pages.get(page_num)) {
                 sp.intersect_uninit(op);
             }
         }
@@ -298,10 +322,9 @@ impl SymbolicMemory {
             self.pending_writes = guarded;
             merged = true;
         }
-        if !other.pending_writes.is_empty() {
+        if !o_pending_writes.is_empty() {
             self.pending_writes.extend(
-                other
-                    .pending_writes
+                o_pending_writes
                     .iter()
                     .map(|pw| Self::guard_pending_write(pw, merge_cond_other)),
             );
@@ -332,18 +355,18 @@ impl SymbolicMemory {
         //
         // They deliberately do not flip `merged`, which reports whether any
         // stored *value* differed between the arms.
-        self.dirty_pages.extend(other.dirty_pages.iter().copied());
-        for region in &other.lazy_regions {
+        self.dirty_pages.extend(o_dirty_pages.iter().copied());
+        for region in o_lazy_regions {
             if !self.lazy_regions.contains(region) {
                 self.lazy_regions.push(*region);
             }
         }
-        for (addr, bv) in &other.imported_addrs {
+        for (addr, bv) in o_imported_addrs {
             self.imported_addrs
                 .entry(*addr)
                 .or_insert_with(|| bv.clone());
         }
-        for filler in &other.fillers {
+        for filler in o_fillers {
             if !self.fillers.contains(filler) {
                 self.fillers.push_back(filler.clone());
             }

@@ -688,8 +688,15 @@ The lower three exist because the bug family recurred one level below
 the top-level derive: ``SymbolicMemory::merge`` adopted an other-only
 page's ``multi_bitmap`` but never copied the matching ``multi_objects``
 payloads, because that sidecar is a flat map on ``SymbolicMemory``
-rather than nested in ``MemoryPage``. Any new address-keyed sidecar map
-now fails to compile until it declares how ``merge`` treats it.
+rather than nested in ``MemoryPage``. Every field of these three is
+``joint`` or ``in_place_self``, so the derive generates no method for
+them and only forces each new field to carry a label. The tie to the
+merge body is the body itself: ``SymbolicMemory::merge``,
+``RegisterFile::merge`` and ``HeapMetadata::union_from`` open with an
+exhaustive ``let <Struct> { .. } = other;`` with no ``..`` rest. A new
+field fails to compile there until the body reads its binding (an unused
+one fails ``-D warnings``) or binds it to ``_`` with the reason ``self``'s
+value stands.
 
 The remaining ``delegate`` field, ``solver``, is deliberately *not*
 derived. Each forked state owns its own ``SymContext``, and

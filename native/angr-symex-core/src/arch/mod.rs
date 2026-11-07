@@ -332,7 +332,10 @@ pub(crate) use impl_arch_registers;
 /// bug family recurred one level deeper ([`Self::merge`]'s
 /// concrete-diff chunk scan shadowed an already-merged unaligned sub-register
 /// overlay; angr-c7xno.1). Deriving [`angr_symex_macros::MergePolicy`] here extends the guarantee:
-/// a new field does not compile until it declares how [`Self::merge`] treats it.
+/// a new field does not compile until it carries a `#[merge_policy]` label, and
+/// [`Self::merge`]'s exhaustive destructure of `other` makes it a compile error
+/// there until the body reads it or binds it to `_` (angr-vmi2l.228); the
+/// `joint` / `in_place_self` labels generate no method of their own.
 ///
 /// [`Self::merge`] mutates `self` in place rather than building a new struct, so
 /// "self wins" is spelled `in_place_self` — there is no assignment for a

@@ -622,12 +622,25 @@ impl RegisterFile {
     ) -> bool {
         use crate::symbolic::RustBV;
 
+        // Exhaustive, no `..` (angr-vmi2l.228): a new field is a compile error
+        // here until it is either read below (an unused binding fails
+        // `-D warnings`) or bound to `_` with the reason `self`'s value stands.
+        // `other.get_storage` still reads the whole file; it composes `data`
+        // and `symbolic`, the two bound fields.
+        let RegisterFile {
+            data: o_data,
+            symbolic: o_symbolic,
+            // Fork siblings share the arch and the containment adapter derived
+            // from it; see the field docs.
+            arch: _,
+            containment: _,
+        } = other;
         let mut merged = false;
 
         // Collect all symbolic offsets from both register files
         let mut all_offsets: std::collections::HashSet<u32> =
             self.symbolic.keys().copied().collect();
-        all_offsets.extend(other.symbolic.keys());
+        all_offsets.extend(o_symbolic.keys());
 
         // Merged values are staged here and applied only after the loop: the
         // width-mismatch arm reads `self` through `get`, which composes
@@ -660,7 +673,7 @@ impl RegisterFile {
         // Merge symbolic registers
         for &offset in &all_offsets {
             let self_val = self.symbolic.get(&offset);
-            let other_val = other.symbolic.get(&offset);
+            let other_val = o_symbolic.get(&offset);
 
             match (self_val, other_val) {
                 (Some(sv), Some(ov)) => {
@@ -678,7 +691,7 @@ impl RegisterFile {
                         if width % 8 == 0
                             && size > 0
                             && end <= self.data.len()
-                            && end <= other.data.len()
+                            && end <= o_data.len()
                         {
                             stage_widened_ite(self, offset, size, &mut updates, &mut widened);
                         } else {
@@ -695,7 +708,7 @@ impl RegisterFile {
                                 sv.width(),
                                 ov.width(),
                                 self.data.len(),
-                                other.data.len()
+                                o_data.len()
                             );
                         }
                     }
@@ -708,9 +721,7 @@ impl RegisterFile {
                     // reading the backing array would silently substitute stale
                     // concrete for it (angr-49v03).
                     let size = sv.width() / 8;
-                    if size > 0
-                        && (offset as usize).saturating_add(size as usize) <= other.data.len()
-                    {
+                    if size > 0 && (offset as usize).saturating_add(size as usize) <= o_data.len() {
                         let other_full = other.get_storage(offset, size);
                         updates.push((offset, merge_cond_other.ite(&other_full, sv)));
                     }
@@ -748,7 +759,7 @@ impl RegisterFile {
         // each file's own pre-merge overlay; staging into the same vectors keeps
         // the "compose, then subsume the inner overlays" contract in one place.
         let reg_bytes = (self.arch.bits() / 8) as usize;
-        let len = self.data.len().min(other.data.len());
+        let len = self.data.len().min(o_data.len());
         // End of the furthest-reaching overlay, of either file, that starts
         // below `chunk` and runs into it. A symbolic `put` leaves the backing
         // bytes under its overlay stale, so a 16-byte xmm overlay ending past
@@ -759,7 +770,7 @@ impl RegisterFile {
         let covered_until = |chunk: usize| -> usize {
             self.symbolic
                 .iter()
-                .chain(other.symbolic.iter())
+                .chain(o_symbolic.iter())
                 .filter_map(|(&k, v)| {
                     let start = k as usize;
                     let end = start.saturating_add((v.width() / 8) as usize);
@@ -778,7 +789,7 @@ impl RegisterFile {
             // Skip offsets that are already handled by symbolic merge
             if !all_offsets.contains(&u32_off) {
                 let self_slice = &self.data[off..off + reg_bytes];
-                let other_slice = &other.data[off..off + reg_bytes];
+                let other_slice = &o_data[off..off + reg_bytes];
                 if self_slice != other_slice {
                     // An overlay may cover part of this chunk without living at
                     // its aligned start: x86/amd64 register the high-byte

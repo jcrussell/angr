@@ -38,7 +38,10 @@
 //!   label marks exactly where the compile-time guarantee *ends*, which is
 //!   where the bug class recurs, so every delegate target with its own
 //!   hand-written merge (`SymbolicMemory`, `RegisterFile`, `HeapMetadata`)
-//!   carries the derive too; the one exception is `solver`, whose
+//!   carries the derive too. Their fields are all `joint` / `in_place_self`,
+//!   which generate nothing, so each of those merges also opens with an
+//!   exhaustive `let <Struct> { .. } = other;` (no `..` rest) that ties a new
+//!   field to the body. The one exception is `solver`, whose
 //!   hand-written `SymContext::merge` fresh-constructs the merged context and
 //!   ends in an exhaustive struct literal instead (bd memory
 //!   `invariant-merge-reconciles-per-context-settings`). Expect a first-time

@@ -321,7 +321,11 @@ pub(crate) fn as_symbolic_address_error(result: &ConcretizationResult) -> Memory
 /// because that sidecar is a flat map here rather than nested in
 /// [`MemoryPage`]; angr-c7xno.50). Deriving [`angr_symex_macros::MergePolicy`] here extends the
 /// guarantee: a new field — especially a new address-keyed sidecar map — does
-/// not compile until it declares how [`Self::merge`] treats it. The behavioural
+/// not compile until it carries a `#[merge_policy]` label. Every label here is
+/// `joint` or `in_place_self`, which generate no method, so the tie to the
+/// merge body is [`Self::merge`]'s exhaustive destructure of `other`: the new
+/// field fails to compile there until the body reads it or binds it to `_`
+/// (angr-vmi2l.228). The behavioural
 /// half lives in `memory/tests/merge_sidecars.rs`, which exercises every
 /// address-keyed sidecar across the other-only-page adoption path.
 ///

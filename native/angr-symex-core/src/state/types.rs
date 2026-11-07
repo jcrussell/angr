@@ -28,7 +28,9 @@ pub struct CallStackEntry {
 /// `RustSimState` labels `heap_metadata` `#[merge_policy = "delegate"]`, which
 /// ends the top-level derive's guarantee here; deriving
 /// [`angr_symex_macros::MergePolicy`] extends it, so a new field does not compile
-/// until it declares how [`Self::union_from`] treats it. `union_from` merges in
+/// until it carries a `#[merge_policy]` label, and [`Self::union_from`]'s
+/// exhaustive destructure of `other` makes it a compile error there until the
+/// body reads it (angr-vmi2l.228). `union_from` merges in
 /// place and both fields are combined by hand (the `allocated` union reads its
 /// `freed` sibling), so both are `joint` rather than the mechanical `union` —
 /// that policy generates a `bool`-only `||` body.
@@ -124,12 +126,18 @@ impl HeapMetadata {
     /// legitimately reappear in `other.allocated` at a different size, so
     /// the freed check must run before the `or_insert`, not after.
     pub fn union_from(&mut self, other: &HeapMetadata) {
-        for (&addr, &size) in &other.allocated {
+        // Exhaustive, no `..` (angr-vmi2l.228): a new field is a compile error
+        // here until this body reads it (an unused binding fails `-D warnings`).
+        let HeapMetadata {
+            allocated: o_allocated,
+            freed: o_freed,
+        } = other;
+        for (&addr, &size) in o_allocated {
             if !self.freed.contains(&addr) {
                 self.allocated.entry(addr).or_insert(size);
             }
         }
-        for &addr in &other.freed {
+        for &addr in o_freed {
             if !self.freed.contains(&addr) {
                 self.freed.push(addr);
             }
