@@ -342,3 +342,65 @@ fn test_extract_sign_ext_low_bits() {
     assert_eq!(lo.leaf_var(), x.leaf_var(), "expected x back, got {lo:?}");
     assert_eq!(lo.width(), 8);
 }
+
+/// The `(y, c)` of a value that is `y + c`, or `None` for any other shape.
+fn add_offset(v: &SymBV) -> Option<(SymBV, u128)> {
+    match v.node()? {
+        Node {
+            op: BVOp::Add,
+            operands,
+        } => Some((operands[0].clone(), operands[1].as_u128()?)),
+        _ => None,
+    }
+}
+
+#[test]
+fn test_chained_const_add_folds_to_one_add() {
+    // angr-vmi2l.41: a 5000-step `inc` loop stays `x + 5000`, one Add deep.
+    let x = SymBV::symbol("x", 64);
+    let one = SymBV::concrete(1, 64);
+    let mut v = x.clone();
+    for _ in 0..5000 {
+        v = v.add_into(one.clone());
+    }
+    let (y, c) = add_offset(&v).expect("x + c");
+    assert_eq!(y, x);
+    assert_eq!(c, 5000);
+    // A constant on the left folds too.
+    let (_, c) = add_offset(&one.add(&v)).expect("x + c");
+    assert_eq!(c, 5001);
+}
+
+#[test]
+fn test_chained_const_add_wraps_and_cancels() {
+    let x = SymBV::symbol("x", 8);
+    // (x + 0xff) + 2 → x + 1, mod 2^8
+    let v = x.add(&SymBV::concrete(0xff, 8)).add(&SymBV::concrete(2, 8));
+    assert_eq!(add_offset(&v).expect("x + c").1, 1);
+    // (x + 3) - 3 → x
+    let back = x.add(&SymBV::concrete(3, 8)).sub(&SymBV::concrete(3, 8));
+    assert_eq!(back, x);
+    // (x - 1) - 1 → x + 0xfe
+    let dec = x.sub(&SymBV::concrete(1, 8)).sub(&SymBV::concrete(1, 8));
+    assert_eq!(add_offset(&dec).expect("x + c").1, 0xfe);
+    // (x - 5) + 5 → x
+    let inc = x.sub(&SymBV::concrete(5, 8)).add(&SymBV::concrete(5, 8));
+    assert_eq!(inc, x);
+}
+
+#[test]
+fn test_const_add_over_non_offset_shape_stays_nested() {
+    // (x * y) + 1 has no constant offset to merge into.
+    let x = SymBV::symbol("x", 32);
+    let y = SymBV::symbol("y", 32);
+    let v = x.mul(&y).add(&SymBV::concrete(1, 32));
+    let (inner, c) = add_offset(&v).expect("(x*y) + 1");
+    assert_eq!(c, 1);
+    assert!(matches!(inner.node(), Some(Node { op: BVOp::Mul, .. })));
+    // Above 128 bits the fold declines: the payload cannot wrap at 2^256.
+    let w = SymBV::symbol("w", 256);
+    let one = SymBV::concrete(1, 256);
+    let nested = w.add(&one).add(&one);
+    let (inner, _) = add_offset(&nested).expect("(w + 1) + 1");
+    assert!(add_offset(&inner).is_some());
+}

@@ -335,6 +335,29 @@ impl SymBV {
         Self::from_op(kind.result_bits(prec), BVOp::Float { kind, prec }, operands)
     }
 
+    /// `self + k` as one `y + c` when `self` is already `y + c1` or `y - c1`
+    /// over a constant `c1`, so a counter loop's chained `inc`/`dec` keeps
+    /// the term one op deep instead of growing it a level per step, as
+    /// claripy's simplifier does (angr-vmi2l.41). `k` is taken mod
+    /// `2^width`. `None` for any other shape, and above 128 bits, where the
+    /// payload cannot do the modular sum.
+    fn fold_const_offset(&self, k: u128) -> Option<Self> {
+        if bits_beyond_storage(self.width()) {
+            return None;
+        }
+        let Node { op, operands } = self.node()?;
+        let [y, c] = &*operands else {
+            return None;
+        };
+        let c1 = c.as_u128()?;
+        let total = match op {
+            BVOp::Add => c1.wrapping_add(k),
+            BVOp::Sub => k.wrapping_sub(c1),
+            _ => return None,
+        };
+        Some(y.clone().add_into(Self::concrete(total, self.width())))
+    }
+
     define_binop_pair! {
         /// Add two bitvectors.
         add,
@@ -355,6 +378,9 @@ impl SymBV {
             (None, Some(0)) => lhs,
             // 0 + x → x
             (Some(0), None) => rhs,
+            // (y ± c1) + c2 → y + (c2 ± c1)
+            (None, Some(k)) if let Some(folded) = lhs.fold_const_offset(k) => folded,
+            (Some(k), None) if let Some(folded) = rhs.fold_const_offset(k) => folded,
             _ => {
                 let width = lhs.width();
                 let (l, r) = lhs.canonicalize_commutative(rhs);
@@ -377,6 +403,10 @@ impl SymBV {
             }
             // x - 0 → x
             (None, Some(0)) => lhs,
+            // (y ± c1) - c2 → y + (±c1 - c2)
+            (None, Some(k)) if let Some(folded) = lhs.fold_const_offset(k.wrapping_neg()) => {
+                folded
+            }
             _ => {
                 let width = lhs.width();
                 Self::expr_node(width, BVOp::Sub, [lhs, rhs])
