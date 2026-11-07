@@ -10,6 +10,8 @@ import re
 
 import pytest
 
+import angr
+
 # Rust availability guard, binary-path resolution, and the module-scoped
 # fauxware_project fixture all live in tests/engines/conftest.py (angr-7gdp).
 from tests.engines.conftest import (  # noqa: F401
@@ -2820,31 +2822,30 @@ class TestStateProxyCopySemantics:
         assert after_src == before_src
         assert after_clone == before_clone + 1
 
-    def test_proxy_add_constraints_visible_across_sub_proxies(self, fauxware_project):
+    def test_proxy_add_constraints_visible_across_sub_proxies(self):
         """angr-yodz: a constraint added via ``proxy.add_constraints`` is
         visible to the SAME proxy's posix.dumps(0) and solver reads, because
         all sub-proxies share one forked context. It must remain view-local
         — the underlying Rust state's solver is untouched.
         """
-        from angr import claripy
+        # sub rsp,0x20 ; read(0, rsp, 4) ; good: jmp good -- stdin stays unconstrained
+        load = 0x400000
+        proj = angr.load_shellcode(
+            bytes.fromhex("4883ec2031c031ff4889e6ba040000000f05ebfe"), arch="amd64", simos="linux", load_address=load
+        )
+        mgr = RustExplorationManager(proj, [proj.factory.blank_state(addr=load)])
+        mgr.explore(find=load + 0x12)
 
-        state = fauxware_project.factory.entry_state()
-        mgr = RustExplorationManager(fauxware_project, [state])
-
-        proxy = mgr.proxy.active[0]
-        x = claripy.BVS("yodz_stdin", 8)
-        # Wire a fake stdin var BEFORE first .posix access so the lazily-built
-        # posix sub-proxy picks it up.
-        proxy._stdin_vars = [(x, 0)]
-
+        proxy = mgr.proxy.found[0]
+        buf = proxy.memory.load(proxy.regs.rsp, 4)
         before = mgr._rust_mgr.state_constraint_count(proxy._state_id)
-        proxy.add_constraints(x == 0x41)  # 'A'
+        proxy.add_constraints(buf == int.from_bytes(b"ABCD", "big"))
 
-        # posix.dumps(0) evaluates stdin vars under the shared context, so it
+        # posix.dumps(0) solves the stdin symbols in the shared context, so it
         # must honor the just-added constraint.
-        assert proxy.posix.dumps(0) == b"A"
+        assert proxy.posix.dumps(0) == b"ABCD"
         # The solver sub-proxy reads the same value.
-        assert proxy.solver.eval(x) == 0x41
+        assert proxy.solver.eval(buf, cast_to=bytes) == b"ABCD"
         # View-local: the underlying state's solver gained no constraint.
         assert mgr._rust_mgr.state_constraint_count(proxy._state_id) == before
 

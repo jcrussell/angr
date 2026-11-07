@@ -3082,14 +3082,9 @@ class RustPosixProxy:
     state's constraints to extract the concrete input.
     """
 
-    def __init__(self, rust_mgr, state_id, stdin_vars=None, stdout_data=None, shared_ctx_getter=None):
+    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
         self._mgr = rust_mgr
         self._state_id = state_id
-        self._stdin_vars = stdin_vars or []  # list of (claripy BVS, offset) for stdin
-        # Accumulated stdout bytes when the caller captured them; None means
-        # read the state's live Rust buffer on each dumps(1) (defaulting to
-        # b"" would make stdout predicates never match; angr-hc1yj).
-        self._stdout_data = stdout_data
         # angr-yodz: shared-context getter from the parent RustStateProxy so
         # dumps(0) honors constraints added via the same proxy's
         # add_constraints. None for standalone construction.
@@ -3103,14 +3098,8 @@ class RustPosixProxy:
         them, as the Python engine's concrete stdout does (angr-vmi2l.335).
         """
         if fd == 0:
-            extra = tuple(kwargs.get("extra_constraints", ()))
-            if extra:
-                return self._eval_stdin_under(extra)
-            # stdin — evaluate symbolic variables under constraints
-            return self._eval_stdin()
+            return self._eval_stdin(tuple(kwargs.get("extra_constraints", ())))
         if fd == 1:
-            if self._stdout_data is not None:
-                return self._stdout_data
             # cat-(b) FALLBACK WITH LOSS via _rust_state_get: empty bytes when
             # the state has no stdout buffer (it never wrote).
             return bytes(_rust_state_get(self._mgr, "get_state_stdout", self._state_id, default=b""))
@@ -3121,61 +3110,30 @@ class RustPosixProxy:
         # helper logs so they're visible under --debug.
         return bytes(_rust_state_get(self._mgr, "get_state_fd_output", self._state_id, fd, default=b""))
 
-    def _eval_stdin(self):
-        """Evaluate stdin symbolic variables to concrete bytes."""
-        if not self._stdin_vars:
-            return self._eval_rust_stdin()
-        owned_ctx = None
-        try:
-            if self._shared_ctx_getter is not None:
-                solver_ctx = self._shared_ctx_getter()
-            else:
-                # angr-87e56: a fork_state_solver clone is an unsendable owned
-                # context. Release it on the owning thread when done rather than
-                # letting the local drop via GC on a scheduler worker thread.
-                solver_ctx = owned_ctx = self._mgr.fork_state_solver(self._state_id)
-            result = bytearray()
-            for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1]):
-                val = solver_ctx.eval(var)
-                if val is not None:
-                    # Convert to bytes
-                    byte_len = max(1, var.length // 8)
-                    result.extend(val.to_bytes(byte_len, "big"))
-            return bytes(result)
-        except MemoryError:
-            raise
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: returning empty bytes when stdin eval
-            # fails could be misread as "the input was empty" by callers
-            # comparing solution bytes. Logged at warn so the failure is loud.
-            l.warning("RustPosixProxy: failed to evaluate stdin: %s", e)
-            return b""
-        finally:
-            # Release the owned fork on its owning thread (never the shared one).
-            # ``owned_ctx`` was forked above in this same call, on this same
-            # thread, so the owner id is simply the current thread.
-            _release_owned_ctx(owned_ctx, threading.get_ident())
-
     def _stdin_ast(self):
-        """The stdin stream as one claripy AST, laid out as ``_eval_stdin`` lays out its bytes; None when empty."""
-        if self._stdin_vars:
-            leaves = [var for var, _offset in sorted(self._stdin_vars, key=lambda x: x[1])]
-        else:
-            leaves = list(self._mgr.get_stdin_seed_asts(self._state_id))
-            for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
-                sym = claripy.BVS(name, bits, explicit_name=True)
-                # A wider symbol (scanf %d) is laid out little-endian, as in _eval_rust_stdin.
-                leaves.append(sym.reversed if bits > 8 else sym)
+        """The stdin stream as one claripy AST; None when empty.
+
+        Same layout an export has: the harness's seeded content first, as on
+        the stream ``_seed_stdin_to_rust`` pushed (angr-vmi2l.267), then each
+        symbol native reads created, at its recorded width, little-endian, as
+        ``_inject_rust_stdin_inner`` appends them.
+        """
+        leaves = list(self._mgr.get_stdin_seed_asts(self._state_id))
+        for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
+            sym = claripy.BVS(name, bits, explicit_name=True)
+            leaves.append(sym.reversed if bits > 8 else sym)
         if not leaves:
             return None
         return claripy.Concat(*leaves) if len(leaves) > 1 else leaves[0]
 
-    def _eval_stdin_under(self, extra):
-        """``dumps(0, extra_constraints=extra)``: the whole stream solved as one model under ``extra``.
+    def _eval_stdin(self, extra=()):
+        """``dumps(0, extra_constraints=extra)``: the whole stream solved as one model.
 
-        Raises on an unsatisfiable ``extra`` as ``SimSolver.eval`` does,
-        rather than returning ``b""``. A variable-length read keeps the
-        length the state's own constraints give it.
+        The model comes from the shared context, so a constraint added through
+        the same proxy's ``add_constraints`` holds (angr-yodz). Raises on an
+        unsatisfiable ``extra`` as ``SimSolver.eval`` does, rather than
+        returning ``b""``. A variable-length read keeps the length the state's
+        own constraints give it.
         """
         data = self._stdin_ast()
         if data is None:
@@ -3185,42 +3143,20 @@ class RustPosixProxy:
             if self._shared_ctx_getter is not None:
                 solver_ctx = self._shared_ctx_getter()
             else:
-                # Released on this thread below, as in _eval_stdin (angr-87e56).
+                # angr-87e56: a fork_state_solver clone is an unsendable owned
+                # context. Release it on the owning thread when done rather than
+                # letting the local drop via GC on a scheduler worker thread.
                 solver_ctx = owned_ctx = self._mgr.fork_state_solver(self._state_id)
             val = _with_extra_constraints(solver_ctx, solver_ctx.eval, data, extra=extra)
         finally:
+            # ``owned_ctx`` was forked above in this same call, on this same
+            # thread, so the owner id is simply the current thread.
             _release_owned_ctx(owned_ctx, threading.get_ident())
         if val is None:
             from angr.errors import SimUnsatError  # pylint: disable=import-outside-toplevel
 
-            raise SimUnsatError("RustPosixProxy.dumps(0): stdin has no model under extra_constraints")
+            raise SimUnsatError("RustPosixProxy.dumps(0): stdin has no model")
         return val.to_bytes(data.length // 8, "big")
-
-    def _eval_rust_stdin(self):
-        """``dumps(0)`` from the seeded stdin and the symbols native reads created in Rust.
-
-        Same layout an export has: the harness's seeded content first, as on
-        the stream ``_seed_stdin_to_rust`` pushed (angr-vmi2l.267), then each
-        symbol at its recorded width, little-endian, as
-        ``_inject_rust_stdin_inner`` appends them, so the proxy does not return
-        ``b""`` without ``stdin_vars`` (angr-hc1yj).
-        """
-        try:
-            out = bytearray(self._mgr.eval_stdin_seed(self._state_id) or b"")
-            if not self._mgr.has_state_stdin_symbols(self._state_id):
-                return bytes(out)
-            for name, bits in rust_stdin_read_symbols(self._mgr, self._state_id):
-                nbytes = max(1, bits // 8)
-                val = self._mgr.eval_stdin_symbol(self._state_id, name, bits)
-                out += (0 if val is None else val & ((1 << (nbytes * 8)) - 1)).to_bytes(nbytes, "little")
-            return bytes(out)
-        except MemoryError:
-            raise
-        except Exception as e:
-            # cat-(c) WRONG-ANSWER RISK: empty bytes read as "the input was
-            # empty"; logged at warn like the stdin_vars path above.
-            l.warning("RustPosixProxy: failed to evaluate Rust stdin: %s", e)
-            return b""
 
 
 class RustCallStackFrameProxy:
@@ -4168,14 +4104,10 @@ class RustStateProxy:
     Full SimState is only needed for SimProcedure execution.
     """
 
-    def __init__(
-        self, rust_mgr, state_id, project=None, stdin_vars=None, stdout_data=None, python_mgr=None, owns_copy=False
-    ):
+    def __init__(self, rust_mgr, state_id, project=None, python_mgr=None, owns_copy=False):
         self._mgr = rust_mgr
         self._state_id = state_id
         self._project = project
-        self._stdin_vars = stdin_vars
-        self._stdout_data = stdout_data
         # High-level RustExplorationManager — used for options/globals lookup.
         # None when constructed standalone (e.g., low-level unit tests); in
         # that case options/globals fall back to empty stand-ins.
@@ -4333,8 +4265,6 @@ class RustStateProxy:
             self._posix_proxy = RustPosixProxy(
                 self._mgr,
                 self._state_id,
-                stdin_vars=self._stdin_vars,
-                stdout_data=self._stdout_data,
                 shared_ctx_getter=self._get_shared_solver_ctx,
             )
         return self._posix_proxy
@@ -4463,8 +4393,6 @@ class RustStateProxy:
             self._mgr,
             new_id,
             project=self._project,
-            stdin_vars=self._stdin_vars,
-            stdout_data=self._stdout_data,
             python_mgr=self._python_mgr,
             owns_copy=True,
         )
@@ -4767,11 +4695,9 @@ class RustSimulationManagerProxy:
     States are returned as RustStateProxy objects (O(1) creation, no sync).
     """
 
-    def __init__(self, rust_mgr, project=None, stdin_vars=None, stdout_tracker=None, python_mgr=None):
+    def __init__(self, rust_mgr, project=None, python_mgr=None):
         self._mgr = rust_mgr
         self._project = project
-        self._stdin_vars = stdin_vars
-        self._stdout_tracker = stdout_tracker or {}  # state_id -> bytes
         self._python_mgr = python_mgr
         self._errored = []
         # Wired by RustExplorationManager when dispatching ExplorationTechnique
@@ -4786,8 +4712,6 @@ class RustSimulationManagerProxy:
             self._mgr,
             state_id,
             project=self._project,
-            stdin_vars=self._stdin_vars,
-            stdout_data=self._stdout_tracker.get(state_id),
             python_mgr=self._python_mgr,
         )
 

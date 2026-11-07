@@ -137,8 +137,6 @@ def dispatch_step_with_hooks(mgr: RustExplorationManager, batch_size, stash="act
     proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
         project=mgr._project,
-        stdin_vars=getattr(mgr, "_stdin_vars", None),
-        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
         python_mgr=mgr,
     )
 
@@ -273,8 +271,6 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
     proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
         project=mgr._project,
-        stdin_vars=getattr(mgr, "_stdin_vars", None),
-        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
         python_mgr=mgr,
     )
 
@@ -814,8 +810,6 @@ def apply_technique_filters(mgr: RustExplorationManager):
     simgr_proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
         project=mgr._project,
-        stdin_vars=getattr(mgr, "_stdin_vars", None),
-        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
     )
 
     # Apply filters to active, errored, and deadended states.
@@ -931,8 +925,6 @@ def check_technique_complete(mgr: RustExplorationManager) -> bool:
     simgr_proxy = RustSimulationManagerProxy(
         mgr._rust_mgr,
         project=mgr._project,
-        stdin_vars=getattr(mgr, "_stdin_vars", None),
-        stdout_tracker=getattr(mgr, "_stdout_tracker", {}),
     )
 
     import time

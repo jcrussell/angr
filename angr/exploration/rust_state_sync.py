@@ -628,13 +628,7 @@ class RustStateSyncMixin:
             filtered = cached_pages
         mapped_page_addrs = {addr for (addr, _data, _perms) in filtered}
         if filtered:
-            try:
-                rust_state.map_memory_batch(filtered)
-            except AttributeError:
-                # cat-(a) EXPECTED CONTROL FLOW: probing for batch API on
-                # older Rust builds; fall back to per-page mapping.
-                for page_addr, data, perms in filtered:
-                    rust_state.map_memory_data(page_addr, data, perms)
+            rust_state.map_memory_batch(filtered)
         return mapped_page_addrs, len(filtered)
 
     def _overlay_relocated_sections(self, angr_state: angr.SimState, rust_state: _RustSimState) -> None:
@@ -1078,13 +1072,7 @@ class RustStateSyncMixin:
                 extra_pages_synced += 1
 
             if lazy_batch:
-                try:
-                    rust_state.add_lazy_regions_batch(lazy_batch)
-                except AttributeError:
-                    # cat-(a) EXPECTED CONTROL FLOW: probing for batch API on
-                    # older Rust builds; fall back to per-page registration.
-                    for start, size in lazy_batch:
-                        rust_state.add_lazy_region(start, size)
+                rust_state.add_lazy_regions_batch(lazy_batch)
         if extra_pages_synced:
             l.debug(f"Synced {extra_pages_synced} extra pages from Python state (non-loader)")
 
@@ -1414,8 +1402,6 @@ class RustStateSyncMixin:
                     (
                         self._extract_from_ultrapage(state, page, page_addr, symbolic_regions)
                         or self._extract_from_listpage(state, page, page_addr, symbolic_regions)
-                        or self._extract_from_alt_bitmap(state, page, page_addr, page_size, symbolic_regions)
-                        or self._extract_from_byte_map(page, page_addr, symbolic_regions)
                     )
 
             if symbolic_regions:
@@ -1441,10 +1427,6 @@ class RustStateSyncMixin:
                 return val
         return None
 
-    def _record_symbolic(self, out: dict, addr: int, val) -> None:
-        out[addr] = val
-        self._register_handle(id(val), val)
-
     def _extract_via_get_symbolic_addrs(self, state: angr.SimState, out: dict) -> bool:
         """Strategy 1: angr's internal symbolic tracking. Most accurate.
 
@@ -1467,7 +1449,7 @@ class RustStateSyncMixin:
         for addr in symbolic_addrs:
             val = self._load_symbolic_byte(state, addr)
             if val is not None:
-                self._record_symbolic(out, addr, val)
+                out[addr] = val
         added = len(out) - before
         if added:
             l.debug(f"Extracted {added} symbolic bytes via get_symbolic_addrs")
@@ -1513,7 +1495,7 @@ class RustStateSyncMixin:
                         addr = page_addr + offset
                         val = self._load_symbolic_byte(state, addr)
                         if val is not None:
-                            self._record_symbolic(out, addr, val)
+                            out[addr] = val
             # angr-ctct: changed-history misses filler-materialised symbols.
             # Fall back to symbolic_data only when no store-driven changes
             # were seen (typical of the user-setup page) and the dict is
@@ -1553,7 +1535,7 @@ class RustStateSyncMixin:
                             addr = page_addr + byte_off
                             val = self._load_symbolic_byte(state, addr)
                             if val is not None:
-                                self._record_symbolic(out, addr, val)
+                                out[addr] = val
         return True
 
     def _extract_from_listpage(self, state, page, page_addr: int, out: dict) -> bool:
@@ -1564,27 +1546,7 @@ class RustStateSyncMixin:
             addr = page_addr + offset
             val = self._load_symbolic_byte(state, addr)
             if val is not None:
-                self._record_symbolic(out, addr, val)
-        return True
-
-    def _extract_from_alt_bitmap(self, state, page, page_addr: int, page_size: int, out: dict) -> bool:
-        """Fallback page with a `_symbolic_bitmap` dict attribute."""
-        if not (hasattr(page, "_symbolic_bitmap") and page._symbolic_bitmap):
-            return False
-        for offset in range(page_size):
-            if page._symbolic_bitmap.get(offset, False):
-                addr = page_addr + offset
-                val = self._load_symbolic_byte(state, addr)
-                if val is not None:
-                    self._record_symbolic(out, addr, val)
-        return True
-
-    def _extract_from_byte_map(self, page, page_addr: int, out: dict) -> bool:
-        """Page exposing a `symbolic_byte_map` of offset → AST directly."""
-        if not (hasattr(page, "symbolic_byte_map") and page.symbolic_byte_map):
-            return False
-        for offset, sym_val in page.symbolic_byte_map.items():
-            self._record_symbolic(out, page_addr + offset, sym_val)
+                out[addr] = val
         return True
 
     def _install_rust_memory_proxy(self, state: angr.SimState):
@@ -1785,9 +1747,8 @@ class RustStateSyncMixin:
         except MemoryError:
             raise
         except Exception:
-            # cat-(a) EXPECTED CONTROL FLOW: dirty-page API unavailable on
-            # this build; skip replay. NativeRead/NativeWrite-style sync
-            # gaps fall back to the older snapshot path.
+            # cat-(a) EXPECTED CONTROL FLOW: no pending state for this id, so
+            # there is nothing to replay.
             return
         if not dirty_pages:
             return
@@ -1804,9 +1765,9 @@ class RustStateSyncMixin:
 
         try:
             self._rust_mgr.clear_pending_dirty_tracking(self._current_callback_state_id)
-        except (AttributeError, RuntimeError):
-            # cat-(a) EXPECTED CONTROL FLOW: clear-API missing on older builds;
-            # dirty bits stay set but next replay is idempotent (writes the
+        except RuntimeError:
+            # cat-(a) EXPECTED CONTROL FLOW: the pending state is gone; dirty
+            # bits stay set but the next replay is idempotent (writes the
             # same page bytes again).
             if _DBG:
                 l.debug("clear_pending_dirty_tracking failed after replay")
@@ -1830,10 +1791,9 @@ class RustStateSyncMixin:
                 sym_entries = self._rust_mgr.pending_memory_load_symbolic_page(
                     self._current_callback_state_id, page_addr
                 )
-            except (AttributeError, RuntimeError):
-                # cat-(a) EXPECTED CONTROL FLOW: symbolic-page FFI absent on
-                # older builds; symbolic bytes fall through to the older
-                # snapshot path on the next sync.
+            except RuntimeError:
+                # cat-(a) EXPECTED CONTROL FLOW: the pending state is gone, so
+                # only the concrete half of the page replays.
                 sym_entries = None
             _ffi_ns += time.perf_counter_ns() - _t0
 
@@ -1887,8 +1847,6 @@ class RustStateSyncMixin:
                             l.debug(f"dirty-page symbolic blit failed at 0x{page_addr:x}: {e}")
                         fast = False
                     if fast:
-                        for _addr, ast in sym_entries:
-                            self._register_handle(id(ast), ast)
                         sym_entries = ()
                 for addr, ast in sym_entries:
                     try:
@@ -1920,7 +1878,6 @@ class RustStateSyncMixin:
                                 inspect=False,
                                 disable_actions=True,
                             )
-                        self._register_handle(id(ast), ast)
                     except MemoryError:
                         raise
                     except Exception as e:
@@ -2006,7 +1963,6 @@ class RustStateSyncMixin:
                 try:
                     state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
                     restored_count += 1
-                    self._register_handle(id(ast), ast)
                 except MemoryError:
                     raise
                 except Exception as e:
@@ -2023,7 +1979,6 @@ class RustStateSyncMixin:
                 try:
                     state.memory.store(start_addr, ast, endness=state.arch.memory_endness)
                     restored_count += 1
-                    self._register_handle(id(ast), ast)
                 except MemoryError:
                     raise
                 except Exception as e:
@@ -2075,7 +2030,6 @@ class RustStateSyncMixin:
         for addr, (ast, size) in hook_memory.items():
             try:
                 state.memory.store(addr, ast, endness=state.arch.memory_endness)
-                self._register_handle(id(ast), ast)
                 restored_count += 1
                 if _DBG:
                     l.debug(f"Restored hook symbolic memory at 0x{addr:x} (size={size})")

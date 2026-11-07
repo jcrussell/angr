@@ -2616,7 +2616,6 @@ class RustExplorationManager(
                 is_sym = getattr(val, "symbolic", False)
                 concrete = state.solver.eval(val).to_bytes(size, "little")
                 if is_sym:
-                    self._register_handle(id(val), val, addr=addr, size=size)
                     results.append((concrete, True, val))
                 else:
                     results.append((concrete, False, None))
@@ -2735,14 +2734,10 @@ class RustExplorationManager(
         # angr-hcok: proxy gate — Rust already holds the symbolic AST in
         # its own memory; skip the Python shadow write.
         if _is_rust_memory_proxy(state.memory):
-            if hasattr(ast, "length") and ast.length:
-                self._register_handle(id(ast), ast, addr=addr, size=ast.length // 8)
             return
         try:
             if hasattr(ast, "length") and ast.length:
-                size = ast.length // 8
                 state.memory.store(addr, ast, endness=state.arch.memory_endness, inspect=False, disable_actions=True)
-                self._register_handle(id(ast), ast, addr=addr, size=size)
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: symbolic store at concrete addr failed;
             # Rust may serve stale concrete bytes from a prior store. Debug-
@@ -2784,7 +2779,6 @@ class RustExplorationManager(
             state.memory.store(
                 addr_ast, data_ast, endness=state.arch.memory_endness, inspect=False, disable_actions=True
             )
-            self._register_handle(id(data_ast), data_ast)
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: symbolic-address store failed; Python
             # memory model could not apply the symbolic write. Debug-logs.
@@ -2831,8 +2825,6 @@ class RustExplorationManager(
             # let the Python fallback try.
             l.debug(f"state_memory_store_symbolic_multi raised: {e}")
             return False
-        if ok:
-            self._register_handle(id(data_ast), data_ast)
         return bool(ok)
 
     def _rust_state_memory_store_symbolic_multi(self, state_id: int, addr_ast, data_ast) -> bool:
@@ -2856,16 +2848,11 @@ class RustExplorationManager(
         # angr-hcok: proxy gate — synthesize a fresh BVS rather than
         # re-entering Rust via the proxy mid-run().
         if _is_rust_memory_proxy(state.memory):
-            ast = claripy.BVS(f"sym_addr_load_{size}", size * 8, explicit_name=False)
-            self._register_handle(id(ast), ast, size=size)
-            return ast
+            return claripy.BVS(f"sym_addr_load_{size}", size * 8, explicit_name=False)
         try:
-            ast = state.memory.load(
+            return state.memory.load(
                 addr_ast, size, endness=state.arch.memory_endness, inspect=False, disable_actions=True
             )
-            if ast is not None:
-                self._register_handle(id(ast), ast, size=size)
-            return ast
         except (SimError, ClaripyError) as e:
             # cat-(c) WRONG-ANSWER RISK: symbolic-address load failed; returns
             # a fresh BVS that has no relationship to the actual symbolic value
@@ -6077,9 +6064,6 @@ class RustExplorationManager(
         src_glb = self._py_state_globals.get(source_state_id)
         if src_glb is not None:
             self._py_state_globals[new_id] = dict(src_glb)
-        tracker = getattr(self, "_stdout_tracker", None)
-        if tracker is not None and source_state_id in tracker:
-            tracker[new_id] = tracker[source_state_id]
         return new_id
 
     def drop_copy(self, copy_state_id: int, stash: str = "_copies") -> bool:
@@ -6087,8 +6071,8 @@ class RustExplorationManager(
         (angr-yhe0), or from the ``stash`` it was forked into.
 
         Removes the Rust-side state from the ``_copies`` stash, clears the
-        per-state Python metadata (options set, globals dict, stdout tracker
-        entry), and frees Rust-side per-state metadata via
+        per-state Python metadata (options set, globals dict),
+        and frees Rust-side per-state metadata via
         ``clear_state_metadata``. Returns ``True`` when a state was actually
         dropped, ``False`` when the id is not in ``_copies`` (e.g. it was
         already dropped, moved to a different stash, or never a copy).
@@ -6114,9 +6098,6 @@ class RustExplorationManager(
             return False
         self._py_state_options.pop(copy_state_id, None)
         self._py_state_globals.pop(copy_state_id, None)
-        tracker = getattr(self, "_stdout_tracker", None)
-        if tracker is not None:
-            tracker.pop(copy_state_id, None)
         try:
             self._rust_mgr.clear_state_metadata(copy_state_id)
         except MemoryError:
@@ -6669,8 +6650,6 @@ class RustExplorationManager(
         return RustSimulationManagerProxy(
             self._rust_mgr,
             project=self._project,
-            stdin_vars=getattr(self, "_stdin_vars", None),
-            stdout_tracker=getattr(self, "_stdout_tracker", {}),
             python_mgr=self,
         )
 
@@ -6690,15 +6669,11 @@ class RustExplorationManager(
         """Wrap each of *state_ids* as a ``RustStateProxy`` (see :meth:`_stash_proxies`)."""
         from angr.exploration.rust_state_proxy import RustStateProxy
 
-        stdin_vars = getattr(self, "_stdin_vars", None)
-        stdout_tracker = getattr(self, "_stdout_tracker", {}) or {}
         return [
             RustStateProxy(
                 self._rust_mgr,
                 sid,
                 project=self._project,
-                stdin_vars=stdin_vars,
-                stdout_data=stdout_tracker.get(sid),
                 python_mgr=self,
             )
             for sid in state_ids

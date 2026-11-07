@@ -146,14 +146,7 @@ class RustStateCacheMixin:
             if self._predicate_eval_cache.get(state_id) == current_info:
                 continue
 
-            # stdout_data=None: the proxy reads this state's own Rust stdout.
-            state = RustStateProxy(
-                self._rust_mgr,
-                state_id,
-                project=self._project,
-                stdin_vars=getattr(self, "_stdin_vars", None),
-                python_mgr=self,
-            )
+            state = RustStateProxy(self._rust_mgr, state_id, project=self._project, python_mgr=self)
 
             # A raising predicate propagates out of explore(), as under
             # SimulationManager.explore (angr-vmi2l.298).
