@@ -127,6 +127,43 @@ class TestCallbackSolverKwargs:
         assert sorted(got) == [200, 201]
         assert isinstance(got, list)
 
+    def test_satisfiable_honours_extra_constraints(self):
+        s, x = self._callback_state()
+        assert s.solver.satisfiable(extra_constraints=[claripy.false()]) is False
+        assert s.solver.satisfiable(extra_constraints=[x == 200]) is True
+
+    def test_eval_honours_extra_constraints(self):
+        s, x = self._callback_state()
+        assert s.solver.eval(x, extra_constraints=[x == 200]) == 200
+        assert s.solver.eval(x, cast_to=bytes, extra_constraints=[x == 0x41424344]) == b"ABCD"
+
+    def test_eval_one_goes_through_extras(self):
+        s, x = self._callback_state()
+        assert s.solver.eval_one(x, extra_constraints=[x == 107]) == 107
+
+    def test_unsat_extras_raise_on_every_query(self):
+        """Each query surfaces infeasible extras as SimUnsatError (angr-vmi2l.315)."""
+        s, x = self._callback_state()
+        for query in (
+            lambda: s.solver.min(x, extra_constraints=[x.ULT(10)]),
+            lambda: s.solver.max(x, extra_constraints=[x.ULT(10)]),
+            lambda: s.solver.eval_one(x, extra_constraints=[x.ULT(10)]),
+            lambda: s.solver.eval_exact(x, 1, extra_constraints=[x.ULT(10)]),
+            lambda: s.solver.eval_atleast(x, 1, extra_constraints=[x.ULT(10)]),
+        ):
+            with pytest.raises(SimUnsatError):
+                query()
+
+    def test_extras_do_not_leak(self):
+        s, x = self._callback_state()
+        s.solver.eval(x, extra_constraints=[x == 200])
+        s.solver.satisfiable(extra_constraints=[claripy.false()])
+        with pytest.raises(SimUnsatError):
+            s.solver.eval(x, extra_constraints=[x.ULT(10)])
+        assert s.solver.satisfiable() is True
+        assert s.solver.min(x) == 101
+        assert s.solver.max(x, extra_constraints=[x.ULT(150)]) == 149
+
     def test_eval_upto_cast_to_bytes_encodes_the_value(self):
         """``cast_to=bytes`` is the big-endian encoding of the solution, as
         ``SimSolver._cast_to`` produces, not ``bytes(value)`` (a zero buffer
