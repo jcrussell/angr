@@ -29,6 +29,7 @@ from angr.exploration.rust_manager import (
     SELFMODIFYING_CODE_REASON,
     RustErrorRecord,
     RustExplorationManager,
+    _concretization_key,
     _unsupported_inspect_events,
     custom_engine_reason,
     is_python_init_seed,
@@ -132,6 +133,13 @@ def _explore_target(condition, static_addrs):
 _MANAGER_WIDE_OPTIONS = ("LAZY_SOLVES", "ZERO_FILL_UNCONSTRAINED_MEMORY")
 
 
+def _resident_key(state: SimState) -> tuple:
+    """What every state the private manager holds must agree on: its ZERO_FILL_UNCONSTRAINED_MEMORY, which the
+    page callbacks answer from one seed's memory (angr-vmi2l.241), and the concretizer settings each import
+    applies manager-wide (angr-vmi2l.346)."""
+    return ("ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options, _concretization_key(state))
+
+
 class RustBackend(SimulationBackend):
     """Steps the states the Rust engine supports, one block per step.
 
@@ -205,9 +213,8 @@ class RustBackend(SimulationBackend):
         self._ownership = _LineageMarks()
         self._counters = {"claimed": 0, "declined": Counter(), "handed_back": 0, "fast_path_runs": 0}
         self._mgr: RustExplorationManager | None = None
-        # The ZERO_FILL_UNCONSTRAINED_MEMORY of every state claimed so far, which the private manager's seeds
-        # must agree on (RustExplorationManager._phase_activate); None before the first claim.
-        self._zero_fill: bool | None = None
+        # The _resident_key of every state claimed so far; None before the first claim.
+        self._resident_key: tuple | None = None
         # Ids of the Rust states waiting in _PARKED.
         self._resident: set[int] = set()
         # The finalizer of the export each resident id was handed out as; it queues the id in
@@ -231,8 +238,8 @@ class RustBackend(SimulationBackend):
         self._simgr = weakref.ref(simgr)
         reason = self.decline_reason(simgr, state, successor_func, run_args)
         if reason is None:
-            if self._zero_fill is None:
-                self._zero_fill = "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options
+            if self._resident_key is None:
+                self._resident_key = _resident_key(state)
             self._ownership.set(state, _OWNED)
             self._counters["claimed"] += 1
             return True, ""
@@ -268,9 +275,11 @@ class RustBackend(SimulationBackend):
         refused = self._option_refusals(state.options)
         if refused:
             return "state options not honored by the rust engine: " + ", ".join(refused)
-        if self._zero_fill not in (None, "ZERO_FILL_UNCONSTRAINED_MEMORY" in state.options):
-            # The private manager's page callbacks serve every state from one seed's memory (angr-vmi2l.241).
-            return "ZERO_FILL_UNCONSTRAINED_MEMORY differs from the states the rust engine already holds"
+        if self._resident_key not in (None, _resident_key(state)):
+            return (
+                "ZERO_FILL_UNCONSTRAINED_MEMORY or the memory concretization settings differ from the states "
+                "the rust engine already holds"
+            )
         events = _unsupported_inspect_events(state)
         if events:
             return "state.inspect events not dispatched by the rust engine: " + ", ".join(events)
@@ -410,14 +419,18 @@ class RustBackend(SimulationBackend):
             # One native run has one manager-wide setting of each; per-step routing steps each state under its own
             # LAZY_SOLVES (RustExplorationManager._step_ids_once) and declines a differing zero fill (angr-vmi2l.241).
             return False
+        if self._resident_key is None and len({_resident_key(state) for state in states}) > 1:
+            # Nothing is claimed yet, so decline_reason let every state through: per-step routing claims the first
+            # and declines the ones whose concretizer differs (angr-vmi2l.346).
+            return False
         limiter = self._fast_path_limiter(simgr, stash, states)
         dfs = self._fast_path_dfs(simgr, stash, explorer)
         if limiter is False or dfs is False or (limiter is not None and dfs is not None):
             return False
         if held and (limiter is not None or dfs is not None):
             return False
-        if self._zero_fill is None:
-            self._zero_fill = "ZERO_FILL_UNCONSTRAINED_MEMORY" in states[0].options
+        if self._resident_key is None:
+            self._resident_key = _resident_key(states[0])
         for state in states:
             self._ownership.set(state, _OWNED)
         self._explore_native(simgr, stash, states, explorer, limiter, dfs, n, held)

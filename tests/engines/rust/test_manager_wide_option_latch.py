@@ -94,3 +94,25 @@ def test_seeds_that_differ_in_zero_fill_route_to_python_on_a_rust_default_projec
     reads = {f.solver.eval(f.regs.rbx): len(f.solver.eval_upto(f.regs.eax, 2)) for f in simgr.found}
     # The zero-fill seed reads 0; the other reads a fresh symbol.
     assert reads == {1: 1, 2: 2}
+
+
+def _multivalued_read_seeds(engine=None):
+    p = angr.load_shellcode(LOAD_BYTE, arch="amd64", load_address=LOAD, engine=engine)
+    seeds = []
+    for marker, avoid in ((1, False), (2, True)):
+        s = p.factory.blank_state(addr=LOAD, add_options={angr.options.AVOID_MULTIVALUED_READS} if avoid else set())
+        s.regs.rdi = s.solver.BVS("ptr", 64)
+        s.regs.rbx = marker
+        seeds.append(s)
+    return p, seeds
+
+
+@pytest.mark.parametrize("engine", [None, "rust"])
+def test_states_that_differ_in_concretization_each_keep_their_own(engine):
+    # The backend imports one state at a time, and each import used to set the manager-wide concretizer, so the
+    # first state's symbolic read ran under AVOID_MULTIVALUED_READS too (angr-vmi2l.346).
+    p, seeds = _multivalued_read_seeds(engine)
+    simgr = p.factory.simulation_manager(seeds)
+    simgr.explore(find=LOAD + 3, num_find=2)
+    # Without AVOID_MULTIVALUED_READS the read concretizes rdi; with it, rdi stays free.
+    assert {f.solver.eval(f.regs.rbx): len(f.solver.eval_upto(f.regs.rdi, 2)) for f in simgr.found} == {1: 1, 2: 2}

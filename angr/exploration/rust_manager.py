@@ -1247,6 +1247,35 @@ def _unresolvable_syscall_jumpkinds(simos, arch) -> list[str]:
     return out
 
 
+def _concretization_key(state) -> tuple[bool, int, int, bool, bool, bool]:
+    """The arguments ``configure_concretization_strategies`` takes for *state*.
+
+    The Rust engine applies them manager-wide, so every state one manager
+    runs must share this key (angr-vmi2l.241, angr-vmi2l.346).
+    """
+    from angr import sim_options as o
+
+    read_limit = 1024  # Python default
+    write_limit = 128  # Python default
+    mem = getattr(state, "memory", None)
+    for strat in getattr(mem, "read_strategies", None) or ():
+        if hasattr(strat, "_limit"):
+            read_limit = strat._limit
+            break
+    for strat in getattr(mem, "write_strategies", None) or ():
+        if hasattr(strat, "_limit"):
+            write_limit = strat._limit
+            break
+    return (
+        o.APPROXIMATE_MEMORY_INDICES in state.options,
+        read_limit,
+        write_limit,
+        o.SYMBOLIC_WRITE_ADDRESSES in state.options,
+        o.AVOID_MULTIVALUED_READS in state.options,
+        o.AVOID_MULTIVALUED_WRITES in state.options,
+    )
+
+
 def _plt_got_slot(obj, insn, op, bits: int) -> int | None:
     """The GOT slot an x86 PLT entry's ``jmp *mem`` reads, or None for an operand shape no PLT uses.
 
@@ -1900,33 +1929,7 @@ class RustExplorationManager(
                             )
                         self._seed_zero_fill = zero_fill
                         # Configure concretization strategies to match Python's
-                        use_approx = o.APPROXIMATE_MEMORY_INDICES in state.options
-                        sym_write = o.SYMBOLIC_WRITE_ADDRESSES in state.options
-                        avoid_multi_reads = o.AVOID_MULTIVALUED_READS in state.options
-                        avoid_multi_writes = o.AVOID_MULTIVALUED_WRITES in state.options
-                        # Read Python's strategy limits from memory plugin
-                        read_limit = 1024  # Python default
-                        write_limit = 128  # Python default
-                        if hasattr(state, "memory"):
-                            mem = state.memory
-                            if hasattr(mem, "read_strategies") and mem.read_strategies:
-                                for strat in mem.read_strategies:
-                                    if hasattr(strat, "_limit"):
-                                        read_limit = strat._limit
-                                        break
-                            if hasattr(mem, "write_strategies") and mem.write_strategies:
-                                for strat in mem.write_strategies:
-                                    if hasattr(strat, "_limit"):
-                                        write_limit = strat._limit
-                                        break
-                        concretization = (
-                            use_approx,
-                            read_limit,
-                            write_limit,
-                            sym_write,
-                            avoid_multi_reads,
-                            avoid_multi_writes,
-                        )
+                        concretization = _concretization_key(state)
                         if seed_index and concretization != seed_concretization:
                             # One manager-wide concretizer: a later seed must not overwrite an
                             # earlier one's (angr-vmi2l.241).
@@ -1941,12 +1944,7 @@ class RustExplorationManager(
                             "Configured concretization: approx=%s, read_limit=%d, "
                             "write_limit=%d, sym_write=%s, avoid_reads=%s, "
                             "avoid_writes=%s",
-                            use_approx,
-                            read_limit,
-                            write_limit,
-                            sym_write,
-                            avoid_multi_reads,
-                            avoid_multi_writes,
+                            *concretization,
                         )
                     except ImportError:
                         # cat-(a) EXPECTED CONTROL FLOW: optional sim_options import.
