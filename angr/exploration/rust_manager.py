@@ -5865,8 +5865,11 @@ class RustExplorationManager(
         Nearest, not the lineage root: a value a technique wrote on an
         intermediate state is what its forks start from, as a
         ``SimState.copy`` would carry it (angr-vmi2l.265). With no entry on
-        the state or any ancestor, an empty one, or ``None`` without
-        ``create``.
+        the state or any ancestor, ``None`` without ``create``; with it, the
+        lineage's plugin template SimState seeds the entry, and only with no
+        template is it empty. An empty options entry strips every option off
+        the next export (:meth:`_apply_state_metadata`), so "no record" must
+        not read as "the user turned everything off" (angr-kfchf).
         """
         entry = store.get(state_id)
         if entry is not None:
@@ -5879,9 +5882,27 @@ class RustExplorationManager(
         else:
             if not create:
                 return None
-            entry = copy()
+            entry = self._unrecorded_metadata_entry(store, state_id, copy)
         store[state_id] = entry
         return entry
+
+    def _unrecorded_metadata_entry(self, store: dict, state_id: int, copy):
+        """A fresh options/globals entry for a lineage with no record, from its plugin template.
+
+        The template (:meth:`_find_plugin_template_state`) is the SimState an
+        export of ``state_id`` takes its plugins from, so seeding from it
+        leaves that export's options and globals as they were.
+        """
+        template = self._find_plugin_template_state(state_id)
+        if template is None:
+            return copy()
+        if store is self._py_state_options:
+            if isinstance(getattr(getattr(template, "options", None), "_options", None), dict):
+                return _options_on(template)
+            return copy()
+        if "globals" in template.plugins:
+            return dict(template.globals)
+        return copy()
 
     def _state_ancestry(self, state_id: int) -> list[int]:
         """``[state_id, parent, ..., root]`` as Rust still holds them (``get_state_ancestry``)."""

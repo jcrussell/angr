@@ -130,6 +130,38 @@ def test_an_export_held_out_of_the_stashes_keeps_its_options():
     assert SOSNEAKY in [s.posix.dumps(0) for s in simgr.deadended]
 
 
+def test_a_lineage_with_no_metadata_record_keeps_its_options_and_globals():
+    # A fork's first access to its options or globals, with no entry on it or
+    # any ancestor, used to mint an empty one, and the next export then lost
+    # every option (a concrete solver) and every global (angr-kfchf).
+    project = angr.Project(
+        os.path.join(TEST_BINARIES_DIR, "..", "x86_64", "fauxware"), auto_load_libs=False, engine="rust"
+    )
+    entry = project.factory.entry_state()
+    entry.globals["seeded"] = 1
+    simgr = project.factory.simulation_manager(entry)
+    while len(simgr.active) < 2:
+        simgr.step()
+    mgr = simgr.backend._manager()
+    for state in simgr.active:
+        for sid in mgr._state_ancestry(binding_of(state)._id):
+            mgr._py_state_options.pop(sid, None)
+            mgr._py_state_globals.pop(sid, None)
+    for state in simgr.active:
+        sid = binding_of(state)._id
+        assert angr.sim_options.SYMBOLIC in mgr.get_state_options_py(sid)
+        assert mgr.get_state_globals_py(sid).get("seeded") == 1
+        mgr._apply_state_metadata(state, sid)
+        assert angr.sim_options.SYMBOLIC in state.options
+        assert state.globals.get("seeded") == 1
+    simgr.run()
+    assert not simgr.errored
+    for state in simgr.deadended:
+        assert angr.sim_options.SYMBOLIC in state.options
+        assert state.globals.get("seeded") == 1
+    assert SOSNEAKY in [s.posix.dumps(0) for s in simgr.deadended]
+
+
 @pytest.mark.parametrize("arch", sorted(FIND))
 def test_a_pickled_export_keeps_the_after_main_continuation(arch):
     # Python ran __libc_start_main's self.call(main); Rust frames carry no
