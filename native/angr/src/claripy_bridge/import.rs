@@ -203,6 +203,14 @@ fn claripy_to_rustbv_depth(
     if let Ok(base) = ast.cast::<Base>() {
         return import_clarirs(&base.get().ast(), ctx, depth);
     }
+    // A `SimActionObject` wraps its clarirs node in `.ast`; the attribute walk
+    // below has no FP ops, so importing the wrapper would refuse an FP
+    // expression the unwrapped node imports (angr-vmi2l.221).
+    if let Ok(inner) = ast.getattr("ast")
+        && let Ok(base) = inner.cast::<Base>()
+    {
+        return import_clarirs(&base.get().ast(), ctx, depth);
+    }
 
     let op: String = ast.getattr("op")?.extract()?;
     let op_str = op.as_str();

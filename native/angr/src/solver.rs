@@ -385,8 +385,9 @@ impl RustSolverContext {
 
     /// Evaluate a claripy AST to a single concrete value.
     ///
-    /// Returns None if unsatisfiable or the expression cannot be evaluated.
-    /// For values > 128 bits, use eval_wide which returns a Python int.
+    /// Returns None when there is no model (unsat, or Unknown at the
+    /// timeout); an AST the bridge cannot import raises. A value wider than
+    /// 128 bits comes back as a Python int.
     pub fn eval(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<Option<Py<PyAny>>> {
         // Fast path: concrete BVV doesn't need solver
         if let Some((value, _width)) = try_extract_bvv(ast) {
@@ -400,12 +401,10 @@ impl RustSolverContext {
         // node would only rerun the same check (angr-vmi2l.220). The node
         // path is the fallback for an AST `claripy_to_rustbv` refuses.
         match claripy_to_rustbv(py, ast, &ctx) {
-            Ok(bv) if bv.width() <= 128 => {
-                return Ok(match ctx.eval(&bv) {
-                    Some(v) => Some(v.into_pyobject(py)?.into()),
-                    None => None,
-                });
-            }
+            Ok(bv) if bv.width() <= 128 => Ok(match ctx.eval(&bv) {
+                Some(v) => Some(v.into_pyobject(py)?.into()),
+                None => None,
+            }),
             Ok(bv) => {
                 let Some(bytes) = ctx.eval_wide(&bv) else {
                     // SILENT(cat-a): no model is eval's documented None answer.
@@ -414,15 +413,17 @@ impl RustSolverContext {
                 let py_bytes = pyo3::types::PyBytes::new(py, &bytes);
                 let int_class = py.get_type::<pyo3::types::PyInt>();
                 let py_int = int_class.call_method1("from_bytes", (py_bytes, "big"))?;
-                return Ok(Some(py_int.into()));
+                Ok(Some(py_int.into()))
             }
-            Err(_) => {}
+            Err(err) => {
+                // `None` means no model, so an AST the bridge cannot import
+                // raises rather than reading as unsat (angr-vmi2l.221).
+                match claripy_node(ast) {
+                    Some(node) => self.eval_claripy_node(py, &node),
+                    None => Err(err.into()),
+                }
+            }
         }
-
-        if let Some(node) = claripy_node(ast) {
-            return self.eval_claripy_node(py, &node);
-        }
-        Ok(None)
     }
 
     /// Evaluate several claripy ASTs against ONE model (angr-ue4ro).

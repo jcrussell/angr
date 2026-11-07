@@ -518,6 +518,48 @@ class TestSolverOperations:
             assert ctx.eval(expr) is None
             assert _RustExplorationManager.get_solver_stats()["z3_check_count"] == 1
 
+    def test_sim_action_object_wrapped_fp_imports_like_its_ast(self):
+        """A SimActionObject-wrapped FP expression evaluates and constrains
+        like the AST it wraps, on the context and on the live proxy, and an
+        object the bridge cannot import raises rather than reading as unsat.
+
+        Regression test (angr-vmi2l.221): the wrapper took the bridge's
+        attribute walk, which has no FP ops, so eval returned None (the proxy
+        raised UnsatError on a satisfiable state) and add_constraint_ast
+        raised ValueError for fpLT.
+        """
+        from angr import claripy
+        from angr.rustylib.vex_engine import RustSolverContext
+        from angr.state_plugins.sim_action_object import SimActionObject
+
+        dbl = claripy.FSORT_DOUBLE
+        f = claripy.FPS("f_sao", dbl)
+        ctx = RustSolverContext()
+        ctx.add_constraint_ast(SimActionObject(f == claripy.FPV(2.5, dbl)))
+        assert ctx.eval(SimActionObject(claripy.fpToIEEEBV(f))) == 0x4004000000000000
+        with pytest.raises(RuntimeError):
+            ctx.eval(object())
+
+        load = 0x400000
+        proj = angr.load_shellcode(bytes([0x90, 0x90, 0xEB, 0xFE]), arch="AMD64", load_address=load)
+        state = proj.factory.blank_state(addr=load)
+        y = claripy.BVS("y_sao", 64)
+        state.regs.rbx = y
+        state.solver.add(y.raw_to_fp() == claripy.FPV(2.5, dbl))
+        seen = []
+
+        def at_jmp(s):
+            if s.addr != load + 2:
+                return False
+            wrapped = SimActionObject(claripy.fpToIEEEBV(s.regs.rbx.raw_to_fp()))
+            seen.append(s.solver.eval(wrapped))
+            return True
+
+        mgr = RustExplorationManager(proj, [state])
+        mgr.explore(find=at_jmp)
+        assert len(mgr.found) == 1
+        assert seen == [0x4004000000000000]
+
     def test_fork_constraint_bidirectional_isolation(self):
         """Bidirectional fork isolation: parent and sibling constraints
         added after fork() must not leak across.
