@@ -37,7 +37,9 @@ timeout_secs = 1200
 # activated venv every time.
 command = "tools/ralph-claude.sh"
 args    = []
-model   = "opus"
+# Pinned to a full model id so the loop does not move with the harness's
+# "opus" alias; ralph appends it as --model after the wrapper's own flags.
+model   = "claude-opus-5-5"
 
 [review]
 # angr defaults to `master`, not `main`.

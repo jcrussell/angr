@@ -13,5 +13,6 @@ export PATH="$HOME/.cargo/bin:$PATH"
 export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 # shellcheck disable=SC1091
 . /home/ubuntu/repos/angr/.venv/bin/activate
-exec claude --dangerously-skip-permissions --output-format=json \
-            --model claude-opus-4-7 "$@"
+# The model comes from [runner] model in .ralph/config.toml, which ralph
+# appends to "$@" as --model.
+exec claude --dangerously-skip-permissions --output-format=json "$@"
