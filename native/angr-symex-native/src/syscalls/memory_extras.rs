@@ -15,9 +15,8 @@
 //! Notes:
 //! * `mremap` is registered as a stub for parity with Python; angr's
 //!   `syscall_stub` does NOT update page tables, so this matches.
-//!   Full semantic mremap (move/resize mappings + page-table coordination
-//!   with the existing mmap/mprotect/munmap handlers) is tracked
-//!   separately so the campaign close here is a pure parity win.
+//!   A semantic mremap (moving or resizing mappings in step with the
+//!   mmap/mprotect/munmap handlers) would diverge from Python.
 //! * Advisory ops (`mlock`, `munlock`, `mlockall`, `munlockall`,
 //!   `madvise`, `msync`) are inherently no-ops in the symbolic VM —
 //!   the symbolic return surfaces any binary that branches on it.

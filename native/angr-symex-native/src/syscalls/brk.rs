@@ -5,12 +5,15 @@
 //!   1. Symbolic new_brk → fall back to Python (the warning + If(...) path
 //!      in Python; rare in practice).
 //!   2. Concrete `new_brk < current_brk` → no-op, return current brk.
-//!      This includes `brk(0)` → return current brk (Linux convention),
-//!      since the default brk (0x1B00000) is always > 0.
+//!      This includes `brk(0)` → return current brk (Linux convention).
+//!      The starting break is the import-time push of `state.posix.brk`
+//!      (`_add_rust_state` in `angr/exploration/rust_manager.py`), which
+//!      is nonzero; 0x1B00000 is only the `RustSimState` constructor
+//!      fallback, matching `SimSystemPosix.__init__`'s default.
 //!   3. Growth beyond `MAX_MAP_SIZE` → refuse and return the *current*
 //!      break unchanged, matching how Linux signals a failed brk. This
 //!      is a host-safety bound, not a Python-parity rule; see
-//!      `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80).
+//!      `MAX_MAP_SIZE` in `syscalls::support` (angr-c7xno.80).
 //!   4. Otherwise: set posix_brk = new_brk; if it grew across a page
 //!      boundary, map the new pages with RWX permissions; return
 //!      new_brk.
@@ -55,7 +58,8 @@ impl NativeSyscall for NativeBrkSyscall {
 
         // brk(addr) where addr < current is a no-op that returns the
         // current break. brk(0) is the canonical "query" form and is
-        // covered here since posix_brk default 0x1B00000 > 0.
+        // covered here since the break (pushed from `state.posix.brk`, or
+        // the constructor's 0x1B00000 fallback) is nonzero.
         if new_brk < current {
             return Ok(SyscallOutcome::Continue { ret: current });
         }
@@ -68,7 +72,7 @@ impl NativeSyscall for NativeBrkSyscall {
         // failure by leaving the break where it was and returning it, which is
         // exactly the `new_brk < current` no-op above; falling back to Python
         // would only move the same unbounded `map_region` there. See
-        // `MAX_MAP_SIZE` in `syscalls::mod` (angr-c7xno.80). The bounded
+        // `MAX_MAP_SIZE` in `syscalls::support` (angr-c7xno.80). The bounded
         // quantity is derived, not a raw argument, so this goes through
         // `bounded_value` rather than `extract_bounded_concrete_arg` — the
         // `BoundedArg` match is what makes the refusal arm mandatory
@@ -88,8 +92,8 @@ impl NativeSyscall for NativeBrkSyscall {
         } else {
             // last byte before each break (subtract 1) — matches Python's
             // logic that "the break is the address of the first unmapped
-            // byte." current==0 is impossible (default is 0x1B00000), but
-            // we guard with checked_sub for safety.
+            // byte." The break is nonzero (see the `brk(0)` note above), but
+            // saturating_sub keeps a zero break from wrapping.
             let cur_floor = current.saturating_sub(1) & !PAGE_MASK;
             let new_floor = new_brk.saturating_sub(1) & !PAGE_MASK;
             cur_floor != new_floor

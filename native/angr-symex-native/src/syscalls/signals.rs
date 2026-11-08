@@ -18,8 +18,7 @@
 //! Notes on what is *not* covered here:
 //!
 //! * `rt_sigaction` — already covered by
-//!   `syscalls::sigaction::NativeRtSigactionSyscall` (baseline). Listed
-//!   here for completeness; no new handler is needed.
+//!   `syscalls::sigaction::NativeRtSigactionSyscall`.
 //! * `rt_sigprocmask` — Python's
 //!   `procedures/linux_kernel/sigprocmask.py` mutates
 //!   `state.posix.sigmask` and stores at the `oldset` pointer.

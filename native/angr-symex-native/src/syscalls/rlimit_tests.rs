@@ -95,8 +95,7 @@ fn getrlimit_symbolic_rlim_returns_error() {
 
 /// Round-trip: write the rlim struct, load it back, confirm
 /// rlim_cur is the documented constant and rlim_max stays
-/// symbolic. Satisfies the bd acceptance criterion "Integration
-/// test confirms getrlimit/setrlimit round-trip".
+/// symbolic.
 #[test]
 fn getrlimit_setrlimit_roundtrip() {
     let getrlimit = NativeGetrlimitSyscall;

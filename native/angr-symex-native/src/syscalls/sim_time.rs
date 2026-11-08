@@ -24,19 +24,17 @@
 //!   - else write `tv_sec` (8B) + `tv_nsec` (8B) at `*ts`, return 0.
 //!
 //! Notes:
-//! * The libc procedure uses `state.solver.BVS(name, bits, key=("api", ...))`.
-//!   The `key` enables Python's fresh-bvs deduplication when called from the
-//!   *same* SimProcedure instance — angr generates a fresh symbol per
-//!   call site otherwise. Native handlers don't have that machinery, so
-//!   we always create a fresh `RustBV::symbol(...)` per invocation.
-//!   This mildly differs from Python's intra-procedure deduplication but
-//!   matches its inter-call behavior, which is what binaries observe.
+//! * Python's `time` proc mints `BVS("sys_time", bits, key=("api", "time"))`.
+//!   The `key` registers the symbol with the state's variable tracker; it
+//!   does not deduplicate, so every call gets a fresh symbol. The native
+//!   `time` records the same key through
+//!   `procedures::fresh_tracked_symbol`; the `timeval` / `timespec` fields
+//!   have no Python proc to mirror and stay untracked `fresh_symbolic`s.
 //! * `USE_SYSTEM_TIMES`: Python's path that returns `int(time.time())` is
 //!   not implemented natively; the SimOption set is currently held on
 //!   the Python proxy (see angr-t3l3) and not visible here. We always
-//!   use the symbolic path — same default as `auto_load_libs=False`
-//!   exploration today. The option is therefore warn-once *rejected* on
-//!   the Python side (`_REJECTED_OPTION_NAMES` in
+//!   use the symbolic path, Python's default. The option is therefore
+//!   warn-once *rejected* on the Python side (`_REJECTED_OPTION_NAMES` in
 //!   `angr/exploration/rust_manager.py`, policy (b)) so a user who opts
 //!   into concrete host times learns these handlers are ignoring it
 //!   rather than silently exploring a symbolic-time path (angr-0y0v).

@@ -13,7 +13,7 @@
 //! Oversized-range fast path: a `length` above `MAX_MAP_SIZE` is refused
 //! with -1 before either page-walk runs, so the cost of the walk is capped
 //! independently of how much contiguous memory is mapped. Host-safety
-//! bound, not Python parity — see `MAX_MAP_SIZE` in `syscalls::mod` and the
+//! bound, not Python parity — see `MAX_MAP_SIZE` in `syscalls::support` and the
 //! comment on the check itself in `NativeMprotectSyscall::call`
 //! (angr-c7xno.81).
 //!
