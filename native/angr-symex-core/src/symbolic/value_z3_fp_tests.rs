@@ -756,9 +756,8 @@ fn test_fp_unsat_constraint_is_detected() {
     assert!(!ctx.is_sat(), "x < 1.0 && 2.0 < x must be unsat");
 }
 
-/// Shared sub-expressions go through the `to_z3_ast_cached` pointer-identity
-/// cache; an FP node reused twice in one tree must build once and still
-/// evaluate correctly.
+/// An FP node reused twice in one tree (a shared clarirs subterm, lowered
+/// once through `z3_lower`'s cache) must still evaluate correctly.
 #[test]
 fn test_fp_shared_subexpression_through_cache() {
     let ctx = SymContext::new();

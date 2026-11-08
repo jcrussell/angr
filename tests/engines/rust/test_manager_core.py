@@ -1841,26 +1841,17 @@ class TestRustExplorationPython:
         # Sat + unsat + timeout should account for every check.
         assert (stats["z3_sat_count"] + stats["z3_unsat_count"] + stats["z3_timeout_count"]) == stats["z3_check_count"]
 
-    def test_z3_ast_cache_counters(self, fauxware_project):
-        """angr-zdho: `z3_ast_cache_hit` + `z3_ast_cache_miss` are exposed via
-        `get_solver_stats()` and at least one is non-zero after exploration."""
+    def test_retired_ast_cache_counters_absent(self, fauxware_project):
+        """angr-vmi2l.95: `z3_ast_cache_hit` / `z3_ast_cache_miss` are retired.
+        Lowering has no per-call cache, so a hit could never happen and a
+        stats key reading 0 would look like a measurement."""
 
         state = fauxware_project.factory.entry_state()
         mgr = RustExplorationManager(fauxware_project, [state])
-        mgr.reset_solver_stats()
-
-        baseline = mgr.get_solver_stats()
-        assert "z3_ast_cache_hit" in baseline
-        assert "z3_ast_cache_miss" in baseline
-        assert baseline["z3_ast_cache_hit"] == 0
-        assert baseline["z3_ast_cache_miss"] == 0
-
-        mgr.explore(find=0x4006ED, num_find=1)
-
         stats = mgr.get_solver_stats()
-        assert stats["z3_ast_cache_miss"] >= 1, (
-            f"exploration with at least one Z3 query should produce cache misses; got {stats['z3_ast_cache_miss']}"
-        )
+        assert "z3_ast_build" in stats
+        assert "z3_ast_cache_hit" not in stats
+        assert "z3_ast_cache_miss" not in stats
 
     def test_fork_counters_exposed_and_non_summable(self, fauxware_project):
         """angr-95up.2: `solver_fork_count` and `deferred_fork_count` are

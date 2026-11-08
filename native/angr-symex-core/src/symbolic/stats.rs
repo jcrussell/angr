@@ -78,19 +78,6 @@ pub(crate) static Z3_EXTREMA_MODEL_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static Z3_EVAL_UPTO_MODEL_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of to_z3_ast() / to_z3_bool() calls (AST construction).
 pub(crate) static Z3_AST_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Number of cache hits in `to_z3_ast_cached` per-call HashMap (angr-zdho).
-///
-/// Each hit means a sub-expression was visited more than once during a single
-/// top-level `to_z3_ast()` call and the Arc-pointer key already had a Z3 AST
-/// built — the inner DAG had at least one shared Arc subtree. Ratio of hits to
-/// (hits+misses) gives the per-conversion sharing rate the cache captures.
-pub(crate) static Z3_AST_CACHE_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Number of cache misses in `to_z3_ast_cached` per-call HashMap (angr-zdho).
-///
-/// A miss is a unique RustBV pointer visited within one `to_z3_ast()` call.
-/// Equals the count of distinct Arc-pointer subtrees materialized into Z3
-/// ASTs for that conversion.
-pub(crate) static Z3_AST_CACHE_MISS_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Number of top-level `to_z3_bool()` calls — the native-Bool half of
 /// `z3_ast_build` (angr-op0dn.9.6).
 pub(crate) static Z3_BOOL_BUILD_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -434,8 +421,6 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     ("z3_extrema_model_miss", &Z3_EXTREMA_MODEL_MISS_COUNT),
     ("z3_eval_upto_model_hit", &Z3_EVAL_UPTO_MODEL_HIT_COUNT),
     ("z3_ast_build", &Z3_AST_BUILD_COUNT),
-    ("z3_ast_cache_hit", &Z3_AST_CACHE_HIT_COUNT),
-    ("z3_ast_cache_miss", &Z3_AST_CACHE_MISS_COUNT),
     ("z3_bool_build", &Z3_BOOL_BUILD_COUNT),
     ("z3_sat_count", &Z3_SAT_COUNT),
     ("z3_unsat_count", &Z3_UNSAT_COUNT),
@@ -615,10 +600,9 @@ pub fn get_solver_stats() -> HashMap<String, u64> {
     }
     // angr-op0dn.9.5: one headline key aggregating every family that answers a
     // query WITHOUT reaching Z3's `check()`. Each summand is a check we did not
-    // pay for, so they are commensurable and the sum is meaningful. Deliberately
-    // excludes the lowering caches (`z3_ast_cache_hit`): those save Z3 *node
-    // construction*, not a check, and folding them in would drown the
-    // check-avoidance signal this key exists to protect.
+    // pay for, so they are commensurable and the sum is meaningful. Lowering
+    // counters (`z3_ast_build`) measure Z3 *node construction*, not a check,
+    // and stay out of it.
     stats.insert(
         "z3_saved_check_total".into(),
         Z3_BRANCH_CONCRETE_COUNT.load(Ordering::Relaxed)
@@ -667,18 +651,6 @@ pub fn record_mem_ite_depth(depth: u32) {
 #[inline]
 pub(super) fn record_z3_ast_build() {
     Z3_AST_BUILD_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Increment per-call to_z3_ast_cached cache-hit counter (angr-zdho).
-#[inline]
-pub(super) fn record_z3_ast_cache_hit() {
-    Z3_AST_CACHE_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Increment per-call to_z3_ast_cached cache-miss counter (angr-zdho).
-#[inline]
-pub(super) fn record_z3_ast_cache_miss() {
-    Z3_AST_CACHE_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Record one top-level `to_z3_bool()` conversion (angr-op0dn.9.6).

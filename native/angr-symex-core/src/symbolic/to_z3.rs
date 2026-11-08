@@ -1,5 +1,5 @@
-//! Z3 lowering for [`RustBV`]: the [`ToZ3`] trait (`to_z3_ast` /
-//! `to_z3_ast_cached`, `to_z3_bool` / `to_z3_bool_cached`), and
+//! Z3 lowering for [`RustBV`]: the [`ToZ3`] trait (`to_z3_ast`,
+//! `to_z3_bool`), and
 //! [`admit_clarirs`], the trust-boundary constructor that refuses a term
 //! with no Z3 form. A value is a `Concrete` (a Z3 numeral) or a clarirs
 //! term, lowered through `symbolic::z3_lower`, whose per-thread cache is the
@@ -29,14 +29,6 @@ pub trait ToZ3 {
     /// first use.
     fn to_z3_ast(&self) -> Result<z3::ast::BV, LowerError>;
 
-    /// [`Self::to_z3_ast`] with a per-call cache keyed by value address, for
-    /// callers lowering many values in one pass. A clarirs term's lowering is
-    /// also kept in `z3_lower`'s per-thread cache.
-    fn to_z3_ast_cached(
-        &self,
-        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> Result<z3::ast::BV, LowerError>;
-
     /// Convert a 1-bit value to a native Z3 Bool, avoiding ITE wrapping.
     ///
     /// For comparison ops (Eq, Ne, Ult, etc.), produces the native Z3 Bool
@@ -47,57 +39,27 @@ pub trait ToZ3 {
     ///
     /// The 1-bit precondition is enforced here rather than left to callers:
     /// a wider BV must be narrowed first (`bv.ne(&zero)`, as the shell's
-    /// `bool_constraint_bv` does). See
-    /// `to_z3_bool_cached` for why a multi-bit input would be silently
-    /// mis-converted instead of rejected.
+    /// `bool_constraint_bv` does). Without the check a multi-bit input is
+    /// not an error but a *wrong answer*: the Bool view reads a bit, and a
+    /// wider value has no single bit to read. Matches the `debug_assert_eq!`
+    /// width convention the binary ops in `value_ops.rs` use.
     fn to_z3_bool(&self) -> Result<z3::ast::Bool, LowerError>;
-
-    /// Cached worker behind `to_z3_bool` — same 1-bit precondition.
-    ///
-    /// # Panics (debug builds)
-    ///
-    /// Asserts `self.width() == 1`. Without it a multi-bit input is not an
-    /// error but a *wrong answer*: the Bool view reads a bit, and a wider
-    /// value has no single bit to read. Matches the `debug_assert_eq!` width
-    /// convention the binary ops in `value_ops.rs` use.
-    fn to_z3_bool_cached(
-        &self,
-        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> Result<z3::ast::Bool, LowerError>;
 }
 
 impl ToZ3 for RustBV {
     fn to_z3_ast(&self) -> Result<z3::ast::BV, LowerError> {
         super::stats::record_z3_ast_build();
-        let mut cache = std::collections::HashMap::new();
-        self.to_z3_ast_cached(&mut cache)
-    }
-
-    fn to_z3_ast_cached(
-        &self,
-        cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> Result<z3::ast::BV, LowerError> {
-        let cache_key = self as *const RustBV as usize;
-        if let Some(cached) = cache.get(&cache_key) {
-            super::stats::record_z3_ast_cache_hit();
-            return Ok(cached.clone());
-        }
-        super::stats::record_z3_ast_cache_miss();
-        let result = match self {
+        match self {
             // Z3 has no 0-bit sort, and the empty bitvector is always this
             // `Concrete` (`RustBV::symbol` folds a width-0 leaf, clarirs has no
             // width-0 term), so this is the one arm that can hand
             // `make_bv_const` width 0 (`invariant-rustbv-zero-width`).
-            RustBV::Concrete { width: 0, .. } => {
-                return Err(LowerError::InvalidArgs(
-                    "a zero-width value has no Z3 term".into(),
-                ));
-            }
-            RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
-            RustBV::Ast { ast, .. } => super::z3_lower::lower_bv(ast)?,
-        };
-        cache.insert(cache_key, result.clone());
-        Ok(result)
+            RustBV::Concrete { width: 0, .. } => Err(LowerError::InvalidArgs(
+                "a zero-width value has no Z3 term".into(),
+            )),
+            RustBV::Concrete { value, width } => Ok(super::bv_codec::make_bv_const(*value, *width)),
+            RustBV::Ast { ast, .. } => super::z3_lower::lower_bv(ast),
+        }
     }
 
     fn to_z3_bool(&self) -> Result<z3::ast::Bool, LowerError> {
@@ -108,19 +70,6 @@ impl ToZ3 for RustBV {
         );
         super::stats::record_z3_ast_build();
         super::stats::record_z3_bool_build();
-        let mut cache = std::collections::HashMap::new();
-        self.to_z3_bool_cached(&mut cache)
-    }
-
-    fn to_z3_bool_cached(
-        &self,
-        _cache: &mut std::collections::HashMap<usize, z3::ast::BV>,
-    ) -> Result<z3::ast::Bool, LowerError> {
-        debug_assert_eq!(
-            self.width(),
-            1,
-            "to_z3_bool_cached expects a 1-bit RustBV; narrow with ne(0) first"
-        );
         match self {
             RustBV::Concrete { value, .. } => Ok(z3::ast::Bool::from_bool(*value != 0)),
             // A clarirs term: the Bool its bit stands for, lowered natively,

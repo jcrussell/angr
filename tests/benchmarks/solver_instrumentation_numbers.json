@@ -57,8 +57,6 @@
     "z3_assume_dedup_scanned": 0,
     "z3_assume_symbolic": 24,
     "z3_ast_build": 36,
-    "z3_ast_cache_hit": 0,
-    "z3_ast_cache_miss": 396,
     "z3_branch_check": 12,
     "z3_branch_concrete": 0,
     "z3_branch_model_hit": 11,

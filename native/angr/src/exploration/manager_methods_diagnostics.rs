@@ -48,9 +48,7 @@ impl RustExplorationManager {
     ///
     /// Returns a dict with:
     ///   - `total_visits`     — DAG descents, counting Arc re-visits.
-    ///   - `unique_pointers`  — distinct RustBV Arc allocations seen. The
-    ///     current per-call `to_z3_ast_cached` cache collapses repeat
-    ///     visits of the same Arc pointer down to this.
+    ///   - `unique_pointers`  — distinct RustBV Arc allocations seen.
     ///   - `unique_shapes`    — distinct structural shapes. A
     ///     construction-time hash-cons (angr-behq) would dedupe to this.
     ///   - `structural_duplicates` — `unique_pointers - unique_shapes`.

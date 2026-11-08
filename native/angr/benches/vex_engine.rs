@@ -62,10 +62,7 @@ fn bench_rustbv_build_z3_ast(c: &mut Criterion) {
     let expr = sum.reverse();
 
     c.bench_function("rustbv_z3", |bench| {
-        bench.iter(|| {
-            let mut cache = std::collections::HashMap::new();
-            black_box(expr.to_z3_ast_cached(&mut cache))
-        })
+        bench.iter(|| black_box(expr.to_z3_ast()))
     });
 }
 

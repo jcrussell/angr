@@ -4,12 +4,10 @@
 //! list at end of exploration) and reports:
 //!
 //! - `total_visits` — recursive descents through the DAG, counting Arc
-//!   re-visits as separate. The upper bound on AST work if we had NO cache
-//!   (neither per-call nor hash-cons).
+//!   re-visits as separate. The upper bound on AST work with no hash-cons.
 //! - `unique_pointers` — distinct in-memory `RustBV` nodes seen. Two operand
 //!   positions that alias the same node (because a whole `Arc<[RustBV]>`
-//!   operand slice is shared between two expressions) count once. This is what
-//!   today's per-call `to_z3_ast_cached` collapses repeated visits down to.
+//!   operand slice is shared between two expressions) count once.
 //! - `unique_shapes` — distinct *structural* shapes seen. Two nodes with the
 //!   same op/width and structurally-equal children share a shape. This is the
 //!   lower bound a construction-time hash-cons (angr-behq) would reach.
