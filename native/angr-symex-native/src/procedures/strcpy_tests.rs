@@ -411,11 +411,11 @@ fn test_strncpy_symbolic_source_serves_natively() {
 }
 
 #[test]
-fn test_strncpy_symbolic_source_null_truncates_copy() {
+fn test_strncpy_symbolic_source_null_pads_tail() {
     // Same buffer, but constrain the symbolic byte to NUL: the copy length
-    // becomes strlen+1 == 2, so dest[2..] keeps its prior contents (0xFF).
-    // This mirrors Python strncpy = memcpy(dst, src, min(n, strlen+1)), which
-    // does not zero-pad the tail.
+    // becomes strlen+1 == 2, so dest[2..4] is NUL-filled as C requires (and
+    // as the concrete path does), not left at its prior 0xFF (angr-vmi2l.104),
+    // although src[2] is 'c'. dest[4..] lies outside the n-byte window.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"a\x00c\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "src_1");
@@ -441,6 +441,9 @@ fn test_strncpy_symbolic_source_null_truncates_copy() {
     assert_eq!(ctx.eval(&b1), Some(0));
     for i in 2..4u64 {
         let byte = state.memory_load(0x2000 + i, 1).unwrap();
-        assert_eq!(ctx.eval(&byte), Some(0xFF), "dest[{i}] must be untouched");
+        assert_eq!(ctx.min(&byte, false), Some(0), "dest[{i}] must be NUL-filled");
+        assert_eq!(ctx.max(&byte, false), Some(0), "dest[{i}] must be NUL-filled");
     }
+    let past = state.memory_load(0x2004, 1).unwrap();
+    assert_eq!(past.as_u64(), Some(0xFF), "dest[4] is past n and untouched");
 }

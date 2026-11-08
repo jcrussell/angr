@@ -9,7 +9,6 @@
 //! - Maximum string length is 4096 bytes
 
 use super::arch_word;
-use super::mem_common::symbolic_size_conditional_store;
 use super::strings::{
     MAX_STRING_SCAN, MAX_SYMBOLIC_SCAN_BYTES, ScanOutcome, build_strlen_chain,
     scan_concrete_bounded, scan_concrete_until_null, scan_for_null_symbolic, write_concrete_bytes,
@@ -19,21 +18,20 @@ use super::{ProcedureError, check_max, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
-/// Serve `strncpy(dest, src, n)` when the source window holds a symbolic byte,
-/// mirroring angr's Python `strncpy` (`procedures/libc/strncpy.py`):
+/// Serve `strncpy(dest, src, n)` when the source window holds a symbolic byte:
 ///
 /// ```text
 /// cpy_size = ITE(ULT(n, strlen(src) + 1), n, strlen(src) + 1)
-/// memcpy(dest, src, cpy_size)
+/// dest[i]  = ITE(ULT(i, cpy_size), src[i], 0)   for every i < n
 /// ```
 ///
 /// i.e. the copy length is the symbolic string length (plus its terminator),
-/// clamped to `n`; bytes of `dest` past that length keep their prior contents
-/// (Python does not zero-pad the tail, so neither do we here — unlike the
-/// all-concrete path above, which preserves its long-standing POSIX padding).
-///
-/// The conditional store itself reuses [`symbolic_size_conditional_store`],
-/// the same primitive memcpy/memset use for a symbolic length.
+/// clamped to `n`, and the rest of the `n`-byte window is NUL-filled, as C
+/// requires and as the all-concrete path in [`NativeStrncpy`] does, so the
+/// result does not depend on whether a source byte was symbolic
+/// (angr-vmi2l.104). This deliberately diverges from Python's `strncpy`
+/// (`procedures/libc/strncpy.py`), a bare `memcpy(dest, src, cpy_size)` that
+/// leaves the tail's prior contents in place.
 fn strncpy_symbolic(
     state: &mut RustSimState,
     dest: u64,
@@ -59,7 +57,14 @@ fn strncpy_symbolic(
         values.push(state.memory_load(src.wrapping_add(i), 1)?);
     }
 
-    symbolic_size_conditional_store(state, dest, &cpy_size, n, &values)
+    let zero = RustBV::concrete(0u128, 8);
+    for (i, value) in (0..n).zip(values) {
+        let stored = RustBV::concrete(i as u128, arch_bits)
+            .ult(&cpy_size)
+            .ite(&value, &zero);
+        state.memory_store(dest.wrapping_add(i), stored)?;
+    }
+    Ok(())
 }
 
 crate::declare_proc! {
