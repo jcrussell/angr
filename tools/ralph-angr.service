@@ -59,9 +59,11 @@ KillMode=mixed
 TimeoutStopSec=300
 # The gate hook (cargo test --profile release-checked + the bench) runs in this
 # cgroup; each claude iteration runs in its own --user scope capped by
-# .ralph/config.toml's memory_limit_bytes.
+# .ralph/config.toml's memory_limit_bytes, and the two caps together fit in the
+# box's 7.8G RAM. At or under 4G, tools/ralph-gate.sh builds with
+# CARGO_BUILD_JOBS=1, whose cold build peaked at 3.06 GB (angr-mx00p.122).
 MemoryAccounting=true
-MemoryMax=5G
+MemoryMax=3584M
 MemorySwapMax=0
 # A gate that hits MemoryMax reads as a failed gate instead of stopping the unit.
 OOMPolicy=continue

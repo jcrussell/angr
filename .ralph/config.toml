@@ -6,15 +6,17 @@
 # what's different.
 
 [loop]
-# Cap the per-iteration systemd scope BELOW the box's total RAM (7G, no swap).
-# Default is 7G == whole machine, so any >7G process (e.g. a divergent
-# exploration) gets OOM-killed only after exhausting RAM, which kills the whole
+# Cap the per-iteration systemd scope so it plus the service's MemoryMax
+# (tools/ralph-angr.service, which holds the gate) fits in the box's 7.8G RAM
+# with no swap. The default 7G == whole machine, so a runaway (e.g. a divergent
+# exploration) was OOM-killed only after exhausting RAM, which kills the whole
 # `claude` session (0-byte output -> dead_session -> runner_terminal); a leaking
-# CADET explore did exactly that (angr-027h). 6G leaves ~1G headroom
-# so a runaway is killed sooner. NOTE: pytest/repro run in the SAME scope as
-# claude, so an OOM still ends the session — this is a backstop, not isolation.
-# Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).
-memory_limit_bytes = "6G"
+# CADET explore did exactly that (angr-027h). tools/ralph-claude.sh caps the
+# agent's own cargo builds at CARGO_BUILD_JOBS=2 to stay under it. NOTE:
+# pytest/repro run in the SAME scope as claude, so an OOM still ends the
+# session — this is a backstop, not isolation. Heavy/unbounded explores must
+# self-cap (see MEMORY SAFETY in _footer.md).
+memory_limit_bytes = "4G"
 # A dead-session streak (runner_terminal) cools down and retries instead of
 # ending the run; a healthy session resets the count. Replaces the retry loop
 # the old tools/ralph-supervise.sh wrapper ran around `ralph run --fresh`.
