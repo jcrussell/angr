@@ -1,14 +1,14 @@
 //! Native sprintf/snprintf implementations.
 //!
-//! Formats %s, %d, %i, %u, %x, %X, %o, %c and %% natively, with an
-//! explicit width and the bare '0' (zero-pad) flag.
+//! Formats %s, %d, %i, %u, %x, %X, %o, %c, %p and %% natively, with an
+//! explicit width and the bare '0' (zero-pad) flag. `%p` renders as
+//! `0x…`, or `(nil)` for a null pointer, as `format_parser.py` does.
 //!
 //! Everything else defers to Python — not because it is unimplemented,
 //! but because native output would diverge from `format_parser.py`,
 //! which is the engine this mirrors (see `format-string-parity-defers`):
 //!
-//! * `%p` — Python emits bare hex and sign-folds bit-63-set pointers
-//!   (angr-3i88a).
+//! * `%p` with a length modifier, which Python never matches.
 //! * the `-`, `+`, ' ' and `#` conversion flags — Python's `_match_spec`
 //!   has no arm for them, so it emits a literal '%' and consumes no
 //!   variadic arg (angr-1yge9.2). The downstream `left_align` /

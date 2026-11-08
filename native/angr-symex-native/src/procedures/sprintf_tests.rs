@@ -331,58 +331,39 @@ fn test_sprintf_symbolic_dest() {
 }
 
 #[test]
-fn test_sprintf_pointer_falls_back() {
-    // %p must defer to Python (Err): native emitted "0xdeadbeef" (with a 0x
-    // prefix) while format_parser.py emits bare hex "deadbeef", and Python
-    // sign-folds bit-63-set pointers. A native "success" diverges from the
-    // engine we mirror (angr-3i88a).
-    let mut state = setup_state();
-    state.map_memory_data(0x1000, b"%p\x00", Permission::RWX);
-
-    let result = NativeSprintf.call(
-        &mut state,
-        &[
-            RustBV::concrete(0x2000, 64),
-            RustBV::concrete(0x1000, 64),
-            RustBV::concrete(0xdeadbeef, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-            RustBV::concrete(0, 64),
-        ],
+fn test_sprintf_pointer_renders_like_format_parser() {
+    // `FormatString.replace` renders `%p` as `f"{c_val:#x}"`, or "(nil)" for
+    // a null pointer, with no sign fold (angr-vmi2l.117).
+    assert_eq!(sprintf_one(b"%p", 0xdeadbeef).unwrap(), b"0xdeadbeef");
+    assert_eq!(sprintf_one(b"%p", 0).unwrap(), b"(nil)");
+    assert_eq!(
+        sprintf_one(b"%p", 0xffff_ffff_ffff_fff0).unwrap(),
+        b"0xfffffffffffffff0"
     );
-    assert!(result.is_err(), "%p in sprintf should fall back to Python");
+    // `rjust` pads with the spec's pad character, ahead of the "0x".
+    assert_eq!(sprintf_one(b"%8p", 0x10).unwrap(), b"    0x10");
+    assert_eq!(sprintf_one(b"%07p", 0).unwrap(), b"00(nil)");
+    // The pointer is masked to the arch width.
+    assert_eq!(
+        sprintf_one_arch("x86", b"%p", 0x1_0000_0010).unwrap(),
+        b"0x10"
+    );
+    // `_mod_spec` has no pointer entries, so Python never matches `%lp`.
+    assert!(sprintf_one(b"%lp", 0x10).is_err());
 }
 
 #[test]
-fn test_sprintf_unsigned_high_bit_falls_back() {
-    // %u/%x/%o with the high bit set diverge: Python's buggy signed sign-folds
-    // the value; native renders it C-correct unsigned. Defer for parity.
-    // Low-bit values (test_sprintf_percent_x with 255) still format natively
-    // (angr-3i88a).
-    for spec in [b"%x\x00", b"%u\x00", b"%o\x00"] {
-        let mut state = setup_state();
-        state.map_memory_data(0x1000, spec, Permission::RWX);
-
-        let result = NativeSprintf.call(
-            &mut state,
-            &[
-                RustBV::concrete(0x2000, 64),
-                RustBV::concrete(0x1000, 64),
-                RustBV::concrete(0xdeadbeef, 64), // bit 31 set
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-                RustBV::concrete(0, 64),
-            ],
-        );
-        assert!(
-            result.is_err(),
-            "high-bit unsigned spec should fall back to Python"
-        );
-    }
+fn test_sprintf_unsigned_high_bit_renders_unsigned() {
+    // `FormatSpecifier.signed` reads the type's signedness, so Python masks
+    // an unsigned operand without sign-folding it (angr-vmi2l.117).
+    assert_eq!(sprintf_one(b"%u", 0xFFFF_FFFF).unwrap(), b"4294967295");
+    assert_eq!(sprintf_one(b"%x", 0xdeadbeef).unwrap(), b"deadbeef");
+    assert_eq!(sprintf_one(b"%X", 0xdeadbeef).unwrap(), b"DEADBEEF");
+    assert_eq!(sprintf_one(b"%o", 0x8000_0000).unwrap(), b"20000000000");
+    assert_eq!(
+        sprintf_one(b"%lu", u64::MAX).unwrap(),
+        b"18446744073709551615"
+    );
 }
 
 #[test]
@@ -800,16 +781,13 @@ fn test_sprintf_short_signed_fold() {
 }
 
 #[test]
-fn test_sprintf_narrow_unsigned_high_bit_falls_back() {
-    // The high-bit guard now checks the modifier-derived width, not just bit
-    // 31/63: %hx of a value whose bit 15 is set must defer to Python (whose
-    // buggy signed fold renders it negative), just like the 32-bit case.
-    assert!(sprintf_one(b"%hx", 0x8000).is_err());
-    assert!(sprintf_one(b"%hu", 0x8000).is_err());
-    assert!(sprintf_one(b"%ho", 0x8000).is_err());
-    // %hhx of a value with bit 7 set likewise defers.
-    assert!(sprintf_one(b"%hhx", 0x80).is_err());
-    // ...but with the width high bit clear it still formats natively.
+fn test_sprintf_narrow_unsigned_high_bit_renders_unsigned() {
+    // The operand is masked to the modifier-derived width and, being
+    // unsigned, never sign-folded (angr-vmi2l.117).
+    assert_eq!(sprintf_one(b"%hx", 0x8000).unwrap(), b"8000");
+    assert_eq!(sprintf_one(b"%hu", 0x1_8000).unwrap(), b"32768");
+    assert_eq!(sprintf_one(b"%ho", 0x8000).unwrap(), b"100000");
+    assert_eq!(sprintf_one(b"%hhx", 0x80).unwrap(), b"80");
     assert_eq!(sprintf_one(b"%hx", 0x7FFF).unwrap(), b"7fff");
 }
 

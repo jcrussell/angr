@@ -4,8 +4,8 @@
 //! [`ConversionSpec`] already parsed by [`super::sprintf_spec`], pull the
 //! variadic argument it names and append its bytes to the output buffer.
 //! Every Python-parity defer that depends on the argument *value* rather than
-//! the specifier shape — an unsigned operand with its high bit set, an
-//! unterminated `%s` string — is decided here.
+//! the specifier shape — an unterminated `%s` string, a `%.*s` precision
+//! past the NUL — is decided here.
 
 use super::format_common::LengthModifier;
 use super::sprintf_spec::ConversionSpec;
@@ -13,19 +13,6 @@ use super::strings::{MAX_STRING_SCAN, scan_concrete_bounded};
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
-
-/// Python's `FormatSpecifier.signed` is buggy — `getattr(ty, "size", False)`
-/// returns the truthy size int even for unsigned specs — so
-/// format_parser.py::FormatString.replace sign-folds EVERY int conversion
-/// (`if c_val >= 2^(bits-1): c_val -= 2^bits`). For unsigned specs
-/// (%u/%x/%X/%o) with the high bit clear the fold is a no-op and native output
-/// matches; with the high bit set Python renders a negative value that native
-/// can't cheaply reproduce (Rust `{:x}` prints two's-complement bits, Python
-/// prints `-<abs hex>`), so those must defer to Python. `masked` is already
-/// masked to `bits` (angr-3i88a).
-fn unsigned_high_bit_set(masked: u64, bits: u32) -> bool {
-    masked >> (bits - 1) != 0
-}
 
 /// Mask `val` to `bits` then sign-extend to i64, mirroring Python's mask
 /// (`c_val &= (1<<size*8)-1`) followed by the signed fold (`if signed and
@@ -103,10 +90,11 @@ fn next_arg(args: &[RustBV], arg_idx: &mut usize, what: &str) -> Result<u64, Pro
 }
 
 /// [`next_arg`] narrowed to the spec's conversion width for the unsigned
-/// `%u`/`%x`/`%X`/`%o` family, with the shared high-bit parity defer applied.
+/// `%u`/`%x`/`%X`/`%o` family.
 ///
-/// All four arms need exactly this; see [`unsigned_high_bit_set`] for why a
-/// high bit set means deferring to Python rather than rendering natively.
+/// `FormatSpecifier.signed` reads the spec type's own signedness, so
+/// `FormatString.replace` masks an unsigned operand without sign-folding it:
+/// a high-bit value renders as its plain unsigned digits, as here.
 fn unsigned_operand(
     args: &[RustBV],
     arg_idx: &mut usize,
@@ -115,14 +103,10 @@ fn unsigned_operand(
     what: &str,
 ) -> Result<u64, ProcedureError> {
     let val = next_arg(args, arg_idx, what)?;
-    let bits = cspec.modifier.int_conv_bits(arch_bits);
-    let unsigned_val = unsigned_at_width(val, bits);
-    if unsigned_high_bit_set(unsigned_val, bits) {
-        return Err(ProcedureError::Other(
-            "unsigned high-bit value defers to Python".to_string(),
-        ));
-    }
-    Ok(unsigned_val)
+    Ok(unsigned_at_width(
+        val,
+        cspec.modifier.int_conv_bits(arch_bits),
+    ))
 }
 
 /// Render one parsed specifier into `output`, consuming its variadic argument.
@@ -275,11 +259,30 @@ pub(super) fn render_conversion(
             output.extend_from_slice(s);
         }
         b'p' => {
-            // %p always diverges from Python: native emitted a "0x" prefix
-            // (format!("0x{val:x}")) while format_parser.py emits bare hex
-            // (f"{c_val:x}"), and Python additionally sign-folds bit-63-set
-            // pointers. Defer for parity (angr-3i88a).
-            return Err(ProcedureError::Other("%p defers to Python".to_string()));
+            // `_mod_spec` pairs length modifiers with integer and float
+            // conversions only, so Python never matches `%lp` and friends.
+            if cspec.modifier != LengthModifier::None {
+                return Err(ProcedureError::Other(
+                    "%p with a length modifier defers to Python".to_string(),
+                ));
+            }
+            // `FormatString.replace` masks to the pointer width and renders
+            // `f"{c_val:#x}"`, or glibc's "(nil)" for a null pointer; a
+            // pointer type is unsigned, so there is no sign fold.
+            let val = unsigned_at_width(next_arg(args, arg_idx, "pointer arg")?, arch_bits.min(64));
+            let formatted = if val == 0 {
+                "(nil)".to_string()
+            } else {
+                format!("{val:#x}")
+            };
+            pad_and_push(
+                output,
+                formatted.as_bytes(),
+                cspec.width,
+                cspec.left_align,
+                cspec.zero_pad,
+                false,
+            );
         }
         b'n' => {
             // %n writes the number of chars written so far to an int pointer.

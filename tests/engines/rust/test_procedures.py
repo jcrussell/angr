@@ -1097,6 +1097,61 @@ class TestNativeScanfScansetFallback:
         assert stats["call_counts"].get("scanf", 0) == 1, f"%d must still dispatch natively, got stats={stats}"
 
 
+class TestNativeSprintfRender:
+    """Native sprintf renders a high-bit unsigned value and ``%p`` itself,
+    byte for byte as ``format_parser.py`` does (angr-vmi2l.117).
+
+    Hooks in ``.ctors`` as ``TestNativeScanfScanset`` does, so
+    ``prefer_native_dispatch`` is true and the native registry runs.
+    """
+
+    HOOK_ADDR = 0x600E48
+    DEAD_ADDR = 0x4008B0
+    BUF_ADDR = 0x601100
+    DST_ADDR = 0x601140
+
+    @pytest.mark.parametrize(
+        ("fmt", "arg", "expected"),
+        [
+            (b"%u", 0xFFFFFFFF, b"4294967295"),
+            (b"%x", 0xDEADBEEF, b"deadbeef"),
+            (b"%hx", 0x8000, b"8000"),
+            (b"%p", 0, b"(nil)"),
+            (b"%p", 0xDEADBEEF, b"0xdeadbeef"),
+        ],
+    )
+    def test_renders_natively_like_python(self, fauxware_project, fmt, arg, expected):
+        from angr import claripy
+
+        proj = fauxware_project
+        proj.hook(self.HOOK_ADDR, angr.SIM_PROCEDURES["libc"]["sprintf"](), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            state.memory.store(self.BUF_ADDR, fmt + b"\x00")
+            state.regs.rdi = self.DST_ADDR
+            state.regs.rsi = self.BUF_ADDR
+            state.regs.rdx = arg
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
+            py = proj.factory.simulation_manager(state.copy()).step().active[0]
+            mgr = RustExplorationManager(proj, [state])
+            mgr.run(max_steps=1)
+            stats = mgr._rust_mgr.native_procedure_stats()
+            assert stats["call_counts"].get("sprintf", 0) == 1, stats
+            (rs,) = mgr.active + mgr.deadended + mgr.errored
+            for s in (py, rs):
+                assert s.solver.eval_one(s.regs.rax) == len(expected)
+                got = s.solver.eval_one(s.memory.load(self.DST_ADDR, len(expected) + 1), cast_to=bytes)
+                assert got == expected + b"\x00"
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+
 class TestNativeFileDescriptorProcedures:
     """Integration test for native pipe/dup/dup2 dispatched through the Rust manager.
 
