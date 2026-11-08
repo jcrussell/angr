@@ -217,11 +217,24 @@ pub(crate) fn check_max(n: u64, max: usize) -> Result<(), ProcedureError> {
 /// `value` is a `u64` because every caller's payload already is one; a signed
 /// return passes the two's-complement pattern (`-1i64 as u64`) and
 /// [`RustBV::concrete`] truncates to `bits`, exactly as the hand-written form
-/// did. Sites whose width is *not* the word width — a `char` return, a scanf
+/// did. Sites whose width is *not* the word width — a C `int` return
+/// ([`c_int`]), a `char` return, a scanf
 /// conversion sized by its length modifier, a symbolic BV — build their `RustBV`
 /// directly and must keep doing so.
 pub(crate) fn arch_word(state: &RustSimState, value: u64) -> RustBV {
     RustBV::concrete(u128::from(value), state.arch().bits())
+}
+
+/// Build a C `int` return value: 32 bits, whatever the arch word width.
+///
+/// The [`arch_word`] counterpart for `int`-typed returns (an fd, `0`/`-1`
+/// status, a printed or converted count). `write_proc_return_with_abi`
+/// extends it to the return register per the ABI, so an amd64 `(int)-1`
+/// lands in RAX as `0x0000_0000_FFFF_FFFF`, as in the Python engine
+/// (bd memory `invariant-native-proc-return-width-extension`). `value` is
+/// truncated to its low 32 bits.
+pub(crate) fn c_int(value: i64) -> RustBV {
+    RustBV::concrete(u128::from(value as u32), 32)
 }
 
 /// Read a concrete word-width C argument (`long`, `off_t`) as signed: the low

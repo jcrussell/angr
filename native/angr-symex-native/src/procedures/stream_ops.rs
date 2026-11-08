@@ -15,7 +15,7 @@
 //! Only handles concrete arguments; symbolic arguments fall back to Python.
 
 use super::strings::{MAX_PATH_SCAN as MAX_PATH, scan_concrete_until_null};
-use super::{ProcedureError, arch_word};
+use super::{ProcedureError, arch_word, c_int};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -302,7 +302,7 @@ crate::declare_proc! {
         let fd = read_fileno(state, file_ptr)?;
 
         if fd < 0 {
-            return Ok(Some(arch_word(state, -1i64 as u64)));
+            return Ok(Some(c_int(-1)));
         }
         if !state.file_system_ref().is_open(fd as u32) {
             return Err(ProcedureError::Other(format!(
@@ -312,9 +312,9 @@ crate::declare_proc! {
         let ret = if state.file_system().close(fd as u32) {
             0
         } else {
-            -1i64 as u64
+            -1
         };
-        Ok(Some(arch_word(state, ret)))
+        Ok(Some(c_int(ret)))
     }
 }
 
@@ -338,7 +338,7 @@ crate::declare_proc! {
         let whence = whence_raw as u32;
         let fd = read_fileno(state, file_ptr)?;
         if fd < 0 {
-            return Ok(Some(arch_word(state, -1i64 as u64)));
+            return Ok(Some(c_int(-1)));
         }
         if state.file_system_ref().seeks_past_eof(fd as u32, offset, whence) {
             return Err(ProcedureError::Other(
@@ -346,8 +346,8 @@ crate::declare_proc! {
             ));
         }
         match state.file_system().seek(fd as u32, offset, whence) {
-            Some(_) => Ok(Some(arch_word(state, 0u64))),
-            None => Ok(Some(arch_word(state, -1i64 as u64))),
+            Some(_) => Ok(Some(c_int(0))),
+            None => Ok(Some(c_int(-1))),
         }
     }
 }

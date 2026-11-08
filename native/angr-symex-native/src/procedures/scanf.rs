@@ -31,7 +31,7 @@
 //! contract, not an input check.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use super::arch_word;
+use super::c_int;
 use super::format_common::read_format_string;
 use super::scanf_spec::{ScanfSpec, parse_scanf_format};
 use super::scanf_spell::{max_digits, numeric_spelling};
@@ -296,7 +296,7 @@ fn do_scanf(
     }
 
     // Return number of successful conversions
-    Ok(Some(arch_word(state, conversions)))
+    Ok(Some(c_int(conversions as i64)))
 }
 
 /// Digit bytes a numeric conversion reads: its field width, else Python's
@@ -444,7 +444,7 @@ fn do_fscanf(
 ) -> Result<Option<RustBV>, ProcedureError> {
     let fd = crate::procedures::stream_ops::read_fileno(state, file_ptr)?;
     if fd < 0 {
-        return Ok(Some(arch_word(state, -1i64 as u64)));
+        return Ok(Some(c_int(-1)));
     }
     let (source, record_stdin) = if fd == 0 {
         // angr-qmrrp: mirror the tracked-fd gate below for fd 0 -- a prior

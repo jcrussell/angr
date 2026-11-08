@@ -15,7 +15,7 @@ use super::strings::{
     MAX_PATH_SCAN as MAX_PATH, ScanOutcome, null_exists_constraint, scan_concrete_bounded,
     scan_for_null_symbolic,
 };
-use super::{ProcedureError, arch_word};
+use super::{ProcedureError, arch_word, c_int};
 use crate::state::{FdFlags, RustSimState};
 use crate::symbolic::RustBV;
 
@@ -113,7 +113,7 @@ crate::declare_proc! {
             .open_with_append(pathname, fd_flags, append)
             .ok_or_else(|| ProcedureError::Other("open: fd space exhausted".to_string()))?;
 
-        Ok(Some(arch_word(state, u64::from(fd))))
+        Ok(Some(c_int(i64::from(fd))))
     }
 }
 
@@ -136,8 +136,8 @@ crate::declare_proc! {
             )));
         }
         let success = state.file_system().close(fd as u32);
-        let ret = if success { 0 } else { -1i64 as u64 };
-        Ok(Some(arch_word(state, ret)))
+        let ret = if success { 0 } else { -1 };
+        Ok(Some(c_int(ret)))
     }
 }
 
@@ -191,8 +191,8 @@ crate::declare_proc! {
             Err(_) => None,
         };
         match duped {
-            Some(newfd) => Ok(Some(arch_word(state, u64::from(newfd)))),
-            None => Ok(Some(arch_word(state, -1i64 as u64))),
+            Some(newfd) => Ok(Some(c_int(i64::from(newfd)))),
+            None => Ok(Some(c_int(-1))),
         }
     }
 }
@@ -221,8 +221,8 @@ crate::declare_proc! {
             _ => None,
         };
         match dup2ed {
-            Some(fd) => Ok(Some(arch_word(state, u64::from(fd)))),
-            None => Ok(Some(arch_word(state, -1i64 as u64))),
+            Some(fd) => Ok(Some(c_int(i64::from(fd)))),
+            None => Ok(Some(c_int(-1))),
         }
     }
 }
@@ -274,7 +274,7 @@ crate::declare_proc! {
             )?;
         }
 
-        Ok(Some(arch_word(state, 0u64)))
+        Ok(Some(c_int(0)))
     }
 }
 

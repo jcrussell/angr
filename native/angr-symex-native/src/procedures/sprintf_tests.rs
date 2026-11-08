@@ -44,7 +44,14 @@ fn test_sprintf_simple_string() {
         )
         .unwrap();
 
-    assert_eq!(result.unwrap().as_u64(), Some(11));
+    let result = result.unwrap();
+    assert_eq!(result.as_u64(), Some(11));
+    // `int sprintf`: a 32-bit return, not the arch word (angr-vmi2l.116).
+    crate::procedures::test_util::assert_ret_width(
+        &result,
+        crate::procedures::test_util::RET_INT_BITS,
+        "sprintf",
+    );
     // Verify written data
     for (i, &expected) in b"hello world\x00".iter().enumerate() {
         let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
@@ -289,6 +296,11 @@ fn test_snprintf_output_that_fits_stays_native() {
     state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
     let ret = snprintf_with_size(&mut state, 6).unwrap().unwrap();
     assert_eq!(ret.as_u64(), Some(5));
+    crate::procedures::test_util::assert_ret_width(
+        &ret,
+        crate::procedures::test_util::RET_INT_BITS,
+        "snprintf",
+    );
     let out: Vec<u8> = (0..6u64)
         .map(|i| state.memory_load(0x2000 + i, 1).unwrap().as_u64().unwrap() as u8)
         .collect();

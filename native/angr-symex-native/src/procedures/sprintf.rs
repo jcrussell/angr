@@ -19,12 +19,12 @@
 //! * `%n`, the float specifiers, and any unknown specifier.
 //! * a symbolic format string or argument.
 
-use super::arch_word;
 use super::format_common::read_format_string;
 use super::sprintf_conv::render_conversion;
 use super::sprintf_spec::parse_conversion_spec;
 use super::strings::write_cstr;
 use super::{NativeSimProcedure, ProcedureError, extract_concrete_arg};
+use super::{arch_word, c_int};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -132,7 +132,7 @@ impl NativeSimProcedure for NativeSprintf {
         // Write output to destination, then the null terminator
         write_cstr(state, dest, &output)?;
 
-        Ok(Some(arch_word(state, output.len() as u64)))
+        Ok(Some(c_int(output.len() as i64)))
     }
 }
 
@@ -177,7 +177,7 @@ impl NativeSimProcedure for NativeAsprintf {
         // Write the allocated buffer pointer back to *strp (honors mem endness).
         state.memory_store(strp, arch_word(state, dst))?;
 
-        Ok(Some(arch_word(state, output.len() as u64)))
+        Ok(Some(c_int(output.len() as i64)))
     }
 }
 
@@ -220,7 +220,7 @@ impl NativeSimProcedure for NativeSnprintf {
             ));
         }
         write_cstr(state, dest, &output)?;
-        Ok(Some(arch_word(state, output.len() as u64)))
+        Ok(Some(c_int(output.len() as i64)))
     }
 }
 
@@ -263,7 +263,7 @@ impl NativeSimProcedure for NativeVsnprintf {
             write_cstr(state, dest, &fmt[..write_len])?;
         }
 
-        Ok(Some(arch_word(state, fmt.len() as u64)))
+        Ok(Some(c_int(fmt.len() as i64)))
     }
 }
 
@@ -305,7 +305,7 @@ impl NativeSimProcedure for NativeVsprintf {
         let fmt = read_format_string(state, fmt_addr)?;
         write_cstr(state, dest, &fmt)?;
 
-        Ok(Some(arch_word(state, fmt.len() as u64)))
+        Ok(Some(c_int(fmt.len() as i64)))
     }
 }
 

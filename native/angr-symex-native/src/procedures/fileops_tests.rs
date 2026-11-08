@@ -262,7 +262,7 @@ fn test_dup_closed_fd() {
     let result = NativeDup
         .call(&mut state, &[RustBV::concrete(99, 64)])
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    assert_eq!(result.unwrap().as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn test_dup_after_close() {
     let result = NativeDup
         .call(&mut state, &[RustBV::concrete(3, 64)])
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    assert_eq!(result.unwrap().as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]
@@ -391,7 +391,7 @@ fn test_dup2_huge_newfd_returns_ebadf_without_wrapping_next_fd() {
             .unwrap();
         assert_eq!(
             result.unwrap().as_u64(),
-            Some(u64::MAX),
+            Some(u64::from(u32::MAX)),
             "dup2(3, {newfd:#x}) must fail"
         );
     }
@@ -421,7 +421,7 @@ fn test_dup2_oldfd_not_open() {
             &[RustBV::concrete(99, 64), RustBV::concrete(7, 64)],
         )
         .unwrap();
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    assert_eq!(result.unwrap().as_u64(), Some(u64::from(u32::MAX)));
     assert!(!state.file_system_ref().is_open(7));
 }
 
@@ -700,4 +700,34 @@ fn test_lseek_past_eof_falls_back() {
     assert!(NativeLseek.call(&mut state, &args(1, 2)).is_err());
     assert_eq!(state.file_system_ref().fd_info(fd).unwrap().1, 0);
     assert_eq!(lseek_ret(&mut state, u128::from(fd), 10, 0, 64), 10);
+}
+
+/// `open`/`close`/`dup`/`dup2`/`pipe` are `int`-typed in C, so each success
+/// path mints a 32-bit return, not the arch word (angr-vmi2l.116). The `-1`
+/// paths are pinned by value above: a word-width `-1` reads back as
+/// `u64::MAX`, a C `int` one as `u32::MAX`.
+#[test]
+fn test_fd_proc_return_widths() {
+    use crate::procedures::test_util::{RET_INT_BITS, assert_ret_width};
+    let mut state = RustSimState::new("amd64").unwrap();
+    state.map_memory_data(0x1000, b"a.txt\0", Permission::RWX);
+    state.map_memory_data(0x2000, &[0u8; 16], Permission::RWX);
+    let word = |v: u128| RustBV::concrete(v, 64);
+
+    let open = NativeOpen
+        .call(&mut state, &[word(0x1000), word(O_RDWR)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&open, RET_INT_BITS, "open");
+    let dup = NativeDup.call(&mut state, &[word(3)]).unwrap().unwrap();
+    assert_ret_width(&dup, RET_INT_BITS, "dup");
+    let dup2 = NativeDup2
+        .call(&mut state, &[word(3), word(9)])
+        .unwrap()
+        .unwrap();
+    assert_ret_width(&dup2, RET_INT_BITS, "dup2");
+    let close = NativeClose.call(&mut state, &[word(9)]).unwrap().unwrap();
+    assert_ret_width(&close, RET_INT_BITS, "close");
+    let pipe = NativePipe.call(&mut state, &[word(0x2000)]).unwrap().unwrap();
+    assert_ret_width(&pipe, RET_INT_BITS, "pipe");
 }

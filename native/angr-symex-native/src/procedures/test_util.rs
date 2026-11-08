@@ -82,7 +82,8 @@ pub(crate) fn assert_over_limit(err: &crate::procedures::ProcedureError, what: &
 /// procedure builds its return `RustBV` at: `fgets.rs`'s
 /// `fgetc`/`getchar`/`getc`, `stdio.rs`'s
 /// `fflush`/`setvbuf`/`feof`/`ferror`/`fputs`, plus `puts`, `printf`,
-/// `getopt` and `posix_memalign`. Pointer/`size_t`/`ssize_t` returns use
+/// `getopt`, `posix_memalign`, and every [`crate::procedures::c_int`] site.
+/// Pointer/`size_t`/`ssize_t` returns use
 /// [`arch_ret_bits`] instead.
 pub(crate) const RET_INT_BITS: u32 = 32;
 

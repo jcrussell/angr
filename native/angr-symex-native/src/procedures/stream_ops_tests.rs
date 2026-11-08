@@ -5,6 +5,7 @@
 use super::*;
 use crate::memory::Permission;
 use crate::procedures::NativeSimProcedure;
+use crate::procedures::test_util::{RET_INT_BITS, arch_ret_bits, assert_ret_width};
 
 /// Set up an amd64 state with the heap region mapped so heap_alloc-backed
 /// writes can land. Mirrors the pattern used in malloc tests.
@@ -252,6 +253,9 @@ fn test_fclose_releases_fd() {
         .unwrap()
         .unwrap();
     assert_eq!(ret.as_u64(), Some(0));
+    // `int fclose`: a 32-bit return, `FILE *fopen`: a word (angr-vmi2l.116).
+    assert_ret_width(&ret, RET_INT_BITS, "fclose");
+    assert_ret_width(&file_bv, arch_ret_bits(&state), "fopen");
     assert!(!state.file_system_ref().is_open(3));
 }
 
@@ -295,7 +299,7 @@ fn test_fclose_negative_fileno_returns_minus_one() {
         .call(&mut state, &[RustBV::concrete(0x10000, 64)])
         .unwrap()
         .unwrap();
-    assert_eq!(ret.as_u64(), Some(u64::MAX));
+    assert_eq!(ret.as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]
@@ -330,6 +334,9 @@ fn test_fseek_set_then_ftell() {
         .unwrap()
         .unwrap();
     assert_eq!(pos.as_u64(), Some(42));
+    // `int fseek` returns 32 bits, `long ftell` a word (angr-vmi2l.116).
+    assert_ret_width(&ret, RET_INT_BITS, "fseek");
+    assert_ret_width(&pos, arch_ret_bits(&state), "ftell");
 }
 
 #[test]
@@ -355,7 +362,7 @@ fn test_fseek_invalid_whence_returns_minus_one() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(ret.as_u64(), Some(u64::MAX));
+    assert_eq!(ret.as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]
@@ -377,7 +384,7 @@ fn test_fseek_unknown_fd_returns_minus_one() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(ret.as_u64(), Some(u64::MAX));
+    assert_eq!(ret.as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]

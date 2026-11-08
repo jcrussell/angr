@@ -1242,8 +1242,10 @@ class TestNativeFileDescriptorErrorReturns:
       1. The native registry dispatches the procedure (no Python fallback)
          even on the error path — `native_procedure_stats` `call_counts`
          ticks under the registered name.
-      2. The return register holds the -1 sentinel (0xFFFFFFFFFFFFFFFF on
-         amd64), so a C-level `if (close(fd) == -1)` check would fire.
+      2. The return register holds the -1 sentinel at the C return type,
+         extended per the ABI: ``0xFFFFFFFF`` for an ``int`` (dup/dup2), as
+         in the Python engine (angr-vmi2l.116), all-ones for ``off_t``
+         (lseek), so a C-level ``if (dup(fd) == -1)`` check would fire.
       3. The post-call `FileSystem` is unchanged for the bad fd: the
          error path early-returns before any state mutation, so the bad
          fd does NOT silently get registered as open.
@@ -1256,11 +1258,11 @@ class TestNativeFileDescriptorErrorReturns:
     DEAD_ADDR = 0x4008B0
 
     @pytest.mark.parametrize(
-        "proc_name,num_args,reg_args,bad_fd",
+        "proc_name,num_args,reg_args,bad_fd,expected_rax",
         [
-            ("dup", 1, (99,), 99),  # dup(99)   — fd never opened
-            ("dup2", 2, (99, 7), 7),  # dup2(99, 7) — newfd 7 must NOT be created
-            ("lseek", 3, (99, 0, 0), 99),  # lseek(99, 0, SEEK_SET)
+            ("dup", 1, (99,), 99, 0xFFFFFFFF),  # dup(99)   — fd never opened
+            ("dup2", 2, (99, 7), 7, 0xFFFFFFFF),  # dup2(99, 7) — newfd 7 must NOT be created
+            ("lseek", 3, (99, 0, 0), 99, 0xFFFFFFFFFFFFFFFF),  # lseek(99, 0, SEEK_SET)
         ],
     )
     def test_native_error_returns_minus_one(
@@ -1270,6 +1272,7 @@ class TestNativeFileDescriptorErrorReturns:
         num_args,
         reg_args,
         bad_fd,
+        expected_rax,
     ):
         from angr import claripy
 
@@ -1313,11 +1316,9 @@ class TestNativeFileDescriptorErrorReturns:
                     break
             assert sid is not None, f"no state in any stash: {mgr.stash_counts()}"
 
-            # (2) Return value sentinel: -1 as u64 == 0xFFFFFFFFFFFFFFFF.
+            # (2) Return value sentinel: -1 at the C return type's width.
             rax = mgr._rust_mgr.get_state_register(sid, "rax")
-            assert rax == 0xFFFFFFFFFFFFFFFF, (
-                f"expected rax=-1 sentinel from native {proc_name} error path, got rax={rax:#x}"
-            )
+            assert rax == expected_rax, f"expected rax=-1 sentinel from native {proc_name} error path, got rax={rax:#x}"
 
             # (3) Post-call FileSystem invariant: the bad fd was not
             # silently registered.

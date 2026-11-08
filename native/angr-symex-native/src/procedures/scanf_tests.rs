@@ -637,7 +637,7 @@ fn test_fscanf_negative_fd_returns_minus_one() {
         .unwrap();
 
     // Closed/negative fd → -1 (matches Python fscanf when simfd is None).
-    assert_eq!(result.unwrap().as_u64(), Some(u64::MAX));
+    assert_eq!(result.unwrap().as_u64(), Some(u64::from(u32::MAX)));
 }
 
 #[test]
