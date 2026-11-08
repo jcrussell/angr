@@ -205,8 +205,10 @@ fn floating_prefix_len(bytes: &[u8]) -> usize {
 /// `x * 2^n`, clamped in musl's three steps so an out-of-range `n` cannot
 /// over/underflow an intermediate. A plain `x * 2f64.powi(n)` collapses to
 /// `inf`/`0.0` in the exponent tails and loses results that *are*
-/// representable (e.g. a 2^124-scale significand with a 2^-1100 exponent),
-/// and the stepped-down subnormal path avoids double-rounding.
+/// representable (e.g. a 2^124-scale significand with a 2^-1100 exponent).
+/// The subnormal tail of the multiply rounds `x`'s low bits away, so a
+/// caller wanting one correctly rounded result passes an `x` already rounded
+/// to the result's precision (as `parse_hex_float` does).
 fn scale_by_pow2(x: f64, n: i32) -> f64 {
     let p1023 = f64::from_bits(0x7fe0_0000_0000_0000); // 2^1023
     let p53 = f64::from_bits(0x4340_0000_0000_0000); // 2^53
@@ -231,6 +233,31 @@ fn scale_by_pow2(x: f64, n: i32) -> f64 {
         }
     }
     y * f64::from_bits(((0x3ff + n) as u64) << 52)
+}
+
+/// `mant / 2^shift` rounded to nearest, ties to even, for `shift > 0`. The
+/// bits shifted out decide the rounding; a `shift` at or past `mant`'s width
+/// leaves only the half-way comparison against the shifted-out value.
+fn round_shift_right_even(mant: u128, shift: i64) -> u128 {
+    debug_assert!(shift > 0);
+    if shift > 128 {
+        return 0; // below half of the result's LSB
+    }
+    if shift == 128 {
+        // The half-way point is 2^127: above it rounds up to 1, the tie to
+        // even (0).
+        return u128::from(mant > 1 << 127);
+    }
+    let shift = shift as u32;
+    let kept = mant >> shift;
+    let rem = mant & ((1u128 << shift) - 1);
+    let half = 1u128 << (shift - 1);
+    if rem > half || (rem == half && kept & 1 == 1) {
+        // overflow-ok: kept < 2^128 >> shift, so the increment cannot wrap.
+        kept + 1
+    } else {
+        kept
+    }
 }
 
 /// Parse a complete C99 hex-float literal — `[+-]?0[xX]hex[.hex][pP[+-]?dec]`
@@ -339,7 +366,25 @@ fn parse_hex_float(s: &[u8]) -> Option<f64> {
     if sticky {
         mant |= 1;
     }
-    let value = scale_by_pow2(mant as f64, exp2.clamp(-100_000, 100_000) as i32);
+    // Round once, here, to the precision the result actually has: 53 bits,
+    // or fewer when the value is subnormal (its LSB cannot go below 2^-1074).
+    // Converting a wider `mant` with `as f64` first and letting the subnormal
+    // scaling round again is a double rounding, 1 ulp off for e.g.
+    // `0x12f1848ac60c3ef3p-1083` (angr-vmi2l.105). After this the significand
+    // has at most 53 bits (54 on a carry to a power of two), so `as f64` is
+    // exact and `scale_by_pow2` rounds only on overflow to infinity.
+    let exp2 = exp2.clamp(-100_000, 100_000);
+    let bit_len = i64::from(u128::BITS - mant.leading_zeros());
+    // overflow-ok: exp2 is clamped to ±100_000 and bit_len is at most 128.
+    let lsb_exp = (exp2 + bit_len - 53).max(-1074);
+    // overflow-ok: both operands are bounded as above.
+    let shift = lsb_exp - exp2;
+    let (mant, exp2) = if shift > 0 {
+        (round_shift_right_even(mant, shift), lsb_exp)
+    } else {
+        (mant, exp2)
+    };
+    let value = scale_by_pow2(mant as f64, exp2 as i32);
     Some(if negative { -value } else { value })
 }
 

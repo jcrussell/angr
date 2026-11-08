@@ -321,6 +321,31 @@ fn test_parse_hex_float_exponent_extremes() {
     assert_eq!(parse_hex_float(b"0x1p-5000"), Some(0.0));
 }
 
+/// A subnormal result with more than 53 significant bits rounds once, at the
+/// subnormal precision, not first to 53 bits and again when scaled down
+/// (angr-vmi2l.105). Expected bits are `float.fromhex`'s.
+#[test]
+fn test_parse_hex_float_subnormal_rounds_once() {
+    let cases: &[(&[u8], u64)] = &[
+        (b"0x12f1848ac60c3ef3p-1083", 0x000978c24563061f),
+        (b"0x1.8p-1075", 0x1),
+        (b"0x3p-1076", 0x1),
+        (b"0x1.0000000000001p-1075", 0x1),
+        (b"0x0.0000000000001fffffffffffffp-1022", 0x2),
+        (b"0x1.fffffffffffff8p-1023", 0x0010_0000_0000_0000),
+        (b"-0x12f1848ac60c3ef3p-1083", 0x800978c24563061f),
+    ];
+    for &(s, bits) in cases {
+        let got = parse_hex_float(s).map(f64::to_bits);
+        assert_eq!(
+            got,
+            Some(bits),
+            "parse_hex_float({:?})",
+            std::str::from_utf8(s).unwrap()
+        );
+    }
+}
+
 /// Non-hex forms must fall through to `f64::from_str`, and an incomplete hex
 /// literal must not be mistaken for a complete one.
 #[test]
