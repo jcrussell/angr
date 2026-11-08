@@ -1,4 +1,4 @@
-"""Native stream syscalls honour SHORT_READS and the CGC fd/length options (angr-vmi2l.139).
+"""Native stream syscalls honour SHORT_READS and the CGC fd/length/fdwait options (angr-vmi2l.139, angr-vmi2l.141).
 
 The native ``read`` / ``readv`` syscalls on stdin and CGC ``receive`` returned
 the full ``count`` under ``SHORT_READS``, where Python's ``SimPackets.read``
@@ -124,3 +124,43 @@ def test_receive_under_no_symbolic_receive_length_clamps_to_max_receive_size():
 
 def test_receive_under_short_reads_returns_a_short_length():
     assert _both(lambda: _cgc(_receive(0), {o.SHORT_READS}), _rx_range) == (0, 4)
+
+
+def _fdwait(nfds, readfds, writefds, readyfds):
+    # mov edi, readyfds; then fdwait(nfds, readfds, writefds, timeout=0, readyfds)
+    return b"\xbf" + _d(readyfds) + _syscall(4, nfds, readfds, writefds, 0)
+
+
+def test_fdwait_under_non_blocking_fds_runs_natively():
+    # angr-vmi2l.141: the handler gates on CGC_NON_BLOCKING_FDS, which reaches
+    # the Rust state only through _NATIVE_SIMOPTIONS.
+    def outcome(found):
+        words = [found.memory.load(addr, 4, endness="Iend_LE") for addr in (BUF, BUF + 4, RX)]
+        return tuple(found.solver.eval_one(w) for w in words)
+
+    build = lambda: _cgc(_fdwait(3, BUF, BUF + 4, RX), {o.CGC_NON_BLOCKING_FDS})  # noqa: E731
+    assert _both(build, outcome) == (0b111, 0b111, 6)
+
+    project, state, end = build()
+    mgr = RustExplorationManager(project, [state])
+    mgr.explore(find=end, n=50)
+    assert len(mgr.found) == 1, mgr.errored
+    assert mgr.stats.get("syscall_native_by_num", {}).get(4) == 1, mgr.stats.get("syscall_python_fallback_by_num")
+
+
+def test_every_native_has_option_literal_is_mirrored():
+    # A `has_option("X")` in native prod code is dead unless X is mirrored onto
+    # the Rust state (angr-vmi2l.141).
+    import re
+    from pathlib import Path
+
+    from angr.exploration.rust_manager import _NATIVE_SIMOPTIONS
+
+    native = Path(__file__).resolve().parents[3] / "native"
+    names = set()
+    for path in native.rglob("src/**/*.rs"):
+        if path.name.endswith("_tests.rs") or any(part == "tests" or part.endswith("_tests") for part in path.parts):
+            continue
+        names.update(re.findall(r'has_option\(\s*"([A-Z_0-9]+)"', path.read_text()))
+    assert names, "no has_option literals found; the scan is broken"
+    assert names <= _NATIVE_SIMOPTIONS, sorted(names - _NATIVE_SIMOPTIONS)
