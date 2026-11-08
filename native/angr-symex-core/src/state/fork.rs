@@ -681,7 +681,7 @@ impl RustSimState {
             removed
         };
         let merged_environment = {
-            let mut merged: Option<HashMap<Vec<u8>, Vec<u8>>> = None;
+            let mut merged: Option<HashMap<Vec<u8>, EnvVar>> = None;
             for other in others {
                 if Arc::ptr_eq(&self.environment, &other.environment) {
                     continue;
@@ -689,7 +689,9 @@ impl RustSimState {
                 let acc = merged.get_or_insert_with(|| (*self.environment).clone());
                 for (key, value) in other.environment.iter() {
                     match acc.get(key) {
-                        Some(existing) if existing != value => log::warn!(
+                        // Value only: two branches that each copied one
+                        // `setenv` value to the heap agree on it.
+                        Some(existing) if existing.value != value.value => log::warn!(
                             "merge: conflicting environment value for `{}`; keeping the \
                              earlier branch's value",
                             String::from_utf8_lossy(key)

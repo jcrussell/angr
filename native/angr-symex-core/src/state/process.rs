@@ -138,7 +138,27 @@ impl RustSimState {
 
     /// Get an environment variable value by key.
     pub fn getenv(&self, key: &[u8]) -> Option<&[u8]> {
-        self.environment.get(key).map(std::vec::Vec::as_slice)
+        self.environment.get(key).map(|var| var.value.as_slice())
+    }
+
+    /// The guest address of `key`'s value string, if it has one (see
+    /// [`EnvVar::addr`]).
+    pub fn getenv_addr(&self, key: &[u8]) -> Option<u64> {
+        self.environment.get(key).and_then(|var| var.addr)
+    }
+
+    /// Record `addr` as the guest address of `key`'s value string. A no-op
+    /// when `key` is unset.
+    pub fn set_env_addr(&mut self, key: &[u8], addr: u64) {
+        // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
+        if self
+            .environment
+            .get(key)
+            .is_some_and(|var| var.addr != Some(addr))
+            && let Some(var) = Arc::make_mut(&mut self.environment).get_mut(key)
+        {
+            var.addr = Some(addr);
+        }
     }
 
     /// Set an environment variable.
@@ -148,9 +168,12 @@ impl RustSimState {
             Arc::make_mut(&mut self.removed_env_keys).remove(&key);
         }
         // Peek before the CoW clone — see module-level `arc-make-mut-cow`.
-        // Re-setting a key to the value it already holds is a no-op.
-        if self.environment.get(&key) != Some(&value) {
-            Arc::make_mut(&mut self.environment).insert(key, value);
+        // Re-setting a key to the value it already holds, with no guest
+        // address yet, is a no-op. One with an address drops it: the guest
+        // may have written through the old string.
+        let var = EnvVar { value, addr: None };
+        if self.environment.get(&key) != Some(&var) {
+            Arc::make_mut(&mut self.environment).insert(key, var);
         }
     }
 
@@ -188,20 +211,23 @@ impl RustSimState {
     /// cross-manager transfer), where the source `envp` array still holds the
     /// pristine initial values — it never tracks the guest's runtime
     /// mutations, which live only in this map.
-    pub fn seed_environment(&mut self, entries: Vec<(Vec<u8>, Vec<u8>)>) -> usize {
+    ///
+    /// Each entry is `(key, value, addr)`, `addr` being the guest address of
+    /// the value inside its `envp` string ([`EnvVar::addr`]).
+    pub fn seed_environment(&mut self, entries: Vec<(Vec<u8>, Vec<u8>, Option<u64>)>) -> usize {
         let mut inserted = 0;
-        for (key, value) in entries {
+        for (key, value, addr) in entries {
             if self.environment.contains_key(&key) || self.removed_env_keys.contains(&key) {
                 continue;
             }
-            Arc::make_mut(&mut self.environment).insert(key, value);
+            Arc::make_mut(&mut self.environment).insert(key, EnvVar { value, addr });
             inserted += 1;
         }
         inserted
     }
 
     /// Get the environment map (for export).
-    pub fn environment(&self) -> &HashMap<Vec<u8>, Vec<u8>> {
+    pub fn environment(&self) -> &HashMap<Vec<u8>, EnvVar> {
         &self.environment
     }
 

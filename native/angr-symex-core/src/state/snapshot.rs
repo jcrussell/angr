@@ -148,6 +148,11 @@ pub struct RustSimStateSnapshot {
     /// `#[serde(default)]` keeps pre-this-fix snapshots forward-compatible.
     #[serde(default)]
     pub removed_env_keys: Vec<Vec<u8>>,
+    /// `(key, addr)` for each [`environment`](Self::environment) entry with a
+    /// guest value address ([`EnvVar::addr`]), sorted by key. A separate
+    /// field, with `#[serde(default)]`, so older snapshots still decode.
+    #[serde(default)]
+    pub env_value_addrs: Vec<(Vec<u8>, u64)>,
     pub no_ip_concretization: bool,
     pub no_symbolic_jump_resolution: bool,
     pub keep_ip_symbolic: bool,
@@ -210,9 +215,15 @@ impl RustSimState {
         let mut environment: Vec<(Vec<u8>, Vec<u8>)> = self
             .environment
             .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
+            .map(|(k, v)| (k.clone(), v.value.clone()))
             .collect();
         environment.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut env_value_addrs: Vec<(Vec<u8>, u64)> = self
+            .environment
+            .iter()
+            .filter_map(|(k, v)| v.addr.map(|addr| (k.clone(), addr)))
+            .collect();
+        env_value_addrs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut removed_env_keys: Vec<Vec<u8>> = self.removed_env_keys.iter().cloned().collect();
         removed_env_keys.sort();
         let mut sim_options: Vec<String> = self.sim_options.iter().cloned().collect();
@@ -263,6 +274,7 @@ impl RustSimState {
             heap_metadata: self.heap_metadata.clone(),
             environment,
             removed_env_keys,
+            env_value_addrs,
             no_ip_concretization: self.no_ip_concretization,
             no_symbolic_jump_resolution: self.no_symbolic_jump_resolution,
             keep_ip_symbolic: self.keep_ip_symbolic,
@@ -289,7 +301,16 @@ impl RustSimState {
         let solver = Rc::new(RefCell::new(SymContext::new()));
         solver.borrow().restore_from_snapshot(&snap.solver);
         let memory = SymbolicMemory::from_snapshot(snap.memory);
-        let environment: HashMap<Vec<u8>, Vec<u8>> = snap.environment.into_iter().collect();
+        let mut environment: HashMap<Vec<u8>, EnvVar> = snap
+            .environment
+            .into_iter()
+            .map(|(key, value)| (key, EnvVar { value, addr: None }))
+            .collect();
+        for (key, addr) in snap.env_value_addrs {
+            if let Some(var) = environment.get_mut(&key) {
+                var.addr = Some(addr);
+            }
+        }
         let hooks: HashSet<u64> = snap.hooks.into_iter().collect();
         let removed_hooks: HashSet<u64> = snap.removed_hooks.into_iter().collect();
         let removed_env_keys: HashSet<Vec<u8>> = snap.removed_env_keys.into_iter().collect();

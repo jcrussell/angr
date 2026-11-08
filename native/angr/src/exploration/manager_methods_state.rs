@@ -491,6 +491,10 @@ impl RustExplorationManager {
     /// `getenv("FLAG")` on an `entry_state(env={"FLAG": ...})` state returned
     /// NULL where the Python `getenv` SimProcedure finds it.
     ///
+    /// Each entry is `(key, value, value_addr)`, `value_addr` the guest
+    /// address of the value inside its `envp` string (or `None`), which
+    /// native `getenv` returns (angr-vmi2l.129).
+    ///
     /// Insert-if-absent and never resurrecting a `unsetenv`'d key — see
     /// `RustSimState::seed_environment`. Returns the number of keys inserted.
     /// Errors (not panics) on unknown `state_id`.
@@ -501,7 +505,7 @@ impl RustExplorationManager {
     pub fn seed_environment(
         &mut self,
         state_id: u64,
-        entries: Vec<(Vec<u8>, Vec<u8>)>,
+        entries: Vec<(Vec<u8>, Vec<u8>, Option<u64>)>,
     ) -> PyResult<usize> {
         self._seed_environment(state_id, entries)
     }

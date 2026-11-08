@@ -67,12 +67,12 @@ fn test_merge_unions_config_like_fields_across_branches() {
 
     let env = merged.environment();
     assert_eq!(
-        env.get(b"PATH".as_slice()).map(|v| v.as_slice()),
+        env.get(b"PATH".as_slice()).map(|v| v.value.as_slice()),
         Some(b"/a".as_slice()),
         "conflicting environment value keeps the earlier (self) branch's"
     );
     assert_eq!(
-        env.get(b"HOME".as_slice()).map(|v| v.as_slice()),
+        env.get(b"HOME".as_slice()).map(|v| v.value.as_slice()),
         Some(b"/root".as_slice()),
         "other-branch-only environment key must be unioned in, not dropped"
     );
@@ -101,7 +101,7 @@ fn test_merge_config_union_keeps_shared_arcs_when_nothing_diverged() {
     assert!(merged.has_option("SHORT_READS"));
     assert!(merged.is_hooked(0x400000));
     assert_eq!(
-        merged.environment().get(b"PATH".as_slice()).unwrap(),
+        merged.getenv(b"PATH").unwrap(),
         b"/a".as_slice()
     );
     assert!(
@@ -197,7 +197,7 @@ fn test_merge_still_unions_additions_alongside_removals() {
         merged
             .environment()
             .get(b"HOME".as_slice())
-            .map(|v| v.as_slice()),
+            .map(|v| v.value.as_slice()),
         Some(b"/root".as_slice()),
         "b's brand-new env var must still be unioned in"
     );
@@ -246,7 +246,7 @@ fn test_merge_reinstated_hook_option_env_survives_own_removal_tombstone() {
         merged
             .environment()
             .get(b"PATH".as_slice())
-            .map(|v| v.as_slice()),
+            .map(|v| v.value.as_slice()),
         Some(b"/a2".as_slice()),
         "re-setenv after unsetenv must clear the tombstone"
     );

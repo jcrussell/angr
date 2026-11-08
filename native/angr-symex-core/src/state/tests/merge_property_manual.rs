@@ -241,7 +241,7 @@ fn joint_config_like_fields_union_additions_and_respect_removal_tombstones() {
         merged
             .environment()
             .get(b"HOME".as_slice())
-            .map(|v| v.as_slice()),
+            .map(|v| v.value.as_slice()),
         Some(b"/root".as_slice()),
         "b's brand-new env var is unioned in (environment)"
     );

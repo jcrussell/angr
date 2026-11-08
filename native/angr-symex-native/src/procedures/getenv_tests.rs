@@ -306,3 +306,79 @@ fn test_getenv_env_preserved_on_fork() {
     let forked = state.fork();
     assert_eq!(forked.getenv(b"KEY"), Some(b"value".as_slice()));
 }
+
+fn getenv_ptr(state: &mut RustSimState, name_addr: u64) -> u64 {
+    NativeGetenv
+        .call(state, &[RustBV::concrete(u128::from(name_addr), 64)])
+        .unwrap()
+        .unwrap()
+        .as_u64()
+        .unwrap()
+}
+
+fn store_byte(state: &mut RustSimState, addr: u64, byte: u8) {
+    state
+        .memory_store(addr, RustBV::concrete(u128::from(byte), 8))
+        .unwrap();
+}
+
+fn load_byte(state: &mut RustSimState, addr: u64) -> u64 {
+    state.memory_load(addr, 1).unwrap().as_u64().unwrap()
+}
+
+/// angr-vmi2l.129: a `setenv` value is copied to the heap once; the next
+/// `getenv` returns the same pointer and sees a guest write through it.
+#[test]
+fn test_getenv_setenv_value_pointer_is_stable() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"HOME\x00", Permission::RWX);
+    state.setenv(b"HOME".to_vec(), b"/root".to_vec());
+
+    let brk_before = state.heap_brk();
+    let first = getenv_ptr(&mut state, 0x1000);
+    let brk_after = state.heap_brk();
+    store_byte(&mut state, first, b'Z');
+    let second = getenv_ptr(&mut state, 0x1000);
+
+    assert_eq!(second, first, "two getenv calls must return one pointer");
+    assert_eq!(state.heap_brk(), brk_after, "the second getenv must not allocate");
+    assert_ne!(brk_after, brk_before);
+    assert_eq!(load_byte(&mut state, second), u64::from(b'Z'));
+
+    // A new setenv value is a new string.
+    state.setenv(b"HOME".to_vec(), b"/srv".to_vec());
+    assert_ne!(getenv_ptr(&mut state, 0x1000), first);
+}
+
+/// angr-vmi2l.129: a seeded variable's `getenv` points into its `envp`
+/// string, as Python's `getenv` does, and allocates nothing.
+#[test]
+fn test_getenv_seeded_value_points_into_envp_string() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"HOME\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"HOME=/seeded\x00", Permission::RWX);
+    state.seed_environment(vec![(
+        b"HOME".to_vec(),
+        b"/seeded".to_vec(),
+        Some(0x2005),
+    )]);
+
+    let brk_before = state.heap_brk();
+    assert_eq!(getenv_ptr(&mut state, 0x1000), 0x2005);
+    assert_eq!(getenv_ptr(&mut state, 0x1000), 0x2005);
+    assert_eq!(state.heap_brk(), brk_before);
+}
+
+/// angr-vmi2l.129: `putenv` makes the caller's string part of the
+/// environment, so `getenv` points into it.
+#[test]
+fn test_getenv_after_putenv_points_into_caller_string() {
+    let mut state = setup_state();
+    state.map_memory_data(0x1000, b"LANG\x00", Permission::RWX);
+    state.map_memory_data(0x2000, b"LANG=en_US\x00", Permission::RWX);
+    NativePutenv
+        .call(&mut state, &[RustBV::concrete(0x2000, 64)])
+        .unwrap();
+
+    assert_eq!(getenv_ptr(&mut state, 0x1000), 0x2005);
+}

@@ -837,7 +837,7 @@ fn merge_states_still_unions_additions_alongside_removals() {
         merged
             .environment()
             .get(b"HOME".as_slice())
-            .map(|v| v.as_slice()),
+            .map(|v| v.value.as_slice()),
         Some(b"/root".as_slice()),
         "b's brand-new env var is still unioned in"
     );
@@ -884,7 +884,7 @@ fn merge_states_reinstated_item_survives_own_tombstone() {
         merged
             .environment()
             .get(b"PATH".as_slice())
-            .map(|v| v.as_slice()),
+            .map(|v| v.value.as_slice()),
         Some(b"/a2".as_slice()),
         "re-setenv value must win after _merge_states"
     );

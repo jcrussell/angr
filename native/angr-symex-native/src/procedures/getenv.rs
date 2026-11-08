@@ -1,9 +1,14 @@
 //! Native getenv/setenv/putenv implementations.
 //!
 //! Uses per-state environment map (`HashMap<Vec<u8>, Vec<u8>>`).
-//! - getenv: looks up key, allocates heap buffer for value, returns pointer (or NULL)
+//! - getenv: looks up key, returns a pointer to its value string (or NULL)
 //! - setenv: stores key=value in the environment map
 //! - putenv: parses "KEY=VALUE" string and stores in environment map
+//!
+//! `getenv` returns one pointer per variable, as glibc and Python's `getenv`
+//! do (angr-vmi2l.129): a seeded variable's value inside its `envp` string, a
+//! `putenv` one's inside the caller's string, and a `setenv` one's heap copy,
+//! made by the first `getenv` (see `state::EnvVar`).
 //!
 //! Concrete keys only — falls back to Python for symbolic arguments.
 //!
@@ -44,7 +49,8 @@ fn read_cstring_tolerant(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>,
 }
 
 crate::declare_proc! {
-    /// getenv: look up `name`, heap-allocate the value, return a pointer (or NULL).
+    /// getenv: look up `name` and return a pointer to its value (or NULL).
+    /// A value with no guest string yet is copied to the heap once.
     ///
     /// ```c
     /// char *getenv(const char *name);
@@ -55,6 +61,9 @@ crate::declare_proc! {
     call |state| {
         let key = read_cstring_tolerant(state, name_addr)?;
 
+        if let Some(addr) = state.getenv_addr(&key) {
+            return Ok(Some(arch_word(state, addr)));
+        }
         match state.getenv(&key) {
             Some(value) => {
                 let value = value.to_vec(); // clone before mutable borrow
@@ -62,6 +71,7 @@ crate::declare_proc! {
                 let buf_addr = state.heap_alloc(value.len() as u64 + 1);
                 // Write value bytes + NUL terminator
                 write_cstr(state, buf_addr, &value)?;
+                state.set_env_addr(&key, buf_addr);
 
                 Ok(Some(arch_word(state, buf_addr)))
             }
@@ -148,7 +158,11 @@ crate::declare_proc! {
             let key = s[..eq_pos].to_vec();
             // overflow-ok: `eq_pos` is a position in `s`, so `eq_pos + 1 <= s.len()`.
             let value = s[eq_pos + 1..].to_vec();
-            state.setenv(key, value);
+            // The caller's string becomes the environment's, so getenv
+            // points into it.
+            let value_addr = str_addr.wrapping_add(eq_pos as u64).wrapping_add(1);
+            state.setenv(key.clone(), value);
+            state.set_env_addr(&key, value_addr);
         }
         // If no '=', putenv behavior is implementation-defined — just ignore
 

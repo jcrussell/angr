@@ -37,6 +37,8 @@ fn build_round_trip_state() -> RustSimState {
     .into_iter()
     .collect();
     s.max_history = 77;
+    // PATH keeps no guest address, so both `EnvVar::addr` arms round-trip.
+    s.set_env_addr(b"HOME", 0x7fff_0100);
     s.track_history = !s.track_history;
     s.block_count = 9;
     s.evicted_visits = Arc::new([(0x401000, 3)].into_iter().collect());

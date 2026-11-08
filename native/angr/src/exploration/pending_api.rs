@@ -314,7 +314,7 @@ impl RustExplorationManager {
     pub(crate) fn _seed_environment(
         &mut self,
         state_id: u64,
-        entries: Vec<(Vec<u8>, Vec<u8>)>,
+        entries: Vec<(Vec<u8>, Vec<u8>, Option<u64>)>,
     ) -> PyResult<usize> {
         self.with_state_mut(state_id, |state| Ok(state.seed_environment(entries)))
     }

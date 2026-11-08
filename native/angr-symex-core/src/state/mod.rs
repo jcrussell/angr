@@ -252,6 +252,22 @@ pub struct StdinReadLength {
     pub length: Option<(String, u32)>,
 }
 
+/// One environment variable of [`RustSimState`]'s environment map.
+///
+/// `addr` is the guest address of the NUL-terminated value string that native
+/// `getenv` returns, so repeated calls return one pointer and a guest write
+/// through it is seen by the next call, as with glibc and Python's `getenv`
+/// (angr-vmi2l.129). A seeded entry carries its `envp` string's value address
+/// and a `putenv` entry its argument's; a `setenv` entry has none until the
+/// first `getenv` copies it to the heap. Any change of `value` clears it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvVar {
+    /// Value bytes, without the NUL terminator.
+    pub value: Vec<u8>,
+    /// Guest address of the value string, once one exists.
+    pub addr: Option<u64>,
+}
+
 /// A stdin packet a Python SimProcedure read during a bounce (angr-azp2b).
 /// Python's `SimPackets.read` mints the packet as the fresh symbol `data`
 /// (big-endian bytes) of byte count `size`: a symbol under SHORT_READS, else
@@ -560,13 +576,14 @@ pub struct RustSimState {
     #[merge_policy = "delegate"]
     heap_metadata: HeapMetadata,
     /// Environment variables map for native getenv/setenv.
-    /// Keys and values are byte vectors (no NUL terminator in storage).
+    /// Keys and values are byte vectors (no NUL terminator in storage); see
+    /// [`EnvVar`] for the value's guest address.
     /// Wrapped in Arc for cheap fork — copy-on-write via Arc::make_mut on setenv.
     /// Most paths only read env vars, so the deep clone is rare.
     ///
     /// See module-level `arc-make-mut-cow` and `arc-collection-iter`.
     #[merge_policy = "joint"]
-    environment: Arc<HashMap<Vec<u8>, Vec<u8>>>,
+    environment: Arc<HashMap<Vec<u8>, EnvVar>>,
     /// Environment keys explicitly removed (`unsetenv`/`clearenv`) since this
     /// state's last fork point. Same rationale and reset/carry rules as
     /// [`Self::removed_hooks`].

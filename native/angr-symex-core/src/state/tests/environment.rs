@@ -15,8 +15,8 @@ fn test_seed_environment_populates_empty_map() {
     assert_eq!(state.getenv(b"FLAG_CHECK"), None);
 
     let inserted = state.seed_environment(vec![
-        (b"FLAG_CHECK".to_vec(), b"1".to_vec()),
-        (b"PATH".to_vec(), b"/usr/bin".to_vec()),
+        (b"FLAG_CHECK".to_vec(), b"1".to_vec(), None),
+        (b"PATH".to_vec(), b"/usr/bin".to_vec(), None),
     ]);
 
     assert_eq!(inserted, 2);
@@ -30,7 +30,7 @@ fn test_seed_environment_keeps_empty_value() {
     // stay a *present* key, not collapse into a miss (which would make
     // `setenv(..., overwrite=0)` clobber it).
     let mut state = RustSimState::new("amd64").unwrap();
-    assert_eq!(state.seed_environment(vec![(b"EMPTY".to_vec(), Vec::new())]), 1);
+    assert_eq!(state.seed_environment(vec![(b"EMPTY".to_vec(), Vec::new(), None)]), 1);
     assert_eq!(state.getenv(b"EMPTY"), Some(b"".as_slice()));
 }
 
@@ -43,8 +43,8 @@ fn test_seed_environment_does_not_overwrite_runtime_setenv() {
     state.setenv(b"PATH".to_vec(), b"/runtime".to_vec());
 
     let inserted = state.seed_environment(vec![
-        (b"PATH".to_vec(), b"/initial".to_vec()),
-        (b"HOME".to_vec(), b"/root".to_vec()),
+        (b"PATH".to_vec(), b"/initial".to_vec(), None),
+        (b"HOME".to_vec(), b"/root".to_vec(), None),
     ]);
 
     assert_eq!(inserted, 1, "only the absent key is seeded");
@@ -58,7 +58,7 @@ fn test_seed_environment_does_not_resurrect_unsetenv() {
     state.setenv(b"PATH".to_vec(), b"/initial".to_vec());
     assert!(state.unsetenv(b"PATH"));
 
-    assert_eq!(state.seed_environment(vec![(b"PATH".to_vec(), b"/initial".to_vec())]), 0);
+    assert_eq!(state.seed_environment(vec![(b"PATH".to_vec(), b"/initial".to_vec(), None)]), 0);
     assert_eq!(state.getenv(b"PATH"), None);
 }
 
@@ -69,8 +69,8 @@ fn test_seed_environment_does_not_resurrect_clearenv() {
     state.clearenv();
 
     let inserted = state.seed_environment(vec![
-        (b"PATH".to_vec(), b"/initial".to_vec()),
-        (b"NEW".to_vec(), b"v".to_vec()),
+        (b"PATH".to_vec(), b"/initial".to_vec(), None),
+        (b"NEW".to_vec(), b"v".to_vec(), None),
     ]);
 
     assert_eq!(inserted, 1, "clearenv tombstones PATH; NEW was never present");
@@ -81,7 +81,7 @@ fn test_seed_environment_does_not_resurrect_clearenv() {
 #[test]
 fn test_seed_environment_survives_fork() {
     let mut state = RustSimState::new("amd64").unwrap();
-    state.seed_environment(vec![(b"FLAG_CHECK".to_vec(), b"1".to_vec())]);
+    state.seed_environment(vec![(b"FLAG_CHECK".to_vec(), b"1".to_vec(), None)]);
 
     let child = state.fork();
     assert_eq!(child.getenv(b"FLAG_CHECK"), Some(b"1".as_slice()));

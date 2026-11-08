@@ -3996,7 +3996,7 @@ class RustExplorationManager(
                 return
 
             ptr_size = angr_state.arch.bytes
-            entries: list[tuple[bytes, bytes]] = []
+            entries: list[tuple[bytes, bytes, int]] = []
             for i in range(self._MAX_ENVIRON_ENTRIES):
                 slot = angr_state.memory.load(envp + i * ptr_size, ptr_size, endness=angr_state.arch.memory_endness)
                 if slot.symbolic:
@@ -4012,7 +4012,9 @@ class RustExplorationManager(
                 key, sep, value = line.partition(b"=")
                 if not sep or not key:
                     continue
-                entries.append((key, value))
+                # The value's own address, so native getenv returns a
+                # pointer into this string as Python's getenv does.
+                entries.append((key, value, ptr + len(key) + 1))
             else:
                 # No NULL terminator inside the cap — treat the array as
                 # unrecognizable rather than seeding a truncated environment.

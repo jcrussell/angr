@@ -52,19 +52,19 @@ class TestEntryStateEnvironSeed:
         miss, or native ``setenv(..., overwrite=0)`` would clobber it.
         """
         mgr, sid = seeded_mgr
-        assert mgr._rust_mgr.seed_environment(sid, [(key.encode(), _ENV[key].encode())]) == 0
+        assert mgr._rust_mgr.seed_environment(sid, [(key.encode(), _ENV[key].encode(), None)]) == 0
 
     def test_absent_key_still_inserts(self, seeded_mgr):
         """Control: the return value is not trivially 0 for every input."""
         mgr, sid = seeded_mgr
-        assert mgr._rust_mgr.seed_environment(sid, [(b"NEVER_SET_BY_HARNESS", b"x")]) == 1
+        assert mgr._rust_mgr.seed_environment(sid, [(b"NEVER_SET_BY_HARNESS", b"x", None)]) == 1
 
     def test_no_env_seeds_nothing(self):
         """A default ``entry_state()`` has an empty envp array --- nothing to seed."""
         project = load_pbounce()
         mgr = RustExplorationManager(project, [project.factory.entry_state()])
         sid = mgr._rust_mgr.get_state_ids("active")[0]
-        assert mgr._rust_mgr.seed_environment(sid, [(b"FLAG_CHECK", b"1")]) == 1
+        assert mgr._rust_mgr.seed_environment(sid, [(b"FLAG_CHECK", b"1", None)]) == 1
 
 
 def _symbolic_env_state():
