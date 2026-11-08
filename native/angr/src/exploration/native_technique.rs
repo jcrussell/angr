@@ -415,7 +415,8 @@ impl RustExplorationManager {
         }
     }
 
-    /// Drop the given state ids from `stash`, removing their index entries.
+    /// Drop the given state ids from `stash`, removing their index and root
+    /// entries together (`stash.rs` invariant I6, angr-vmi2l.33).
     fn drop_states_by_id(&mut self, stash: &str, ids: &[u64]) {
         let drop: std::collections::HashSet<u64> = ids.iter().copied().collect();
         if let Some(s) = self.sm.get_mut(stash) {
@@ -423,6 +424,7 @@ impl RustExplorationManager {
         }
         for &sid in ids {
             self.sm.unindex(sid);
+            self.sm.remove_root(sid);
         }
     }
 

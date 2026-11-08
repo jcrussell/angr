@@ -30,8 +30,11 @@ fn push_active_at(mgr: &mut RustExplorationManager, pc: u64, ret: u64) -> u64 {
 fn merge_point_merges_same_callstack_when_active_drains() {
     Python::initialize();
     let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
-    for _ in 0..3 {
-        push_active_at(&mut mgr, 0x1000, 0xAAAA);
+    let sources: Vec<u64> = (0..3)
+        .map(|_| push_active_at(&mut mgr, 0x1000, 0xAAAA))
+        .collect();
+    for &sid in &sources {
+        mgr.sm.set_root(sid, sid);
     }
     mgr.register_merge_point(0x1000, 10);
     assert_eq!(mgr.native_technique_count(), 1);
@@ -44,6 +47,13 @@ fn merge_point_merges_same_callstack_when_active_drains() {
     let wait = mgr.sm.get("merge_waiting_0x1000").expect("wait stash");
     assert!(wait.is_empty(), "waiters consumed by the merge");
     assert_eq!(mgr.states_merged_native, 3);
+    // stash.rs invariant I6: a consumed source leaves state_roots with its
+    // index entry (angr-vmi2l.33).
+    let merged_id = active[0].state_id();
+    for &sid in &sources {
+        assert_eq!(mgr.sm.get_root(sid), None, "source {sid} root dropped");
+    }
+    assert_eq!(mgr.sm.get_root(merged_id), Some(merged_id));
 }
 
 /// Waiters with two distinct callstacks form two groups -> two merged states.
