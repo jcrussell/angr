@@ -71,13 +71,13 @@ class TestSymbolicLibcProcedures:
     a Python angr SimProcedure, sets up registers + memory with symbolic
     input, runs one step on the Rust manager, and verifies rax constraints.
 
-    The hook address is intentionally inside fauxware's loaded segment so the
-    Rust manager's `_run_python_init_if_needed` short-circuits — otherwise an
-    out-of-binary PC triggers Python init to main and the libc procedure
-    never runs.
+    The hook is in fauxware's ``.ctors`` (as ``TestNativeSprintfRender``
+    does), so ``prefer_native_dispatch`` is true and the native registry runs;
+    ``_run_one_step`` asserts that it did (angr-vmi2l.353). A hook in the main
+    object's code (``.fini``) runs the Python SimProcedure instead.
     """
 
-    HOOK_ADDR = 0x4008C0  # in fauxware's mapped .fini area, no normal exec
+    HOOK_ADDR = 0x600E48  # fauxware's .ctors: native dispatch, no normal exec
     RET_ADDR = 0x4008B0  # mapped, used as bogus ret target after the hook
     BUF_ADDR = 0x601100  # past .bss, lazy-mapped via filler mixin
 
@@ -85,6 +85,7 @@ class TestSymbolicLibcProcedures:
         from angr import claripy
 
         proj.hook(self.HOOK_ADDR, sim_proc, replace=True)
+        self._proc_name = sim_proc.display_name
         state = proj.factory.blank_state(
             addr=self.HOOK_ADDR,
             add_options={
@@ -95,9 +96,13 @@ class TestSymbolicLibcProcedures:
         state.memory.store(state.regs.rsp, claripy.BVV(self.RET_ADDR, 64), endness="Iend_LE")
         return state
 
-    def _run_one_step(self, proj, state):
+    def _run_one_step(self, proj, state, native=True):
+        """Step once; ``native`` says whether the native proc must serve the
+        call (True) or must not (False: a designed defer, or no native proc)."""
         mgr = RustExplorationManager(proj, [state])
         mgr.run(max_steps=1)
+        stats = mgr._rust_mgr.native_procedure_stats()
+        assert stats["call_counts"].get(self._proc_name, 0) == (1 if native else 0), stats
         states = mgr.active + mgr.deadended + mgr.errored
         assert len(states) == 1, (
             f"expected exactly one post-call state, got {len(states)} (stash counts: {mgr.stash_counts()})"
@@ -299,10 +304,26 @@ class TestSymbolicLibcProcedures:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
-    def test_rawmemchr_symbolic_finds_target(self, fauxware_project):
+    def test_rawmemchr_concrete_finds_target(self, fauxware_project):
+        """rawmemchr(buf, 'X') over the concrete "ABXCD" returns BUF_ADDR + 2
+        natively (rawmemchr has no length bound; the caller guarantees the
+        byte is present)."""
+        proj = fauxware_project
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["rawmemchr"]())
+            state.memory.store(self.BUF_ADDR, b"ABXCD")
+            state.regs.rdi = self.BUF_ADDR
+            state.regs.rsi = ord("X")
+            s = self._run_one_step(proj, state)
+            assert s.solver.eval_one(s.regs.rax) == self.BUF_ADDR + 2
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_rawmemchr_symbolic_only_defers(self, fauxware_project):
         """rawmemchr(buf, 'X') where buf[2] is symbolic constrained to 'X'
-        must return BUF_ADDR + 2 (rawmemchr has no length bound; the caller
-        guarantees the byte is present)."""
+        must return BUF_ADDR + 2. A symbolic candidate makes the native result
+        an ITE chain, which ``forward_match_is_conclusive`` rejects, so the
+        call defers to Python."""
         from angr import claripy
 
         proj = fauxware_project
@@ -315,7 +336,7 @@ class TestSymbolicLibcProcedures:
             state.solver.add(sym == ord("X"))
             state.regs.rdi = self.BUF_ADDR
             state.regs.rsi = ord("X")
-            s = self._run_one_step(proj, state)
+            s = self._run_one_step(proj, state, native=False)
             assert s.solver.min(s.regs.rax) == self.BUF_ADDR + 2
             assert s.solver.max(s.regs.rax) == self.BUF_ADDR + 2
         finally:
@@ -448,7 +469,7 @@ class TestSymbolicLibcProcedures:
             state.regs.rdi = self.BUF_ADDR  # source "42"
             state.regs.rsi = self.BUF_ADDR + 0x10  # format
             state.regs.rdx = xaddr  # &x
-            s = self._run_one_step(proj, state)
+            s = self._run_one_step(proj, state, native=False)
             xval = s.memory.load(xaddr, 4, endness=proj.arch.memory_endness)
             assert s.solver.min(xval) == 42
             assert s.solver.max(xval) == 42
@@ -457,7 +478,8 @@ class TestSymbolicLibcProcedures:
 
     def test_snprintf_returns_untruncated_length(self, fauxware_project):
         """snprintf(dest, 2, "%d", 999) must return the would-have-been length
-        3 (not the truncated 1), the defining snprintf return contract."""
+        3 (not the truncated 1), the defining snprintf return contract. Output
+        that does not fit ``size`` defers to Python (angr-vmi2l.115)."""
         proj = fauxware_project
         dst = self.BUF_ADDR + 0x40
         try:
@@ -467,9 +489,27 @@ class TestSymbolicLibcProcedures:
             state.regs.rsi = 2  # size limit
             state.regs.rdx = self.BUF_ADDR  # format
             state.regs.rcx = 999  # first vararg
-            s = self._run_one_step(proj, state)
+            s = self._run_one_step(proj, state, native=False)
             assert s.solver.min(s.regs.rax) == 3
             assert s.solver.max(s.regs.rax) == 3
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
+    def test_snprintf_fitting_output_runs_natively(self, fauxware_project):
+        """snprintf(dest, 8, "%d", 999) fits, so native snprintf serves it:
+        returns 3 and writes "999\\0"."""
+        proj = fauxware_project
+        dst = self.BUF_ADDR + 0x40
+        try:
+            state = self._make_state(proj, angr.SIM_PROCEDURES["libc"]["snprintf"]())
+            state.memory.store(self.BUF_ADDR, b"%d\x00")
+            state.regs.rdi = dst
+            state.regs.rsi = 8
+            state.regs.rdx = self.BUF_ADDR
+            state.regs.rcx = 999
+            s = self._run_one_step(proj, state)
+            assert s.solver.eval_one(s.regs.rax) == 3
+            assert s.solver.eval_one(s.memory.load(dst, 4), cast_to=bytes) == b"999\x00"
         finally:
             proj.unhook(self.HOOK_ADDR)
 
@@ -826,7 +866,7 @@ class TestSymbolicLibcProcedures:
         proj = fauxware_project
         try:
             state = self._make_state(proj, angr.SIM_PROCEDURES["posix"]["fork"]())
-            s = self._run_one_step(proj, state)
+            s = self._run_one_step(proj, state, native=False)  # no native fork
             # SimProcedure return value is an int (32-bit on amd64), which the
             # calling convention zero-extends to 64-bit rax. Both branches of
             # the symbolic-flag ITE must concretize.
