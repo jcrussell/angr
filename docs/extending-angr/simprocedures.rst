@@ -657,8 +657,10 @@ both invoked except when native fails):
 3. **Per-name Python override skips native.**
    ``set_python_override("strlen")`` makes ``registry.get("strlen")``
    return ``None`` so dispatch falls through to the Python
-   SimProcedure. Used internally by
-   ``NativeLibcStartMain`` and available to user code via
+   SimProcedure. It is a test and user knob: no production path sets
+   it (native ``__libc_start_main`` runs and serves the ``after_main``
+   continuation; see ``procedures/libc_start_main.rs``). User code
+   reaches it via
    ``mgr._rust_mgr.set_python_override(name)`` (the Python wrapper does
    not forward it; it forwards ``mgr.disable_native_procedure(name)``,
    below, which has the same runtime effect).

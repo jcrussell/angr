@@ -19,8 +19,10 @@
 //! contributes to that chain:
 //!
 //! * `NativeProcedureRegistry::get` returns `None` for a name under
-//!   `set_python_override` (Python is canonical for it — used by
-//!   `libc_start_main::NativeLibcStartMain`), under `disable` (the Rust
+//!   `set_python_override` (Python is canonical for it — a test and user
+//!   knob; no production path sets it, so the native
+//!   `libc_start_main::NativeLibcStartMain` serves the `after_main`
+//!   continuation), under `disable` (the Rust
 //!   implementation is not trusted right now), or after `disable_all`
 //!   (differential tests forcing the Python path).
 //! * The dispatcher (`exploration/native_proc_dispatch.rs`) calls

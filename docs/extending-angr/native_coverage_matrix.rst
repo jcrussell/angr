@@ -45,9 +45,13 @@ The ``Native`` column is a fraction ``M / N`` rather than a status enum:
 every member has a Python fallback, so the meaningful axis is how many
 of the named members are on the fast path. A member marked ✗ is
 registered (or deliberately not) but always takes the Python path; the
-provenance column says why. ``__libc_start_main`` is registered to
-claim the name but routed back to Python through
-``set_python_override`` so angr's init path still runs.
+provenance column says why. ``__libc_start_main`` runs natively, but
+only ever for the ``after_main`` continuation: the init path (``run`` /
+``inside_init`` / ``after_init``) runs in Python before the Rust engine
+takes over (``_step_python_to_main`` in ``rust_manager.py``), and the
+native proc deadends with status 0 as Python's ``after_main`` does.
+``set_python_override`` is a test and user knob that no production path
+sets.
 
 .. list-table::
    :header-rows: 1
