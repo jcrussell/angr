@@ -704,3 +704,44 @@ fn test_fork_drops_lineage_when_flag_flipped_off() {
 
     reset_dismantle_state_for_test();
 }
+
+/// angr-vmi2l.93: `set_timeout` on a lineage-backed context reaches the
+/// shared solver, and two contexts on one lineage keep their own timeouts.
+/// Before, only the per-context solver was re-paramed, so every query on
+/// the lineage ran under the minting context's timeout.
+#[test]
+fn test_set_timeout_applies_per_context_on_lineage() {
+    use crate::symbolic::{RustBV, SymContext};
+
+    let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+    reset_dismantle_state_for_test();
+
+    let root = SymContext::new();
+    root.set_use_shared_lineage_solver(true);
+    let a = root.fork();
+    let lin = a.lineage_arc().expect("gate passes, so A mints a lineage");
+    // Every production fork mints its own lineage; install A's on B by
+    // hand to model two contexts querying one shared solver.
+    let b = SymContext::new();
+    b.set_lineage_for_testing(std::sync::Arc::clone(&lin));
+
+    let x = RustBV::symbol("vmi2l_93_timeout_x", 8);
+    // `eval_upto` enumerates past any cached model, so each one reaches Z3.
+    a.set_timeout(1234);
+    b.set_timeout(77);
+
+    assert_eq!(a.eval_upto(&x, 2).len(), 2);
+    assert_eq!(lin.lock().applied_timeout_ms(), Some(1234));
+
+    assert_eq!(b.eval_upto(&x, 2).len(), 2);
+    assert_eq!(lin.lock().applied_timeout_ms(), Some(77));
+
+    assert_eq!(a.eval_upto(&x, 2).len(), 2);
+    assert_eq!(
+        lin.lock().applied_timeout_ms(),
+        Some(1234),
+        "A's query runs under A's timeout, not the one B left behind"
+    );
+
+    reset_dismantle_state_for_test();
+}

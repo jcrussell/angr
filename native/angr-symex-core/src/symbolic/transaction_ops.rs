@@ -37,6 +37,11 @@ use std::sync::atomic::Ordering;
 
 impl SymContext {
     /// Set the Z3 solver timeout in milliseconds.
+    ///
+    /// The timeout belongs to this context alone. A materialized per-context
+    /// solver is re-paramed here; a shared lineage solver is re-paramed by
+    /// `with_z3_solver` at this context's next query,
+    /// so siblings on the same lineage keep their own timeouts.
     pub fn set_timeout(&self, timeout_ms: u32) {
         self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
         if let Some(solver) = self.solver.lock().as_ref() {

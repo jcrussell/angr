@@ -713,7 +713,9 @@ impl SymContext {
     /// [`SharedLineageSolver::with_solver`](crate::symbolic::lineage::SharedLineageSolver::with_solver),
     /// which switches
     /// the shared solver to this context's `scope_path` before invoking
-    /// `f`.
+    /// `f`. It first applies this context's `timeout_ms` to the shared
+    /// solver ([`SharedLineageSolver::apply_timeout`](crate::symbolic::lineage::SharedLineageSolver::apply_timeout)),
+    /// so the timeout stays per-context although the solver is per-lineage.
     ///
     /// The dispatcher exists so solver call sites (`is_sat`, `eval`, `min`,
     /// `max`, …) share one copy of the lineage-vs-per-context branch instead
@@ -756,6 +758,9 @@ impl SymContext {
             Some(lin) => {
                 let path = self.scope_path.lock().clone();
                 let mut guard = lin.lock();
+                // angr-vmi2l.93: the timeout is per-context, the solver is
+                // per-lineage, so apply this context's timeout per query.
+                guard.apply_timeout(self.timeout_ms());
                 guard.with_solver(&path, f)
             }
         }

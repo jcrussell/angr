@@ -525,6 +525,12 @@ pub struct SharedLineageSolver {
     /// [`CENSUS_EPOCH`] value these per-tree counters were last counted
     /// under; a mismatch means a stats reset happened and they are stale.
     epoch: u64,
+    /// The `timeout_ms` last applied to `z3` by
+    /// [`apply_timeout`](Self::apply_timeout); `None` until the first query.
+    /// The timeout is per-context (each `SymContext` keeps its own
+    /// `timeout_ms`), so the shared solver is re-paramed whenever the
+    /// querying context's value differs from this one (angr-vmi2l.93).
+    applied_timeout_ms: Option<u32>,
 }
 
 impl SharedLineageSolver {
@@ -541,7 +547,28 @@ impl SharedLineageSolver {
             hots: 0,
             hots_at_early: 0,
             epoch: CENSUS_EPOCH.load(Ordering::Relaxed),
+            applied_timeout_ms: None,
         }
+    }
+
+    /// Make the shared solver run the next query under `timeout_ms`, the
+    /// querying context's own timeout. A no-op when that value is already
+    /// applied, so a lineage whose contexts agree pays one `set_params` in
+    /// total. Z3 merges `set_params` key by key, so this leaves any other
+    /// parameter (a test's pinned `rlimit`) in place.
+    pub fn apply_timeout(&mut self, timeout_ms: u32) {
+        if self.applied_timeout_ms != Some(timeout_ms) {
+            self.z3
+                .set_params(&super::solver_build::build_solver_params(timeout_ms));
+            self.applied_timeout_ms = Some(timeout_ms);
+        }
+    }
+
+    /// The timeout last applied by [`apply_timeout`](Self::apply_timeout)
+    /// (test-only).
+    #[cfg(test)]
+    pub(crate) const fn applied_timeout_ms(&self) -> Option<u32> {
+        self.applied_timeout_ms
     }
 
     /// Record one switch on this tree and feed the per-tree census
