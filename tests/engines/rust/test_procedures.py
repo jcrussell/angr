@@ -1550,6 +1550,40 @@ class TestNativeTime:
         finally:
             proj.unhook(self.HOOK_ADDR)
 
+    def test_time_watermark_crosses_the_python_boundary(self, fauxware_project):
+        """A Python time()'s ``globals['sys_last_time']`` bounds the native time(),
+        and the native result is the export's new watermark (angr-vmi2l.130)."""
+        from angr import claripy
+
+        proj = fauxware_project
+        stub_cls = _native_stand_in("time", {"num_args": 1, "run": lambda self, tloc: 0})
+        proj.hook(self.HOOK_ADDR, stub_cls(), replace=True)
+        try:
+            state = proj.factory.blank_state(
+                addr=self.HOOK_ADDR,
+                add_options={
+                    angr.options.ZERO_FILL_UNCONSTRAINED_REGISTERS,
+                    angr.options.ZERO_FILL_UNCONSTRAINED_MEMORY,
+                },
+            )
+            t0 = claripy.BVS("t0_python_time", 64)
+            state.add_constraints(t0 == 1000)
+            state.globals["sys_last_time"] = t0
+            state.regs.rdi = claripy.BVV(0, 64)
+            state.memory.store(state.regs.rsp, claripy.BVV(self.DEAD_ADDR, 64), endness="Iend_LE")
+            mgr = RustExplorationManager(proj, [state], save_unconstrained=True)
+            mgr.run(max_steps=1)
+            assert mgr._rust_mgr.native_procedure_stats()["call_counts"].get("time", 0) == 1
+            (out,) = [s for stash in mgr.stashes.values() for s in stash]
+            t1 = out.regs.rax
+            assert out.solver.satisfiable()
+            assert not out.solver.satisfiable(extra_constraints=[t1.SLT(1000)])
+            last = out.globals["sys_last_time"]
+            assert last.variables == t1.variables
+            assert not last.variables & t0.variables
+        finally:
+            proj.unhook(self.HOOK_ADDR)
+
 
 class TestNativeSleep:
     """Python-boundary coverage for native sleep/usleep (angr-ae54t.15).

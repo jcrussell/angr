@@ -53,7 +53,7 @@ pub enum SnapshotError {
 ///
 /// * **Bucket A (trivials)** — pc, state_id, parent_id, history,
 ///   detailed_history, max_history, heap_brk, posix_brk, mmap_base, process_ids,
-///   pending_syscall, dirtied_code_pages, tracked_variables, exit_code, exit_pending, getopt_cursor, getopt_extern,
+///   pending_syscall, dirtied_code_pages, tracked_variables, exit_code, last_time, exit_pending, getopt_cursor, getopt_extern,
 ///   stdin_symbols, stdin_read_lengths, stdin_host_packets, call_stack, heap_metadata, no_ip_concretization,
 ///   no_symbolic_jump_resolution, keep_ip_symbolic, vex_arch,
 ///   inspection, concretizer, fs, track_history, drop_terminal flag
@@ -66,7 +66,7 @@ pub enum SnapshotError {
 ///   `assumed_constraints` into a fresh Z3 solver on restore).
 ///
 /// **Bucket D (`Py<PyAny>` overlays)** — symbolic_pages,
-/// hook_symbolic_memory, addr_to_ast, last_time — deferred per the task
+/// hook_symbolic_memory, addr_to_ast — deferred per the task
 /// acceptance. After restore these fields are empty / None; Python-side
 /// integration tests (.1.4) will route them through claripy.dumps/loads.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -116,6 +116,9 @@ pub struct RustSimStateSnapshot {
     /// See `RustSimState::exit_code` (angr-mx00p.132.8).
     #[serde(default)]
     pub exit_code: Option<RustBV>,
+    /// See `RustSimState::last_time` (angr-vmi2l.130).
+    #[serde(default)]
+    pub last_time: Option<RustBV>,
     /// See `RustSimState::exit_pending` (angr-mx00p.136.30).
     #[serde(default)]
     pub exit_pending: bool,
@@ -200,7 +203,7 @@ impl RustSimState {
     /// Build a serializable snapshot of this state (angr-x04s.1.3).
     ///
     /// Bucket-D `Py<PyAny>` overlays (symbolic_pages, hook_symbolic_memory,
-    /// addr_to_ast, last_time) are NOT captured here — see
+    /// addr_to_ast) are NOT captured here — see
     /// [`RustSimStateSnapshot`].
     ///
     /// `&mut self`: flushes memory first (angr-sqfj8.71) so Multi-covered
@@ -262,6 +265,7 @@ impl RustSimState {
             },
             tracked_variables: self.tracked_variables.iter().cloned().collect(),
             exit_code: self.exit_code.clone(),
+            last_time: self.last_time.clone(),
             exit_pending: self.exit_pending,
             getopt_cursor: self.getopt_cursor,
             getopt_extern: self.getopt_extern,
@@ -357,7 +361,7 @@ impl RustSimState {
             symbolic_pages: OverlayMap::default(),
             hook_symbolic_memory: OverlayMap::default(),
             addr_to_ast: OverlayMap::default(),
-            last_time: None,
+            last_time: snap.last_time,
             no_ip_concretization: snap.no_ip_concretization,
             no_symbolic_jump_resolution: snap.no_symbolic_jump_resolution,
             keep_ip_symbolic: snap.keep_ip_symbolic,

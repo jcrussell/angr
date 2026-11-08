@@ -39,6 +39,7 @@ fn build_round_trip_state() -> RustSimState {
     s.max_history = 77;
     // PATH keeps no guest address, so both `EnvVar::addr` arms round-trip.
     s.set_env_addr(b"HOME", 0x7fff_0100);
+    s.set_last_time(RustBV::symbol("sys_time_snapshot", 64));
     s.track_history = !s.track_history;
     s.block_count = 9;
     s.evicted_visits = Arc::new([(0x401000, 3)].into_iter().collect());
@@ -138,7 +139,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
         symbolic_pages: _,
         hook_symbolic_memory: _,
         addr_to_ast: _,
-        last_time: _,
+        last_time,
         no_ip_concretization,
         no_symbolic_jump_resolution,
         keep_ip_symbolic,
@@ -208,6 +209,7 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert_eq!(json(&restored.fs), json(fs));
     assert_eq!(restored.fs.demoted_paths(), fs.demoted_paths());
     assert_eq!(json(&restored.exit_code), json(exit_code));
+    assert_eq!(json(&restored.last_time), json(last_time));
     assert_eq!(json(&restored.native_resume_stack), json(native_resume_stack));
     assert_eq!(json(&restored.call_stack), json(call_stack));
     assert_eq!(json(&restored.heap_metadata), json(heap_metadata));
@@ -217,7 +219,6 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     assert!(restored.symbolic_pages.is_empty());
     assert!(restored.hook_symbolic_memory.is_empty());
     assert!(restored.addr_to_ast.is_empty());
-    assert!(restored.last_time.is_none());
 
     // Memory: the first concrete bytes survived.
     let restored_bytes = restored

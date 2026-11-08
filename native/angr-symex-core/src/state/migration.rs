@@ -25,8 +25,9 @@
 //!   carries them explicitly; otherwise a migrated state would silently lose
 //!   its Python-side symbolic overlays on callback-heavy workloads.
 //!
-//! `last_time` is intentionally NOT carried: it resets to `None`, identical to
-//! [`RustSimState::fork`] and [`RustSimState::from_snapshot`].
+//! `last_time` rides in the serialized snapshot like any other `RustBV` field,
+//! so a migrated state keeps its `time()` watermark as a same-worker fork does
+//! (angr-vmi2l.130).
 
 use super::*;
 

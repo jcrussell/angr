@@ -137,6 +137,10 @@ from angr.exploration.rust_state_export import RustStateExportMixin
 from angr.exploration.rust_state_sync import RustStateSyncMixin, _ultrapage_bytes
 from angr.exploration.rust_techniques import _FIND_AVOID_TECH_NAMES, _VT_HOLD_STASH
 
+# The globals key of the time() watermark (``procedures/linux_kernel/time.py``'s
+# ``time.KEY``); Rust holds it as ``RustSimState::last_time`` (angr-vmi2l.130).
+_SYS_LAST_TIME = "sys_last_time"
+
 # Envelope head written by RustExplorationManager.dump_snapshot. A file without
 # it is a pre-bucket-D snapshot (bare Rust bytes) and still loads.
 _SNAPSHOT_MAGIC = b"ANGRSNAP\x01"
@@ -4571,6 +4575,12 @@ class RustExplorationManager(
             # environment, not just vars set at runtime (angr-6cp06.12).
             self._seed_environ_to_rust(angr_state, actual_state_id)
 
+            # The time() watermark a Python time() left, so a native time()
+            # stays monotonic against it (angr-vmi2l.130).
+            last_time = angr_state.globals.get(_SYS_LAST_TIME) if "globals" in angr_state.plugins else None
+            if last_time is not None:
+                self._rust_mgr.set_state_last_time(actual_state_id, last_time)
+
             # Lineage-aware demotion (angr-qluof pt2): on a cross-manager
             # transfer the export above re-arms any symbolic-file path the
             # source Rust manager's lineage had demoted. Re-apply from the old
@@ -6032,6 +6042,11 @@ class RustExplorationManager(
         glb = self._state_metadata_entry(self._py_state_globals, state_id, dict, create=False)
         if glb is not None:
             state.register_plugin("globals", SimStateGlobals(glb if mirror else dict(glb)))
+        # Rust's time() watermark is authoritative; _record_state_metadata
+        # takes a Python time()'s update back (angr-vmi2l.130).
+        last_time = self._rust_mgr.get_state_last_time(state_id)
+        if last_time is not None:
+            state.globals[_SYS_LAST_TIME] = last_time
 
     def _record_state_metadata(self, state_id: int, state) -> None:
         """Take a callback frame's options and globals back as ``state_id``'s store.
@@ -6050,6 +6065,9 @@ class RustExplorationManager(
             glb.clear()
             glb.update(frame)
             self._note_x86_cr0(frame)
+            last_time = frame.get(_SYS_LAST_TIME)
+            if last_time is not None:
+                self._rust_mgr.set_state_last_time(state_id, last_time)
 
     def _note_x86_cr0(self, glb) -> None:
         """Turn the native ``x86g_use_seg_selector`` off for good once a state's

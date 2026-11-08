@@ -640,6 +640,26 @@ impl RustExplorationManager {
         })
     }
 
+    /// The state's `time()` watermark (`RustSimState::last_time`) as a claripy
+    /// AST, or `None` before the first call. An export stores it as
+    /// `globals['sys_last_time']`, the key Python's `time` procedure reads
+    /// (angr-vmi2l.130).
+    pub fn get_state_last_time(
+        &self,
+        py: Python<'_>,
+        state_id: u64,
+    ) -> PyResult<Option<Py<PyAny>>> {
+        self.with_state(state_id, |state| {
+            state
+                .last_time()
+                .map(|bv| {
+                    let claripy = crate::claripy_bridge::claripy_module(py)?;
+                    rustbv_to_claripy(py, bv, claripy.as_any())
+                })
+                .transpose()
+        })
+    }
+
     /// Get heap metadata for a state by ID.
     ///
     /// Returns dict with:

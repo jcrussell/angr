@@ -617,8 +617,10 @@ pub struct RustSimState {
     /// Most recent symbolic value returned by the time(2) syscall — mirrors
     /// `state.globals['sys_last_time']` in Python's
     /// `procedures/linux_kernel/time.py`. Used to constrain consecutive calls
-    /// to be monotonic (`new >= prev`). Cloned on fork; not synced across the
-    /// Python boundary today (same drift class as `posix_brk` / `mmap_base`).
+    /// to be monotonic (`new >= prev`). Cloned on fork and carried by
+    /// snapshots and migration. The shell seeds it from the global when a
+    /// state is added and swaps it with the global at every export and
+    /// callback frame (angr-vmi2l.130).
     #[merge_policy = "max"]
     #[merge_manual = "Option<RustBV> has no Ord; the maximum is built symbolically via uge+ite"]
     last_time: Option<RustBV>,

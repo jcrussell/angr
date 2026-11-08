@@ -376,6 +376,33 @@ impl RustExplorationManager {
         })
     }
 
+    /// Set the state's `time()` watermark (`RustSimState::last_time`) from
+    /// `globals['sys_last_time']`, a claripy AST: the value Python's `time`
+    /// procedure left, which the native `time()` must stay monotonic against
+    /// (angr-vmi2l.130).
+    #[pyo3(signature = (state_id, last_time))]
+    #[angr_symex_macros::steady_guard_exempt(
+        reason = "mutates one state_id-scoped state's own time watermark; does not mutate \
+                  exploration config or the active stash."
+    )]
+    pub fn set_state_last_time(
+        &mut self,
+        py: Python<'_>,
+        state_id: u64,
+        last_time: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        self.with_state_mut(state_id, |state| {
+            let bv = {
+                let solver_ref = state.solver();
+                let sym_ctx = solver_ref.borrow();
+                claripy_to_rustbv(py, last_time, &sym_ctx)
+                    .map_err(|e| ast_import_err("sys_last_time", e))?
+            };
+            state.set_last_time(bv);
+            Ok(())
+        })
+    }
+
     /// Mark (or, with None, clear) a syscall the state must run before any
     /// block: a Python procedure's successor left at an `Ijk_Sys*` exit
     /// (angr-mx00p.132.7). See `RustSimState::pending_syscall`.
