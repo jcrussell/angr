@@ -670,3 +670,37 @@ fn test_fork_drops_lineage_when_dismantled() {
 
     reset_dismantle_state_for_test();
 }
+
+/// angr-vmi2l.92: a lineage-backed parent whose opt-in flag is flipped off
+/// must fork a child with no lineage. Cloning the parent's Arc gave the
+/// child an empty `scope_path`, so its queries rewound the shared solver to
+/// the lineage base and missed the parent's post-mint `x == 3`.
+#[test]
+fn test_fork_drops_lineage_when_flag_flipped_off() {
+    use crate::symbolic::{RustBV, SymContext};
+
+    let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+    reset_dismantle_state_for_test();
+
+    let root = SymContext::new();
+    root.set_use_shared_lineage_solver(true);
+    let a = root.fork();
+    assert!(a.lineage_arc().is_some(), "gate passes, so A mints a lineage");
+
+    let x = RustBV::symbol("vmi2l_92_flag_off_x", 8);
+    a.assume_true(&x.eq(&RustBV::concrete(3, 8)));
+    a.set_use_shared_lineage_solver(false);
+
+    let b = a.fork();
+    assert!(
+        b.lineage_arc().is_none(),
+        "a non-mint fork must drop the lineage, not Arc::clone the parent's stale base"
+    );
+    b.assume_true(&x.ne(&RustBV::concrete(3, 8)));
+    assert!(
+        !b.is_sat(),
+        "B must inherit A's post-mint x == 3, so x != 3 is UNSAT"
+    );
+
+    reset_dismantle_state_for_test();
+}

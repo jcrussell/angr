@@ -227,10 +227,11 @@ pub struct SymContext {
     /// `None` for seed states and for every state in a lineage that never
     /// opted in, which is the production default. Minted by
     /// [`fork()`](Self::fork) when `use_shared_lineage_solver` is set (see
-    /// that field for the three-gate materialization rule); otherwise `fork`
-    /// propagates whatever Arc the parent already had. When `Some`, every
-    /// state descended from that fork shares the same Arc; the inner Mutex
-    /// serializes solver access across sibling states, and constraint
+    /// that field for the three-gate materialization rule); otherwise the
+    /// child gets `None` (angr-vmi2l.92), since a cloned Arc with an empty
+    /// `scope_path` would query a stale base. Each fork mints its own Arc,
+    /// so no two forks share one; the inner Mutex serializes solver access
+    /// through `&self` (fork's signature), and constraint
     /// installs route through `ScopeFrame` + `SharedLineageSolver::switch_to`
     /// (see `constraint_ops.rs`) instead of the per-context Z3 solver.
     ///

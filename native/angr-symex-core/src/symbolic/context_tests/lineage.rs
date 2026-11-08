@@ -88,13 +88,12 @@ fn test_fork_keeps_lineage_none() {
     assert_eq!(forked.scope_path_len(), 0);
 }
 
-/// angr-v5a5 spike: when the parent has a lineage Arc, fork
-/// propagates it to the child by Arc::clone (same allocation).
-/// Uses set_lineage_for_testing because the integration patch that
-/// creates the lineage on fork lives in a later slice; today we
-/// only verify the propagation wiring.
+/// angr-vmi2l.92: a parent that holds a lineage but has not opted in
+/// (gate a refuses the mint) forks a child with no lineage. The spike-era
+/// `Arc::clone` gave the child an empty `scope_path` over the parent's
+/// solver, a stale base once the parent had post-mint constraints.
 #[test]
-fn test_fork_propagates_lineage_arc() {
+fn test_fork_without_opt_in_drops_lineage_arc() {
     let parent = SymContext::new();
     let lin = Arc::new(Mutex::new(super::super::lineage::SharedLineageSolver::new(
         build_solver(30_000),
@@ -102,17 +101,12 @@ fn test_fork_propagates_lineage_arc() {
     parent.set_lineage_for_testing(Arc::clone(&lin));
 
     let child = parent.fork();
-    let child_arc = child.lineage_arc().expect("child should inherit lineage");
+    assert!(
+        child.lineage_arc().is_none(),
+        "a non-mint fork must not Arc::clone the parent's lineage"
+    );
     let parent_arc = parent.lineage_arc().expect("parent retains its lineage");
-    assert!(
-        Arc::ptr_eq(&child_arc, &parent_arc),
-        "fork must Arc::clone the lineage, not allocate a new one"
-    );
-    assert!(
-        Arc::ptr_eq(&child_arc, &lin),
-        "child arc should point at the same SharedLineageSolver"
-    );
-    // Child starts with an empty scope path even when the lineage is set.
+    assert!(Arc::ptr_eq(&parent_arc, &lin));
     assert_eq!(child.scope_path_len(), 0);
 }
 

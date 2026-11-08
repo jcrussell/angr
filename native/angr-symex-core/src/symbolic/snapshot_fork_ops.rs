@@ -498,10 +498,12 @@ impl SymContext {
     ///   an empty `bare_local_savepoints` and a `None` solver whose cold-start
     ///   replay only ever emits flat `assert()`s, never `push()`es, so it
     ///   genuinely owns zero open Z3 scopes.
-    /// - `invariant-v5ht-dismantle-child-none`: when dismantled, child
-    ///   gets `None` (NOT `Arc::clone(parent.lineage)`). Cloning would
-    ///   give the child a stale base — see the inline comment for the
-    ///   baby-re chr() repro this prevents.
+    /// - `invariant-v5ht-dismantle-child-none`: whenever a gate refuses the
+    ///   mint, the child gets `None` (NOT `Arc::clone(parent.lineage)`).
+    ///   Cloning would give the child a stale base — see the inline comment
+    ///   for the baby-re chr() repro this prevents. Regression guard for the
+    ///   flag-flipped-off case (gate a):
+    ///   `lineage_tests::test_fork_drops_lineage_when_flag_flipped_off`.
     // Arc<Mutex<SharedLineageSolver>>: SharedLineageSolver wraps a z3::Solver (not Send/Sync),
     // but the Arc is load-bearing — every sibling SymContext minted from a common fork shares
     // the same Arc so cross-state lineage queries hit the same Z3 solver (see field doc on
@@ -545,9 +547,9 @@ impl SymContext {
         // `use_shared_lineage_solver` AND (b) no bare Z3 pushes are
         // outstanding on the parent's per-context solver, mint a fresh
         // `SharedLineageSolver` for the child seeded with `frozen_shared`
-        // as base assertions (scope 0, never popped). Otherwise, keep the
-        // pre-1c behavior of Arc::cloning the parent's lineage Arc — which
-        // is `None` by default in production today.
+        // as base assertions (scope 0, never popped). Otherwise the child
+        // gets no lineage and rebuilds its per-context solver from
+        // `frozen_shared`.
         //
         // The two-gate check is load-bearing. Condition (a) keeps the
         // v5a5-spike BFS-thrash regression (rust_engine_decisions.rst,
@@ -586,10 +588,9 @@ impl SymContext {
         // this child. Existing in-flight lineage Arcs on ancestors keep
         // working — the simple dismantle variant only suppresses
         // minting on FUTURE forks.
-        let dismantled = super::lineage::is_lineage_dismantled();
         let child_lineage = if self.use_shared_lineage_solver.load(Ordering::Relaxed)
             && self.bare_z3_push_depth.load(Ordering::Relaxed) == 0
-            && !dismantled
+            && !super::lineage::is_lineage_dismantled()
         {
             // angr-a2br.1.1: debug-assert the gate is consistent at the
             // moment of mint. Tautological with the `if` condition but
@@ -614,10 +615,14 @@ impl SymContext {
                 lineage_solver.assert_base(constraint);
             }
             Some(crate::arc_shared(Mutex::new(lineage_solver)))
-        } else if dismantled {
-            None
         } else {
-            self.lineage.lock().as_ref().map(Arc::clone)
+            // angr-vmi2l.92: every non-mint arm gets `None`, not just the
+            // dismantled one. The stale-base argument above holds whichever
+            // gate refused: a child cloning the parent's Arc starts with an
+            // empty `scope_path`, so with the opt-in flag flipped off after
+            // a mint (gate a) it would rewind the shared solver to the base
+            // and miss the parent's post-mint constraints.
+            None
         };
 
         SymContext {
