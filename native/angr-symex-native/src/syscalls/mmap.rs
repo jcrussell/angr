@@ -2,19 +2,19 @@
 //!
 //! Three flavors share a `do_mmap` core:
 //!
-//! * `NativeMmapSyscall` — modern 6-argument form (amd64 syscall 9,
-//!   ARM64 syscall 222, MIPS64 n64 5009, MIPS32 o32 4090, whose args 5-6
-//!   are on the stack as for mmap2). Mirrors `procedures/posix/mmap.py`. Argument
+//! * `NativeMmapSyscall` — modern 6-argument form, angr's `mmap` on amd64,
+//!   aarch64, mips-n64 and mips-o32 (`BY_NAME` in `syscalls/mod.rs`; o32's
+//!   args 5-6 are on the stack as for `mmap2`). Mirrors `procedures/posix/mmap.py`. Argument
 //!   order matches the Linux amd64 syscall ABI (see
 //!   `invariant-syscall-arg-extraction`):
 //!   rdi=addr, rsi=length, rdx=prot, r10=flags, r8=fd, r9=offset.
-//! * `NativeOldMmapSyscall` — legacy struct-arg form (i386 syscall 90,
-//!   ARM OABI 90). One pointer argument; the handler reads
+//! * `NativeOldMmapSyscall` — legacy struct-arg form, angr's `old_mmap`
+//!   (and angr's arm `mmap`, which names the OABI struct form). One pointer argument; the handler reads
 //!   six 32-bit fields (addr, length, prot, flags, fd, offset) from
 //!   guest memory and dispatches into `do_mmap`. Mirrors
 //!   `procedures/linux_kernel/mmap.py::old_mmap`.
-//! * `NativeMmap2Syscall` — 6-register form with page-unit offset
-//!   (i386 syscall 192, ARM EABI 192). The offset argument is in
+//! * `NativeMmap2Syscall` — 6-register form with page-unit offset, angr's
+//!   `mmap2` on every Linux ABI that lists it. The offset argument is in
 //!   page-size units; the handler scales it by PAGE_SIZE before
 //!   dispatching to `do_mmap`. Mirrors
 //!   `procedures/linux_kernel/mmap.py::mmap2`.
@@ -335,7 +335,7 @@ impl NativeSyscall for NativeMmapSyscall {
     }
 }
 
-/// Legacy struct-arg mmap (i386 syscall 90, ARM OABI 90).
+/// Legacy struct-arg mmap: angr's `old_mmap`, and angr's arm `mmap`.
 ///
 /// One pointer argument; the kernel reads six 32-bit fields from
 /// `[arg, arg+24)`:
@@ -393,15 +393,15 @@ impl NativeSyscall for NativeOldMmapSyscall {
     }
 }
 
-/// `mmap2` (i386 syscall 192, ARM EABI 192).
+/// `mmap2`, registered by name for every Linux ABI in `BY_NAME`.
 ///
 /// Same 6-register signature as modern mmap, but the offset is in
 /// page-size units rather than bytes — multiplied by `PAGE_SIZE` here
 /// before dispatch. Mirrors `procedures/linux_kernel/mmap.py::mmap2`.
 ///
-/// Registered for MIPS32 O32 (4210) as well as i386/ARM (192). O32 passes
-/// args 5-6 on the stack at [sp+16]; `extract_syscall_args` traverses that
-/// window for concrete SP (angr-tvod), so mmap2 dispatches natively there.
+/// mips-o32 passes args 5-6 on the stack at [sp+16]; `extract_syscall_args`
+/// traverses that window for concrete SP (angr-tvod), so mmap2 dispatches
+/// natively there too.
 pub(crate) struct NativeMmap2Syscall;
 
 impl NativeSyscall for NativeMmap2Syscall {

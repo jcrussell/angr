@@ -1,4 +1,4 @@
-//! amd64 brk syscall handler.
+//! `brk` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/linux_kernel/brk.py` (which calls
 //! `state.posix.set_brk`):

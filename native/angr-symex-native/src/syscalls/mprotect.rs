@@ -1,4 +1,4 @@
-//! amd64 mprotect syscall handler.
+//! `mprotect` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/linux_kernel/mprotect.py`:
 //!   1. All three args (addr, length, prot) must be concrete; symbolic

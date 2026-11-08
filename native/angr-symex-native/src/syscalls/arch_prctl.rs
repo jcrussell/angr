@@ -1,4 +1,5 @@
-//! amd64 arch_prctl syscall handler (158).
+//! `arch_prctl` syscall handler. `BY_NAME` (`syscalls/mod.rs`) scopes it
+//! to AMD64, the only ABI with `fs_const` / `gs_const`.
 //!
 //! Mirrors `procedures/linux_kernel/arch_prctl.py`:
 //!   * `code` (rdi) must be concrete; symbolic falls back to Python (which

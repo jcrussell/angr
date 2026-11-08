@@ -1,4 +1,5 @@
-//! amd64 (and per-arch) file-descriptor I/O syscalls: lseek / readv / writev.
+//! File-descriptor I/O syscalls `lseek` / `readv` / `writev`, registered for
+//! every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! These mirror the seek + vectored-I/O semantics that previously cost a
 //! Python `_handle_syscall_callback` round-trip (angr-6ylm):

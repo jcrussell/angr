@@ -1,4 +1,4 @@
-//! amd64 munmap syscall handler.
+//! `munmap` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/linux_kernel/munmap.py`, which is intentionally a
 //! no-op that always returns 0. Real `munmap(2)` would unmap pages, but

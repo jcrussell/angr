@@ -21,12 +21,12 @@
 //!   ...)`. Native handlers mirror that via
 //!   `SyscallOutcome::ContinueSymbolic`.
 //!
-//! ## ugetrlimit (x86/arm syscall 191)
+//! ## ugetrlimit
 //!
 //! `procedures/linux_kernel/getrlimit.py` defines
 //! `class ugetrlimit(getrlimit): pass` — the LFS-style 32-bit-uid_t
-//! variant. Semantics are identical, so x86/arm registration aliases
-//! syscall 191 to `NativeGetrlimitSyscall`. The `name()` still returns
+//! variant. Semantics are identical, so `BY_NAME` (`syscalls/mod.rs`) maps
+//! angr's `ugetrlimit` name to `NativeGetrlimitSyscall` too. The `name()` still returns
 //! `"getrlimit"` (same as the Python subclass would inherit if
 //! introspected via `mro()`); per-arch tests assert this alias holds.
 

@@ -1,9 +1,9 @@
-//! amd64 read syscall handler.
+//! `read` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/read.rs::NativeRead`. Handles `sys_read(fd, buf, count)`
 //! for:
 //!   - `fd == 0` (stdin) by writing `count` fresh symbolic bytes into memory
-//!     and returning `count` in rax.
+//!     and returning `count` in the return register.
 //!   - any other fd open in the Rust `FileSystem` that has remaining
 //!     concrete content (pos < content_len). Serves bytes from the FS buffer
 //!     and advances the position.
@@ -132,7 +132,7 @@ impl NativeSyscall for NativeReadSyscall {
 }
 
 /// Mint `count` fresh symbolic bytes named `<prefix>_<id>_<i>` into `buf` and
-/// return `count` in rax. Shared by the stdin path (fd 0) and symbolic-stream
+/// return `count` in the return register. Shared by the stdin path (fd 0) and symbolic-stream
 /// fds. The `prefix` disambiguates per-fd names; `SYS_READ_COUNTER` keeps each
 /// call's bytes uniquely named even at the same callsite.
 /// Serve a stdin read: fresh `sys_read_N_i` bytes, bound to whatever the

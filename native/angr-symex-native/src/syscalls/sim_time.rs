@@ -1,4 +1,5 @@
-//! amd64 time (201), gettimeofday (96), and clock_gettime (228) syscall handlers.
+//! `time`, `gettimeofday` and `clock_gettime` syscall handlers, registered
+//! for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! The handlers model Linux, not Python. Python's Linux syscall library has
 //! a prototype but no procedure for `gettimeofday` or `clock_gettime`, so

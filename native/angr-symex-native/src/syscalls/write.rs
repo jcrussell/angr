@@ -1,4 +1,4 @@
-//! amd64 write syscall handler.
+//! `write` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/write.rs::NativeWrite`: handles `sys_write(fd, buf,
 //! count)` for any fd open in the Rust `FileSystem` (stdout/stderr

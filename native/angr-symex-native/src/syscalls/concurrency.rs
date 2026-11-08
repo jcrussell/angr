@@ -109,7 +109,7 @@ stub_syscall!(
 );
 // epoll_pwait(epfd, events*, maxevents, timeout, sigmask*, sigsetsize) → int
 // AArch64 asm-generic omits legacy `epoll_wait` (binaries call epoll_pwait
-// at syscall 22 instead). Registered on every supported arch.
+// instead). Registered by name for every Linux ABI in `BY_NAME`.
 stub_syscall!(
     NativeEpollPwaitSyscall,
     "epoll_pwait",

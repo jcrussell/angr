@@ -31,10 +31,9 @@
 //! symmetric with `NativeFaccessatSyscall` / `NativeOpenatSyscall` and
 //! falls back on symbolic dirfd.
 //!
-//! Both work on every arch the syscalls are registered on:
-//! `readlink` (AMD64 89, X86 85, ARM EABI 85, MIPS32 4085, MIPS64 5087)
-//! and `readlinkat` (AMD64 267, X86 305, ARM EABI 332, ARM64 78,
-//! MIPS32 4298, MIPS64 5257). No arch-specific layout to write.
+//! Both are registered by name for every Linux ABI that lists them
+//! (`BY_NAME` in `syscalls/mod.rs`); there is no arch-specific layout to
+//! write.
 
 // readlink(path, buf, bufsiz) → long — see NativeReadlinkSyscall impl below.
 // readlinkat(dfd, path, buf, bufsiz) → long — see NativeReadlinkatSyscall impl below.

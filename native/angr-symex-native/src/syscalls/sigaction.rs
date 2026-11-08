@@ -1,4 +1,4 @@
-//! amd64 rt_sigaction syscall handler (13).
+//! `rt_sigaction` syscall handler, registered for every Linux ABI in `BY_NAME` (`syscalls/mod.rs`).
 //!
 //! Mirrors `procedures/linux_kernel/sigaction.py::rt_sigaction`:
 //!   * Pure no-op: ignore `act` / `oldact` / `sigsetsize`; return 0.
