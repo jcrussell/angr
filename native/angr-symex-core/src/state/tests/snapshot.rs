@@ -250,6 +250,18 @@ fn test_state_snapshot_round_trip_buckets_a_b_c() {
     assert_state_round_trip(&orig, &restored);
 }
 
+/// angr-vmi2l.94: a solver residual Z3 rejects surfaces as
+/// `SnapshotError::Residual` instead of restoring an under-constrained state.
+#[test]
+fn test_from_snapshot_rejects_malformed_residual() {
+    let mut snap = build_populated_state().to_snapshot();
+    snap.solver.residual_smtlib2 = "(assert (bvult undeclared_vmi2l94_state #x01))\n".into();
+    assert!(matches!(
+        RustSimState::from_snapshot(snap),
+        Err(SnapshotError::Residual(_))
+    ));
+}
+
 /// `state-id-never-reused` across a snapshot boundary: a restored state carries
 /// an ID minted by a foreign counter, so `from_snapshot` must lift the local
 /// counter above it. Otherwise a resumed manager re-mints IDs that are live in

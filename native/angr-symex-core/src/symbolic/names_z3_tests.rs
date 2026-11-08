@@ -17,6 +17,7 @@ fn a_restored_snapshot_reserves_its_name_counters() {
 
     // As if written by a process that minted 5000 more names under `key`.
     snap.name_counters.insert(key.to_owned(), mine + 5000);
-    SymContext::new_mock().restore_from_snapshot(&snap);
+    SymContext::new_mock().restore_from_snapshot(&snap)
+        .expect("restore");
     assert_eq!(angr_bv::names::next(key), mine + 5000, "no local mint may reuse a restored name");
 }

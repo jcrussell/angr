@@ -148,3 +148,18 @@ pub struct SymContextSnapshot {
 fn default_true() -> bool {
     true
 }
+
+/// Why [`SymContext::restore_from_snapshot`] refused a snapshot's
+/// `residual_smtlib2` text (angr-vmi2l.94). Either way nothing from the
+/// residual is asserted: a partial replay would restore the state with fewer
+/// constraints than it had, which no caller could tell from a full one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ResidualParseError {
+    /// The text holds a NUL byte, which cannot cross the C string boundary
+    /// into `Z3_solver_from_string`.
+    #[error("snapshot residual SMT-LIB2 contains a NUL byte at offset {offset}")]
+    InteriorNul { offset: usize },
+    /// Z3's parser rejected the text.
+    #[error("Z3 rejected the snapshot residual SMT-LIB2 ({code}): {message}")]
+    Rejected { code: String, message: String },
+}

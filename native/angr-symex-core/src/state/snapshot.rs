@@ -45,6 +45,10 @@ pub enum SnapshotError {
     /// Z3 context — rebuilding would mint ASTs in the wrong context (angr-1ilq.1).
     #[error("reattach target_ctx is not the active thread-local Z3 context")]
     ContextMismatch,
+    /// The solver capture's residual SMT-LIB2 would not replay, so restoring
+    /// it would drop constraints (angr-vmi2l.94).
+    #[error(transparent)]
+    Residual(#[from] crate::symbolic::ResidualParseError),
 }
 
 /// Snapshot of a [`RustSimState`]'s persistable state (angr-x04s.1.3).
@@ -303,7 +307,7 @@ impl RustSimState {
         // counter about it so later forks cannot re-mint it (`state-id-never-reused`).
         crate::state::reserve_state_id(snap.state_id);
         let solver = Rc::new(RefCell::new(SymContext::new()));
-        solver.borrow().restore_from_snapshot(&snap.solver);
+        solver.borrow().restore_from_snapshot(&snap.solver)?;
         let memory = SymbolicMemory::from_snapshot(snap.memory);
         let mut environment: HashMap<Vec<u8>, EnvVar> = snap
             .environment

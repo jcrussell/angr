@@ -34,7 +34,7 @@
 //! | File | Holds |
 //! |------|-------|
 //! | `context.rs` | The `SymContext` struct, its Z3 construction (`new` / `with_timeout` / `new_mock` / `Default` / `Clone`), `DEFAULT_SOLVER_TIMEOUT_MS`, and the `#[path]` wiring for `merge_instrument.rs` + `context_tests/`. Plus the unsliced `&self` surface: the lazily-materializing `solver()` accessor and the assumed-constraint export log (`assumed_constraints_push`, `assumed_local_len`, `truncate_assumed_local`, `get_assumed_constraints`, `assumed_constraint_count`, `export_z3_assertion_ptrs`). |
-//! | `context_snapshot.rs` | `SymContextSnapshot` — the serde capture of a context's path constraints, plus its `serde(default)` helper. Data only; `to_snapshot` / `restore_from_snapshot` live in `snapshot_fork_ops.rs`. |
+//! | `context_snapshot.rs` | `SymContextSnapshot` — the serde capture of a context's path constraints, plus its `serde(default)` helper and `ResidualParseError`, the restore's refusal. Data only; `to_snapshot` / `restore_from_snapshot` live in `snapshot_fork_ops.rs`. |
 //! | `local_constraints.rs` | `LocalConstraints` — the post-fork local additions (`assumed`, `z3_assertions`, `non_bv_assertions`, `dedup_set`) that share `SymContext`'s one hot-path Mutex. |
 //! | `merge_instrument.rs` | `#[cfg(test)]` guarded-assertion counter `SymContext::merge` bumps and `context_tests_merge_prefix` reads. Declared from `context.rs` via `#[path]`, so its module path is still `context::merge_instrument`. |
 //! | `bv_id_ops.rs` | Slice 8: unique-id allocation (`next_id`), the symbolic-BV factories, `num_constraints`, and the `SymbolIdRebase` watermark helpers. |
@@ -106,7 +106,7 @@ pub use angr_bv::{
     store_concrete_bytes_chunked, u128_le_byte, u128_to_le_bytes,
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
-pub use context_snapshot::SymContextSnapshot;
+pub use context_snapshot::{ResidualParseError, SymContextSnapshot};
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 #[cfg(test)]
 pub(crate) use solver_build::stop_enumeration_after_for_test;

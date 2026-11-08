@@ -16,7 +16,7 @@
 
 use super::ToZ3;
 use super::local_constraints::LocalConstraints;
-use super::{RustBV, SymContext, SymContextSnapshot};
+use super::{ResidualParseError, RustBV, SymContext, SymContextSnapshot};
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -274,7 +274,16 @@ impl SymContext {
     /// expected to be a freshly-constructed context with no open push/pop
     /// scope (see the "Quiescence precondition" section on
     /// [`SymContextSnapshot`]); a `debug_assert!` enforces it.
-    pub fn restore_from_snapshot(&self, snap: &SymContextSnapshot) {
+    ///
+    /// # Errors
+    ///
+    /// [`ResidualParseError`] when the residual text holds a NUL or Z3 will
+    /// not parse it (a corrupted or foreign snapshot). The context is then
+    /// part-restored and must be dropped, not used.
+    pub fn restore_from_snapshot(
+        &self,
+        snap: &SymContextSnapshot,
+    ) -> Result<(), ResidualParseError> {
         self.debug_assert_no_open_scope("restore_from_snapshot");
         // angr-op0dn.13.14: raise the global id allocator past every id the
         // restored leaves already own. The ids deserialized into this
@@ -321,7 +330,7 @@ impl SymContext {
                 // through `add_constraint_raw` (residual sink #1) so the
                 // restored context's `non_bv_assertions` log is rebuilt too.
                 if !snap.residual_smtlib2.is_empty() {
-                    self.replay_residual_smtlib2(&snap.residual_smtlib2);
+                    self.replay_residual_smtlib2(&snap.residual_smtlib2)?;
                 }
                 // (iii) pin `constraint_count` back to the source's
                 // authoritative value. The assume-class IR replay above can
@@ -343,39 +352,66 @@ impl SymContext {
                 self.assume_class_reconstructible
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 if !snap.residual_smtlib2.is_empty() {
-                    self.replay_residual_smtlib2(&snap.residual_smtlib2);
+                    self.replay_residual_smtlib2(&snap.residual_smtlib2)?;
                 }
                 for (cond, is_true) in &snap.assumed_constraints {
                     self.assumed_constraints_push(cond.clone(), *is_true);
                 }
             }
         }
+        Ok(())
     }
 
     /// Replay an SMT-LIB2 residual dump onto this context's solver via the
     /// `from_string` + `get_assertions` + [`Self::add_constraint_raw`] loop
     /// (angr-t3l5o Phase 1). Each re-asserted Bool lands in the residual log
     /// (`add_constraint_raw` is residual sink #1).
-    fn replay_residual_smtlib2(&self, residual: &str) {
-        self.parse_smtlib2_into_solver(residual);
+    fn replay_residual_smtlib2(&self, residual: &str) -> Result<(), ResidualParseError> {
+        self.parse_smtlib2_into_solver(residual).map(drop)
     }
 
     /// The body of [`Self::replay_residual_smtlib2`]: parse `smtlib2`
     /// into a scratch solver and re-assert each of its assertions onto `self`
     /// via [`Self::add_constraint_raw`]. Returns the number re-asserted.
     ///
+    /// All or nothing: Z3 keeps the assertions it parsed before an error and
+    /// reports the error only through the context's error code (the crate's
+    /// error handler is a no-op), so the code is read straight after
+    /// `from_string` (the next API call resets it) and a rejected text asserts
+    /// nothing. A NUL is refused up front, since `from_string` unwraps its
+    /// `CString::new` (angr-vmi2l.94).
+    ///
     /// Sole home of the handoff between the scratch solver and this context —
     /// [`Self::bench_parse_smtlib2`] routes through here too, so a fix to it
     /// only has to land once (angr-9ke6b.143).
-    fn parse_smtlib2_into_solver(&self, smtlib2: &str) -> usize {
+    fn parse_smtlib2_into_solver(&self, smtlib2: &str) -> Result<usize, ResidualParseError> {
+        if let Some(offset) = smtlib2.bytes().position(|b| b == 0) {
+            return Err(ResidualParseError::InteriorNul { offset });
+        }
         let tmp = z3::Solver::new();
         tmp.from_string(smtlib2);
+        let raw = tmp.get_context().get_z3_context();
+        // SAFETY: `raw` is the live context that owns `tmp`; both calls are
+        // pure reads of its error state, and the message is copied out before
+        // any further Z3 call on the context.
+        let rejected = unsafe {
+            let code = z3_sys::Z3_get_error_code(raw);
+            (code != z3_sys::ErrorCode::Ok).then(|| ResidualParseError::Rejected {
+                code: format!("{code:?}"),
+                message: std::ffi::CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
+                    .to_string_lossy()
+                    .into_owned(),
+            })
+        };
+        if let Some(err) = rejected {
+            return Err(err);
+        }
         let assertions = tmp.get_assertions();
         let n = assertions.len();
         for assertion in assertions {
             self.add_constraint_raw(assertion);
         }
-        n
+        Ok(n)
     }
 
     /// Bench hook: expose the private
@@ -393,8 +429,12 @@ impl SymContext {
     /// [`Self::parse_smtlib2_into_solver`] — so the two can't drift
     /// (angr-9ke6b.143). Returns the number of re-asserted constraints. Must
     /// run inside an active thread-local Z3 context.
+    ///
+    /// # Errors
+    ///
+    /// The same [`ResidualParseError`] the restore path returns.
     #[doc(hidden)]
-    pub fn bench_parse_smtlib2(smtlib2: &str) -> usize {
+    pub fn bench_parse_smtlib2(smtlib2: &str) -> Result<usize, ResidualParseError> {
         SymContext::new().parse_smtlib2_into_solver(smtlib2)
     }
 

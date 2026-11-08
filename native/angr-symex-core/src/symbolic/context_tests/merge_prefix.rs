@@ -272,7 +272,8 @@ fn test_snapshot_roundtrips_lineage_flags() {
 
     let restored = SymContext::new();
     assert!(!restored.is_deterministic());
-    restored.restore_from_snapshot(&snap);
+    restored.restore_from_snapshot(&snap)
+        .expect("restore");
     assert!(
         restored.is_deterministic(),
         "restored context must recover deterministic mode"

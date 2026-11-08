@@ -4,7 +4,7 @@ use super::*;
 // angr-fs8kb.35: `SymContextSnapshot` moved out of `context.rs` into
 // `context_snapshot.rs`, so `use super::*` (which reaches `context`) no longer
 // brings it in — import it through the `symbolic` re-export instead.
-use crate::symbolic::SymContextSnapshot;
+use crate::symbolic::{ResidualParseError, SymContextSnapshot};
 
 // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
 // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
@@ -730,7 +730,8 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     assert_eq!(restored.assumed_constraints.len(), 3);
 
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
     let post = ctx2.get_assumed_constraints();
     assert_eq!(post.len(), 3);
 
@@ -814,7 +815,8 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
 
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
 
     // angr-82g6: num_constraints now matches pre-snapshot (was the
     // bug — restored counted only assumed_constraints).
@@ -855,7 +857,8 @@ fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
     assert!(restored.reassert_assumed);
 
     let ctx = SymContext::new();
-    ctx.restore_from_snapshot(&restored);
+    ctx.restore_from_snapshot(&restored)
+        .expect("restore");
     assert_eq!(ctx.num_constraints(), 0);
 }
 
@@ -897,7 +900,8 @@ fn test_snapshot_pure_assume_residual_empty() {
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
 
     assert_eq!(ctx2.is_sat(), pre_sat, "restored sat must match");
     assert_eq!(
@@ -940,7 +944,8 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
 
     assert_eq!(ctx2.is_sat(), pre_sat);
     assert_eq!(
@@ -997,7 +1002,8 @@ fn test_snapshot_tracked_residual_roundtrip() {
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
 
     assert!(ctx2.is_sat(), "restored context must stay SAT");
     assert_eq!(
@@ -1045,7 +1051,8 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx2 = SymContext::new();
-    ctx2.restore_from_snapshot(&restored);
+    ctx2.restore_from_snapshot(&restored)
+        .expect("restore");
 
     assert_eq!(ctx2.is_sat(), pre_sat);
     assert_eq!(
@@ -1101,7 +1108,8 @@ fn test_snapshot_merge_context_roundtrip() {
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx3 = SymContext::new();
-    ctx3.restore_from_snapshot(&restored);
+    ctx3.restore_from_snapshot(&restored)
+        .expect("restore");
 
     assert_eq!(ctx3.is_sat(), pre_sat, "restored sat must match");
     assert_eq!(
@@ -1126,4 +1134,68 @@ fn test_snapshot_merge_context_roundtrip() {
         x_val < 3,
         "x={x_val} must fall in the selected x<3 branch (guards not collapsed)"
     );
+}
+
+/// A merged context's snapshot, whose residual is its whole constraint set.
+fn merged_snapshot(tag: &str) -> SymContextSnapshot {
+    let ctx1 = SymContext::new();
+    let x = RustBV::symbol(format!("vmi2l94_{tag}_x"), 32);
+    ctx1.assume_true(&x.ugt(&RustBV::concrete(5, 32)));
+    let ctx2 = SymContext::new();
+    ctx2.assume_true(&x.ult(&RustBV::concrete(3, 32)));
+    let m1 = RustBV::symbol(format!("vmi2l94_{tag}_m1"), 1);
+    let m2 = RustBV::symbol(format!("vmi2l94_{tag}_m2"), 1);
+    let snap = ctx1.merge(&[&ctx2], &[m1, m2]).to_snapshot();
+    assert!(!snap.reassert_assumed && !snap.residual_smtlib2.is_empty());
+    snap
+}
+
+/// angr-vmi2l.94: a residual Z3 cannot parse fails the restore. Before, the
+/// parse error only latched the context error code, and the restore asserted
+/// the prefix that did parse and reported success.
+#[test]
+fn test_snapshot_malformed_residual_is_rejected() {
+    let mut snap = merged_snapshot("malformed");
+    // A valid assertion first, so a prefix replay would have asserted something.
+    snap.residual_smtlib2.push_str("(assert (bvult undeclared_vmi2l94 #x00000001))\n");
+    let err = SymContext::new()
+        .restore_from_snapshot(&snap)
+        .expect_err("a residual naming an undeclared symbol must not restore");
+    assert!(
+        matches!(err, ResidualParseError::Rejected { .. }),
+        "unexpected error {err:?}"
+    );
+
+    let mut snap = merged_snapshot("unbalanced");
+    snap.residual_smtlib2.push_str("(assert (= #x00 ");
+    assert!(matches!(
+        SymContext::new().restore_from_snapshot(&snap),
+        Err(ResidualParseError::Rejected { .. })
+    ));
+}
+
+/// angr-vmi2l.94: a NUL in the residual is an error, not the `CString::new`
+/// unwrap panic inside `z3::Solver::from_string` (an abort under
+/// `panic = "abort"`).
+#[test]
+fn test_snapshot_residual_with_nul_is_rejected() {
+    let mut snap = merged_snapshot("nul");
+    let offset = snap.residual_smtlib2.len();
+    snap.residual_smtlib2.push('\0');
+    assert_eq!(
+        SymContext::new().restore_from_snapshot(&snap),
+        Err(ResidualParseError::InteriorNul { offset })
+    );
+}
+
+/// The well-formed residual still restores through the checked path, and the
+/// bench hook reports the same count.
+#[test]
+fn test_snapshot_wellformed_residual_still_restores() {
+    let snap = merged_snapshot("wellformed");
+    let ctx = SymContext::new();
+    ctx.restore_from_snapshot(&snap).expect("restore");
+    assert!(ctx.is_sat());
+    let n = SymContext::bench_parse_smtlib2(&snap.residual_smtlib2).expect("parse");
+    assert!(n > 0, "the merge guards parse back");
 }
