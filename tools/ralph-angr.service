@@ -1,13 +1,16 @@
-# Unattended ralph loop for this repo. Install:
+# Unattended ralph loop for this repo, from ralph's contrib/systemd/ralph.service.
+# ralph's docs/guides/unattended.md is the authority on exit codes and stops.
+# Install:
 #   sudo cp tools/ralph-angr.service /etc/systemd/system/ && sudo systemctl daemon-reload
 #   sudo loginctl enable-linger ubuntu   # keeps user@1000 (ralph's --user scopes) up across reboots
 #   sudo systemctl start ralph-angr      # `enable` as well to start it at boot
-# Logs: journalctl -u ralph-angr -f, and .ralph/state/supervise.log.
-# Exit codes and the deadline are documented in tools/ralph-supervise.sh.
+# Move the deadline: `sudo systemctl edit ralph-angr`, set
+# Environment=RALPH_UNTIL=..., then restart. Logs: journalctl -u ralph-angr -f.
 [Unit]
 Description=ralph autonomous loop (angr repo)
 After=network-online.target user@1000.service
 Wants=network-online.target user@1000.service
+# Stop restarting a ralph that keeps crashing.
 StartLimitIntervalSec=3600
 StartLimitBurst=5
 
@@ -17,8 +20,9 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/repos/angr
 Environment=HOME=/home/ubuntu
-Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PATH=/home/ubuntu/.local/bin:/home/ubuntu/.cargo/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=LC_ALL=C.UTF-8
+# ralph's `systemd-run --user --scope` needs the user manager's bus.
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
 Environment=HTTPS_PROXY=http://10.10.11.1:38435
@@ -30,23 +34,37 @@ Environment=no_proxy=localhost,127.0.0.1,10.10.11.1
 Environment=SSL_CERT_FILE=/usr/local/share/ca-certificates/abox-proxy-ca.crt
 Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/abox-proxy-ca.crt
 Environment=CURL_CA_BUNDLE=/usr/local/share/ca-certificates/abox-proxy-ca.crt
-ExecStart=/home/ubuntu/repos/angr/tools/ralph-supervise.sh
-# Restart only on exit 1 (a crash): 0 is a deliberate stop, 2 needs a re-login,
-# 3 is repeated runner failure.
-Restart=on-failure
+# The run's wall-clock deadline: an absolute date-time (UTC here), so every
+# restart keeps the same window.
+Environment=RALPH_UNTIL=2026-11-15T00:00
+# --unlimited lifts the iteration cap (the deadline bounds the run);
+# --wait-on-quota rides out a usage cap. A dead runner cools down and retries
+# per [loop] runner_terminal_retries in .ralph/config.toml.
+ExecStart=/home/ubuntu/.local/bin/ralph run --no-tui --unlimited --wait-on-quota --until ${RALPH_UNTIL}
+
+# Restart on 1 (unexpected error) and a crash; ralph resumes with its totals.
+# Stop on every deliberate end: 0 done{queue_empty}, 10 done{idle},
+# 11 done{iter_cap}, 12 done{deadline}, 20 failed{budget}, 21 failed{auth}
+# (log claude in again), 22 failed{runner_terminal} (retries spent), 2 usage,
+# 3 (fsm is failed{*}: inspect, then `ralph run --fresh` once by hand).
+Restart=always
 RestartSec=300
-RestartPreventExitStatus=2 3
-# ralph cancels the loop on SIGTERM and waits for the iteration to unwind.
+RestartPreventExitStatus=0 2 3 10 11 12 20 21 22
+# 143 is ralph exiting on the SIGTERM from `systemctl stop`.
+SuccessExitStatus=10 11 12 143
+# SIGTERM goes to ralph alone: it cancels the session, stops that iteration's
+# --user scope itself and exits 143. No ExecStopPost scope sweep: a
+# ralph-*.scope glob would also kill interactive runs by the same user.
+KillMode=mixed
 TimeoutStopSec=300
-# Claude iterations run in --user scopes outside this cgroup, so stopping the
-# service does not stop them.
-ExecStopPost=/usr/bin/systemctl --user stop ralph-*.scope
 # The gate hook (cargo test --profile release-checked + the bench) runs in this
 # cgroup; each claude iteration runs in its own --user scope capped by
 # .ralph/config.toml's memory_limit_bytes.
 MemoryAccounting=true
 MemoryMax=5G
 MemorySwapMax=0
+# A gate that hits MemoryMax reads as a failed gate instead of stopping the unit.
+OOMPolicy=continue
 StandardOutput=journal
 StandardError=journal
 

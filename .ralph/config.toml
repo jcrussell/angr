@@ -15,6 +15,11 @@
 # claude, so an OOM still ends the session — this is a backstop, not isolation.
 # Heavy/unbounded explores must self-cap (see MEMORY SAFETY in _footer.md).
 memory_limit_bytes = "6G"
+# A dead-session streak (runner_terminal) cools down and retries instead of
+# ending the run; a healthy session resets the count. Replaces the retry loop
+# the old tools/ralph-supervise.sh wrapper ran around `ralph run --fresh`.
+runner_terminal_retries = 6
+runner_terminal_cooldown_secs = 900
 
 [gate]
 # The gate is tools/ralph-gate.sh (shared by the clean/ and dirty/ state hooks);

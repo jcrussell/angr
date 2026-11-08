@@ -245,9 +245,10 @@ Everything it needs is under `.ralph/`:
 - `state/` — runtime state (FSM, logs, `session.md` handoff), gitignored.
 
 Unattended multi-day runs go through systemd: `tools/ralph-angr.service`
-runs `tools/ralph-supervise.sh`, which restarts `ralph run` by its terminal
-outcome and stops at a deadline. The script's header documents both, and the
-unit's header has the install commands.
+runs `ralph run --until $RALPH_UNTIL` directly and restarts it by ralph's
+per-outcome exit code. The unit's header has the install commands and how to
+move the deadline; ralph's `docs/guides/unattended.md` is the authority on the
+exit codes and stop semantics.
 
 ```bash
 ralph doctor                      # verify prereqs
