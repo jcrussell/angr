@@ -1763,3 +1763,78 @@ class TestProxyUnsatCore:
 
         plugin.set_state(types.SimpleNamespace(options={"CONSTRAINT_TRACKING_IN_SOLVER"}))
         assert len(plugin.unsat_core()) >= 1
+
+
+class TestStandaloneProxyUnsatCore:
+    """``RustSolverProxy`` (``RustStateProxy.solver``) has the plugin's
+    ``unsat_core`` (angr-vmi2l.98): it shares ``RustSolverProxyBase.unsat_core``,
+    plus the constraints its own ``add`` put on its fork only."""
+
+    @staticmethod
+    def _proxy(mgr, sid, options=("CONSTRAINT_TRACKING_IN_SOLVER",)):
+        from angr.exploration.rust_state_proxy import RustSolverProxy
+
+        opts = set(options)
+        return RustSolverProxy(mgr, sid, options_getter=lambda: opts)
+
+    @staticmethod
+    def _state_with(mgr, *cons):
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        sid = mgr.create_state("active")
+        RustSolverProxyPlugin(mgr, sid).add(*cons)
+        return sid
+
+    def test_state_core_matches_plugin(self, amd64_mgr):
+        from angr import claripy
+        from angr.exploration.rust_state_proxy import RustSolverProxyPlugin
+
+        x = claripy.BVS("sa_core_x", 32)
+        y = claripy.BVS("sa_core_y", 32)
+        sid = self._state_with(amd64_mgr, x > 10, y == 3, x < 5)
+        core = {str(c) for c in self._proxy(amd64_mgr, sid).unsat_core()}
+        assert core == {str(c) for c in RustSolverProxyPlugin(amd64_mgr, sid).unsat_core()}
+        assert core == {str(x > 10), str(x < 5)}
+
+    def test_proxy_local_add_is_assumed_and_reported(self, amd64_mgr):
+        """A constraint added through the proxy lives only on its fork; the
+        core must still see it, or this UNSAT state would report []."""
+        from angr import claripy
+
+        x = claripy.BVS("sa_local_x", 32)
+        sid = self._state_with(amd64_mgr, x == 0)
+        proxy = self._proxy(amd64_mgr, sid)
+        assert proxy.unsat_core() == []
+        proxy.add(x == 1)
+        assert proxy.satisfiable() is False
+        assert {str(c) for c in proxy.unsat_core()} == {str(x == 0), str(x == 1)}
+
+    def test_proxy_local_add_alone_unsat_with_extras(self, amd64_mgr):
+        """No state constraint is blamed, but the query is UNSAT: the local add
+        is the core."""
+        from angr import claripy
+
+        x = claripy.BVS("sa_alone_x", 32)
+        sid = amd64_mgr.create_state("active")
+        proxy = self._proxy(amd64_mgr, sid)
+        proxy.add(x == 1)
+        assert proxy.unsat_core() == []
+        assert [str(c) for c in proxy.unsat_core(extra_constraints=[x == 2])] == [str(x == 1)]
+
+    def test_core_empty_without_option(self, amd64_mgr):
+        from angr import claripy
+
+        x = claripy.BVS("sa_noopt_x", 32)
+        sid = self._state_with(amd64_mgr, x == 0, x == 1)
+        assert self._proxy(amd64_mgr, sid, options=()).unsat_core() == []
+        assert len(self._proxy(amd64_mgr, sid).unsat_core()) == 2
+
+    def test_rust_state_proxy_solver_has_unsat_core(self, amd64_mgr):
+        """The bead's repro shape: ``RustStateProxy.solver.unsat_core()`` used
+        to raise AttributeError."""
+        from angr import claripy
+        from angr.exploration.rust_state_proxy import RustStateProxy
+
+        x = claripy.BVS("sa_rsp_x", 32)
+        sid = self._state_with(amd64_mgr, x == 0, x == 1)
+        assert RustStateProxy(amd64_mgr, sid).solver.unsat_core() == []

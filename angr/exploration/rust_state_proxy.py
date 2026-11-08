@@ -546,8 +546,8 @@ class RustSolverProxyBase(_SolutionCountMixin):
 
     Everything that is identical modulo those hooks — ``satisfiable`` /
     ``min`` / ``max`` / ``min_int`` / ``max_int`` / ``symbolic`` /
-    ``constraints`` / ``timeout`` / ``is_true`` / ``is_false`` / ``solution``
-    plus the ``_cast_result`` and ``_eval_one`` helpers — lives here.
+    ``constraints`` / ``timeout`` / ``is_true`` / ``is_false`` / ``solution`` /
+    ``unsat_core`` plus the ``_cast_result`` and ``_eval_one`` helpers — lives here.
 
     Only ``eval`` and ``eval_upto`` stay on the subclasses. ``eval`` differs
     solely in *signature* handling (the plugin reinterprets a positional
@@ -580,6 +580,51 @@ class RustSolverProxyBase(_SolutionCountMixin):
         ``SimActionObject``-wrapped expressions.
         """
         return expr
+
+    def _unsat_core_options(self):
+        """The bound state's options set, or ``None`` when there is none to gate on."""
+        raise NotImplementedError
+
+    def _proxy_local_constraints(self):
+        """Constraints this proxy asserted on its fork but not on the state.
+
+        Base default: none (the plugin's ``add`` writes through to the state).
+        """
+        return []
+
+    def unsat_core(self, extra_constraints=()):
+        """Constraints Z3 blames for this state being UNSAT (angr-op0dn.14.2).
+
+        Returns a subset of ``self.constraints`` — the same claripy ASTs
+        ``export_state_constraints`` yields — or ``[]`` when the state is SAT,
+        matching ``SimSolver.unsat_core``. ``extra_constraints`` are assumed but
+        never reported, as in claripy's tracking solver.
+
+        Unlike Python's SimSolver, tracking is not armed at add time: the Rust
+        engine asserts path constraints untracked (assumption literals are too
+        expensive on the fork path) and rebuilds a tracked solver from the
+        assumed-constraint IR here, on demand. So the core is complete even
+        though no option was set *before* execution.
+
+        ``_proxy_local_constraints`` (the standalone proxy's ``add``s, which
+        live only on its fork) are assumed too, and reported whole whenever
+        the query is UNSAT (angr-vmi2l.98): the result is still a set that is
+        UNSAT together with the extras, just not a minimal one.
+
+        Without ``CONSTRAINT_TRACKING_IN_SOLVER`` on the bound state this keeps
+        returning ``[]`` rather than raising (SimSolver raises SimSolverOptionError)
+        — ``invariant-rust-solver-proxy-required-surface``: SimProcedures that
+        opportunistically peek at the core must not crash.
+        """
+        opts = self._unsat_core_options()
+        if opts is not None and "CONSTRAINT_TRACKING_IN_SOLVER" not in opts:
+            return []
+        extras = [self._prepare_expr(c) for c in extra_constraints]
+        local = list(self._proxy_local_constraints())
+        core = list(self._mgr.state_unsat_core(self._state_id, [*extras, *local]))
+        if local and (core or not self.satisfiable(extra_constraints=extras)):
+            core.extend(local)
+        return core
 
     # ---------------------------------------------------------------
     # Shared delegation
@@ -766,9 +811,12 @@ class RustSolverProxy(RustSolverProxyBase):
     differ from the plugin's (eval's signature, eval_upto, add).
     """
 
-    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None):
+    def __init__(self, rust_mgr, state_id, shared_ctx_getter=None, options_getter=None):
         self._mgr = rust_mgr
         self._state_id = state_id
+        # Returns the owning state's options set (``RustStateProxy.options``),
+        # which gates ``unsat_core``; None for standalone construction.
+        self._options_getter = options_getter
         self._solver_ctx = None  # lazy — forked on first access
         # angr-pxq0i: owning thread id of ``_solver_ctx``, captured on the
         # same thread that forks it (== the Rust-side owner). Only meaningful
@@ -812,6 +860,28 @@ class RustSolverProxy(RustSolverProxyBase):
 
     def _forked_ctx(self):
         return self._solver_ctx
+
+    def _unsat_core_options(self):
+        getter = self.__dict__.get("_options_getter")
+        return getter() if getter is not None else None
+
+    def _proxy_local_constraints(self):
+        self._ensure_solver()  # drops adds that went with a superseded fork
+        return self._added_constraints
+
+    def get_variables(self, *keys):
+        """``SimSolver.get_variables`` over the Rust state's tracked symbols.
+
+        Read-only: this proxy has no ``register_variable``, so the result is
+        the state's own record (``_rust_tracked_variables``), numbered the way
+        ``RustSolverProxyPlugin.register_variable`` numbers temporal keys.
+        """
+        counters = {}
+        for key, v in _rust_tracked_variables(self._mgr, self._state_id):
+            counters[key] = counters.get(key, 0) + 1
+            k = (*key, counters[key])
+            if len(k) >= len(keys) and all(x == y for x, y in zip(keys, k)):
+                yield k, v
 
     def eval(self, expr, n=1, cast_to=None, extra_constraints=(), **kwargs):
         """Evaluate a symbolic expression to a concrete value.
@@ -863,6 +933,19 @@ class RustSolverProxy(RustSolverProxyBase):
         with suppress_recoverable():
             if self.__dict__.get("_shared_ctx_getter") is None:
                 _release_owned_ctx(self.__dict__.get("_solver_ctx"), self.__dict__.get("_solver_ctx_owner"))
+
+
+def _rust_tracked_variables(mgr, state_id):
+    """Yield ``(key, BVS)`` for the symbols the Rust state minted itself.
+
+    Memory fill symbols under ``("mem", addr)``, then native procs' symbols
+    under the key Python's proc would pass to ``BVS`` (angr-vmi2l.126), in
+    the order both solver proxies register them as temporal variables.
+    """
+    for addr, name, bits in mgr.get_state_mem_fillers(state_id):
+        yield ("mem", addr), claripy.BVS(name, bits, explicit_name=True)
+    for name, bits, key in mgr.get_state_tracked_variables(state_id):
+        yield tuple(key), claripy.BVS(name, bits, explicit_name=True)
 
 
 def _sim_unsat(f):
@@ -1030,30 +1113,8 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         # after add() don't crash.
         pass
 
-    def unsat_core(self, extra_constraints=()):
-        """Constraints Z3 blames for this state being UNSAT (angr-op0dn.14.2).
-
-        Returns a subset of ``self.constraints`` — the same claripy ASTs
-        ``export_state_constraints`` yields — or ``[]`` when the state is SAT,
-        matching ``SimSolver.unsat_core``. ``extra_constraints`` are assumed but
-        never reported, as in claripy's tracking solver.
-
-        Unlike Python's SimSolver, tracking is not armed at add time: the Rust
-        engine asserts path constraints untracked (assumption literals are too
-        expensive on the fork path) and rebuilds a tracked solver from the
-        assumed-constraint IR here, on demand. So the core is complete even
-        though no option was set *before* execution.
-
-        Without ``CONSTRAINT_TRACKING_IN_SOLVER`` on the bound state this keeps
-        returning ``[]`` rather than raising (SimSolver raises SimSolverOptionError)
-        — ``invariant-rust-solver-proxy-required-surface``: SimProcedures that
-        opportunistically peek at the core must not crash.
-        """
-        opts = getattr(self.state, "options", None) if self.state is not None else None
-        if opts is not None and "CONSTRAINT_TRACKING_IN_SOLVER" not in opts:
-            return []
-        extras = [self._unwrap_constraint(c) for c in extra_constraints]
-        return list(self._mgr.state_unsat_core(self._state_id, extras))
+    def _unsat_core_options(self):
+        return getattr(self.state, "options", None) if self.state is not None else None
 
     def eval_to_ast(self, e, n, extra_constraints=(), exact=None):
         """Return up to ``n`` concrete solutions as claripy BVVs."""
@@ -1306,10 +1367,8 @@ class RustSolverProxyPlugin(_ProxyStatePluginMixin, RustSolverProxyBase):
         if self.__dict__.get("_rust_fillers_registered"):
             return
         object.__setattr__(self, "_rust_fillers_registered", True)
-        for addr, name, bits in self._mgr.get_state_mem_fillers(self._state_id):
-            self.register_variable(claripy.BVS(name, bits, explicit_name=True), ("mem", addr), eternal=False)
-        for name, bits, key in self._mgr.get_state_tracked_variables(self._state_id):
-            self.register_variable(claripy.BVS(name, bits, explicit_name=True), tuple(key), eternal=False)
+        for key, v in _rust_tracked_variables(self._mgr, self._state_id):
+            self.register_variable(v, key, eternal=False)
 
     def register_variable(self, v, key, eternal=True):
         if type(key) is not tuple:
@@ -4263,7 +4322,10 @@ class RustStateProxy:
         """Solver proxy — delegates to Rust Z3 via PyO3."""
         if self._solver_proxy is None:
             self._solver_proxy = RustSolverProxy(
-                self._mgr, self._state_id, shared_ctx_getter=self._get_shared_solver_ctx
+                self._mgr,
+                self._state_id,
+                shared_ctx_getter=self._get_shared_solver_ctx,
+                options_getter=lambda: self.options,
             )
         return self._solver_proxy
 
@@ -4629,7 +4691,9 @@ class _InspectViewSolver:
             from angr.rustylib.vex_engine import inspect_view_fork_solver  # pylint: disable=import-outside-toplevel
 
             ctx = inspect_view_fork_solver()
-            proxy = RustSolverProxy(owner._mgr, owner._state_id, shared_ctx_getter=lambda: ctx)
+            proxy = RustSolverProxy(
+                owner._mgr, owner._state_id, shared_ctx_getter=lambda: ctx, options_getter=lambda: owner.options
+            )
             owner.__dict__["_inspect_view_solver"] = proxy
         return proxy
 

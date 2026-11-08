@@ -29,7 +29,7 @@ CODE = _call(RAND) + b"\x89\xc3" + _call(RAND) + b"\x41\x89\xc4" + b"\x31\xff" +
 FIN = LOAD + len(CODE) - 2
 
 
-def _found(engine: str):
+def _found(engine: str, proxy: bool = False):
     proj = angr.load_shellcode(CODE, arch="amd64", load_address=LOAD)
     lib = angr.SIM_LIBRARIES["libc.so.6"][0]
     for addr, name in ((RAND, "rand"), (TIME, "time")):
@@ -43,6 +43,8 @@ def _found(engine: str):
         counts = mgr._rust_mgr.native_procedure_stats().get("call_counts")
         assert counts.get("rand") == 2
         assert counts.get("time") == 1
+    if proxy:
+        return mgr.found_proxies()[0]
     return mgr.found[0]
 
 
@@ -58,3 +60,14 @@ def test_get_variables_api_yields_each_native_call(engine):
     assert not found.solver.satisfiable(extra_constraints=[found.regs.r12d != keys[("api", "rand", 2)].zero_extend(1)])
     assert not found.solver.satisfiable(extra_constraints=[found.regs.rax != keys[("api", "time", 1)]])
     assert list(found.solver.describe_variables(found.regs.ebx)) == [("api", "rand", 1)]
+
+
+def test_rust_state_proxy_get_variables_matches_export():
+    """``RustStateProxy.solver`` (no export) yields the same tracked keys as
+    the exported state's solver (angr-vmi2l.98): it used to have no
+    ``get_variables`` at all."""
+    proxy = _found("rust", proxy=True)
+    keys = dict(proxy.solver.get_variables("api"))
+    assert sorted(keys) == [("api", "rand", 1), ("api", "rand", 2), ("api", "time", 1)]
+    assert sorted(dict(proxy.solver.get_variables("api", "rand"))) == [("api", "rand", 1), ("api", "rand", 2)]
+    assert not proxy.solver.satisfiable(extra_constraints=[proxy.regs.rax != keys[("api", "time", 1)]])
