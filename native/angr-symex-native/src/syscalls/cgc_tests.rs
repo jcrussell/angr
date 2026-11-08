@@ -1224,3 +1224,47 @@ fn random_null_buf_falls_back() {
         assert!(matches!(err, SyscallError::Other(_)), "count={count}");
     }
 }
+
+/// angr-vmi2l.140: an `*addr` that cannot take the store bounces before the
+/// bump moves `cgc_allocation_base`, so Python's re-run allocates once.
+#[test]
+fn allocate_unwritable_addr_ptr_leaves_allocation_base() {
+    let mut state = x86_state_with_buf();
+    let read_only = Permission {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    state.map_memory(0x5000, 0x1000, read_only);
+    state.memory_mut().set_enforce_permissions(true);
+    let base_before = state.cgc_allocation_base();
+    let err = NativeAllocateSyscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(0x1000, 32),
+            RustBV::concrete(0, 32),
+            RustBV::concrete(0x5000, 32),
+        ],
+    );
+    assert!(err.is_err(), "read-only *addr must bounce");
+    assert_eq!(state.cgc_allocation_base(), base_before);
+}
+
+/// angr-vmi2l.140: an unwritable `*rx_bytes` bounces before receive mints
+/// and records stdin bytes.
+#[test]
+fn receive_unmapped_rx_bytes_records_no_stdin() {
+    let mut state = x86_state_with_buf();
+    let err = NativeReceiveSyscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(0, 32),
+            RustBV::concrete(0x2000, 32),
+            RustBV::concrete(4, 32),
+            RustBV::concrete(0x9000, 32),
+        ],
+    );
+    assert!(err.is_err(), "unmapped *rx_bytes must bounce");
+    assert!(state.stdin_symbols().is_empty());
+    assert_eq!(state.memory_load(0x2000, 4).unwrap().as_u64(), Some(0));
+}

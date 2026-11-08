@@ -568,18 +568,9 @@ impl FileSystem {
     /// Read up to `count` bytes from a file descriptor at its current position.
     /// Advances the position. Returns bytes read.
     pub fn read(&mut self, fd: u32, count: usize) -> Vec<u8> {
-        let fd = self.desc_key(fd);
         // Peek to compute byte count without forcing CoW when nothing is readable.
-        let n = match self.fds.get(&fd) {
-            // Guard on is_open for parity with read_sym/read_sym_at; a closed
-            // fd serves no bytes even though its content buffer survives.
-            Some(desc) if desc.is_open => {
-                let pos = desc.position as usize;
-                let available = desc.content.len().saturating_sub(pos);
-                count.min(available)
-            }
-            _ => return Vec::new(),
-        };
+        let n = self.read_len(fd, count);
+        let fd = self.desc_key(fd);
         if n == 0 {
             return Vec::new();
         }
@@ -594,6 +585,22 @@ impl FileSystem {
         let data = desc.content[pos..pos + n].to_vec();
         desc.position += n as u64;
         data
+    }
+
+    /// How many bytes [`read`](Self::read) would return for `(fd, count)`,
+    /// without reading or moving the position. A native syscall checks its
+    /// destination for that many bytes before the read advances the
+    /// position (angr-vmi2l.140).
+    pub fn read_len(&self, fd: u32, count: usize) -> usize {
+        match self.fds.get(&self.desc_key(fd)) {
+            // Guard on is_open for parity with read_sym/read_sym_at; a closed
+            // fd serves no bytes even though its content buffer survives.
+            Some(desc) if desc.is_open => {
+                let available = desc.content.len().saturating_sub(desc.position as usize);
+                count.min(available)
+            }
+            _ => 0,
+        }
     }
 
     /// Seek a file descriptor. Returns the new position.

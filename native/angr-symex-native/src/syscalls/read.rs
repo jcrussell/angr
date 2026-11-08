@@ -30,7 +30,7 @@
 
 use super::require_syscall_args;
 use super::{
-    MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome,
+    MAX_IO_SIZE as MAX_READ_SIZE, NativeSyscall, SyscallError, SyscallOutcome, ensure_storable,
     extract_concrete_arg, extract_int_fd_arg,
 };
 use crate::procedures::strings::write_bv_bytes;
@@ -97,6 +97,9 @@ impl NativeSyscall for NativeReadSyscall {
         // would split the position cursor, since natively-minted fds are not
         // mirrored into Python (angr-8j16).
         let clamped = count.min(MAX_SYMFILE_SERVE_SIZE) as usize;
+        if let Some(n) = state.file_system_ref().sym_read_len(fd_u32, clamped) {
+            ensure_storable(state, buf, n as u64)?;
+        }
         if let Some(sym_bytes) = state.file_system().read_sym(fd_u32, clamped) {
             let n = sym_bytes.len();
             write_bv_bytes(state, buf, sym_bytes)?;
@@ -122,6 +125,8 @@ impl NativeSyscall for NativeReadSyscall {
             )));
         }
 
+        let n = state.file_system_ref().read_len(fd_u32, count as usize);
+        ensure_storable(state, buf, n as u64)?;
         let bytes = state.file_system().read(fd_u32, count as usize);
         let n = bytes.len();
         for (i, b) in bytes.iter().enumerate() {
@@ -157,6 +162,7 @@ fn read_stdin(
                 .to_string(),
         ));
     }
+    ensure_storable(state, buf, count)?;
     let names = crate::syscalls::fresh_byte_names("sys_read", SYS_READ_COUNTER, count);
     let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
     write_bv_bytes(state, buf, sym_bytes)?;

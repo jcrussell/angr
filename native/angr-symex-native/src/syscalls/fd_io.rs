@@ -49,8 +49,9 @@
 use super::errno::NEG_ONE;
 use super::require_syscall_args;
 use super::{
-    MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg,
-    extract_int_fd_arg, gather_concrete_bytes, gather_concrete_bytes_into, write_path_gate,
+    MAX_IO_SIZE, NativeSyscall, SyscallError, SyscallOutcome, ensure_storable,
+    extract_concrete_arg, extract_int_fd_arg, gather_concrete_bytes, gather_concrete_bytes_into,
+    write_path_gate,
 };
 use crate::procedures::strings::write_bv_bytes;
 use crate::state::MAX_SYMFILE_SERVE_SIZE;
@@ -263,6 +264,11 @@ impl NativeSyscall for NativeReadvSyscall {
         // predicate holds, but not worth an `expect`) degrades to a short
         // read too.
         if serve_sym {
+            let avail = state
+                .file_system_ref()
+                .sym_read_len(fd as u32, usize::MAX)
+                .unwrap_or(0);
+            ensure_scatter_storable(state, &segments, avail as u64, MAX_SYMFILE_SERVE_SIZE)?;
             let mut total = 0u64;
             for (base, len) in segments {
                 let serve = (len as usize).min(MAX_SYMFILE_SERVE_SIZE as usize);
@@ -298,6 +304,8 @@ impl NativeSyscall for NativeReadvSyscall {
             )));
         }
 
+        let avail = state.file_system_ref().read_len(fd as u32, usize::MAX);
+        ensure_scatter_storable(state, &segments, avail as u64, u64::MAX)?;
         let mut total = 0u64;
         for (base, len) in segments {
             let bytes = state.file_system().read(fd as u32, len as usize);
@@ -312,6 +320,28 @@ impl NativeSyscall for NativeReadvSyscall {
         }
         Ok(SyscallOutcome::Continue { ret: total })
     }
+}
+
+/// Check, before the reads advance the position, every destination byte the
+/// `readv` serve loops would store: segment by segment, `min(len, clamp,
+/// what is left of avail)` bytes, stopping after the first short segment as
+/// the loops do (angr-vmi2l.140).
+fn ensure_scatter_storable(
+    state: &RustSimState,
+    segments: &[(u64, u64)],
+    mut avail: u64,
+    clamp: u64,
+) -> Result<(), SyscallError> {
+    for &(base, len) in segments {
+        let n = len.min(clamp).min(avail);
+        ensure_storable(state, base, n)?;
+        if n < len {
+            break;
+        }
+        // overflow-ok: `n <= avail` by the `min` above.
+        avail -= n;
+    }
+    Ok(())
 }
 
 /// `readv(0, ..)`: mint each segment through `stdin_common::mint_stdin_bytes`
@@ -335,6 +365,9 @@ fn readv_stdin(
         ));
     }
     for &(base, len) in segments {
+        ensure_storable(state, base, len)?;
+    }
+    for &(base, len) in segments {
         let names = crate::syscalls::fresh_byte_names("sys_readv", SYS_READV_COUNTER, len);
         let sym_bytes = crate::procedures::stdin_common::mint_stdin_bytes(state, &names);
         write_bv_bytes(state, base, sym_bytes)?;
@@ -352,6 +385,9 @@ fn scatter_symbolic(
     prefix: &str,
 ) -> Result<SyscallOutcome, SyscallError> {
     crate::syscalls::refuse_short_read(state, "readv from a stream")?;
+    for &(base, len) in segments {
+        ensure_storable(state, base, len)?;
+    }
     let mut total = 0u64;
     for &(base, len) in segments {
         // One counter bump per segment (not per call), so two segments of the

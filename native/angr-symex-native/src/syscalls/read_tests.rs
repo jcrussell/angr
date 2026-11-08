@@ -574,3 +574,79 @@ fn read_ignores_dirty_upper_half_of_fd() {
     let byte = state.memory_load(0x2000, 1).expect("loaded");
     assert!(byte.as_u64().is_none(), "stdin bytes are symbolic");
 }
+
+/// angr-vmi2l.140: a store that would fail must bounce before the handler
+/// mints and records stdin bytes, or Python re-reads and `dumps(0)` doubles.
+#[test]
+fn read_stdin_into_read_only_page_falls_back_untouched() {
+    let mut state = fresh_state_with_buf();
+    let read_only = Permission {
+        read: true,
+        write: false,
+        execute: false,
+    };
+    state.map_memory(0x3000, 0x1000, read_only);
+    state.memory_mut().set_enforce_permissions(true);
+    let err = NativeReadSyscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(0, 64),
+            RustBV::concrete(0x3000, 64),
+            RustBV::concrete(4, 64),
+        ],
+    );
+    assert!(err.is_err(), "store to a read-only page must bounce");
+    assert!(state.stdin_symbols().is_empty(), "no stdin bytes recorded");
+}
+
+/// angr-vmi2l.140: a destination straddling into an unmapped page bounces
+/// with the file position and the mapped half of the buffer unchanged.
+#[test]
+fn read_user_fd_straddling_unmapped_page_keeps_position() {
+    let mut state = fresh_state_with_buf();
+    state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"abcdef".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let err = NativeReadSyscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(3, 64),
+            RustBV::concrete(0x2FFE, 64),
+            RustBV::concrete(4, 64),
+        ],
+    );
+    assert!(err.is_err(), "store into the unmapped page must bounce");
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().1, 0);
+    assert_eq!(state.memory_load(0x2FFE, 2).unwrap().as_u64(), Some(0));
+}
+
+/// The pre-check covers only the bytes the read serves: a short read whose
+/// requested window runs into an unmapped page still serves natively.
+#[test]
+fn read_user_fd_short_read_checks_only_served_bytes() {
+    let mut state = fresh_state_with_buf();
+    state
+        .file_system()
+        .open_with_content(
+            "in.bin".to_string(),
+            crate::state::FdFlags::ReadOnly,
+            b"ab".to_vec(),
+        )
+        .expect("fd space is not exhausted in tests");
+    let out = NativeReadSyscall
+        .call(
+            &mut state,
+            &[
+                RustBV::concrete(3, 64),
+                RustBV::concrete(0x2FFE, 64),
+                RustBV::concrete(16, 64),
+            ],
+        )
+        .expect("the two served bytes fit the mapped page");
+    assert!(matches!(out, SyscallOutcome::Continue { ret: 2 }));
+}

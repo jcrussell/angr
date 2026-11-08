@@ -104,10 +104,10 @@ use std::sync::Arc;
 use crate::vex::ir::JumpKind;
 
 pub(crate) use support::{
-    BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, bounded_value, extract_bounded_concrete_arg,
-    extract_concrete_arg, extract_int_fd_arg, fresh_byte_names, fresh_symbolic,
-    gather_concrete_bytes, gather_concrete_bytes_into, mint_symbolic_bytes, refuse_short_read,
-    require_syscall_args, stub_syscall, symbolic_outcome, syscall_stub_key,
+    BoundedArg, MAX_IO_SIZE, MAX_MAP_SIZE, bounded_value, ensure_storable,
+    extract_bounded_concrete_arg, extract_concrete_arg, extract_int_fd_arg, fresh_byte_names,
+    fresh_symbolic, gather_concrete_bytes, gather_concrete_bytes_into, mint_symbolic_bytes,
+    refuse_short_read, require_syscall_args, stub_syscall, symbolic_outcome, syscall_stub_key,
 };
 pub use support::{NativeSyscall, SyscallError, SyscallOutcome};
 pub(crate) use write_gate::write_path_gate;

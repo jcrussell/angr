@@ -44,7 +44,10 @@
 //!   the call.
 
 use super::require_syscall_args;
-use super::{NativeSyscall, SyscallError, SyscallOutcome, extract_concrete_arg, fresh_symbolic};
+use super::{
+    NativeSyscall, SyscallError, SyscallOutcome, ensure_storable, extract_concrete_arg,
+    fresh_symbolic,
+};
 use crate::state::RustSimState;
 use crate::symbolic::RustBV;
 
@@ -77,6 +80,9 @@ impl NativeSyscall for NativeGettimeofdaySyscall {
         }
 
         let bits = state.arch().bits();
+        // Both fields are checked before the first store, so a `tv_usec`
+        // store that would fail leaves no `tv_sec` behind (angr-vmi2l.140).
+        ensure_storable(state, tv, 2 * u64::from(bits / 8))?;
         // Bind the borrow to a local so it ends before we hit memory_store
         // (which takes a mutable borrow of the solver internally).
         let (tv_sec, tv_usec) = {
@@ -153,6 +159,11 @@ impl NativeSyscall for NativeTimeSyscall {
         require_syscall_args!(self, args);
         let pointer = extract_concrete_arg(&args[0], "time pointer")?;
 
+        // Checked before `fresh_monotonic_time` adds its constraint and
+        // advances `last_time` (angr-vmi2l.140).
+        if pointer != 0 {
+            ensure_storable(state, pointer, u64::from(state.arch().bits() / 8))?;
+        }
         let sys_time = fresh_monotonic_time(state);
 
         if pointer != 0 {
@@ -193,6 +204,8 @@ impl NativeSyscall for NativeClockGettimeSyscall {
         }
 
         let bits = state.arch().bits();
+        // Same both-fields check as `gettimeofday` (angr-vmi2l.140).
+        ensure_storable(state, ts, 2 * u64::from(bits / 8))?;
         let (tv_sec, tv_nsec) = {
             (
                 fresh_symbolic("tv_sec", bits),

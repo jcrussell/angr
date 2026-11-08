@@ -1174,3 +1174,26 @@ fn readv_stdin_under_short_reads_falls_back() {
         .expect_err("fall back");
     assert!(matches!(err, SyscallError::Other(_)));
 }
+
+/// angr-vmi2l.140: the second segment's unmapped destination bounces the
+/// whole readv before the first segment is written or the position moves.
+#[test]
+fn readv_unmapped_second_segment_falls_back_untouched() {
+    let mut state = fresh_state();
+    state
+        .file_system()
+        .open_with_content("in".to_string(), FdFlags::ReadOnly, b"abcdef".to_vec())
+        .expect("fd space is not exhausted in tests");
+    write_iovec_array(&mut state, 0x2000, &[(0x3000, 3), (0x9000, 3)]);
+    let err = NativeReadvSyscall.call(
+        &mut state,
+        &[
+            RustBV::concrete(3, 64),
+            RustBV::concrete(0x2000, 64),
+            RustBV::concrete(2, 64),
+        ],
+    );
+    assert!(err.is_err(), "unmapped second segment must bounce");
+    assert_eq!(state.file_system_ref().fd_info(3).unwrap().1, 0);
+    assert_eq!(state.memory_load(0x3000, 3).unwrap().as_u64(), Some(0));
+}

@@ -435,3 +435,27 @@ fn gettimeofday_and_clock_gettime_tv_boundary_sweep_never_panics_and_wraps_corre
          (no field wraps) or right-at-top (first field already overflows) values"
     );
 }
+
+/// angr-vmi2l.140: a `tv_usec` slot on an unmapped page bounces before
+/// `tv_sec` is stored.
+#[test]
+fn gettimeofday_straddling_unmapped_page_leaves_tv_sec_untouched() {
+    let mut state = fresh_state();
+    state.map_memory(0x2000, 0x1000, Permission::RWX);
+    let err = NativeGettimeofdaySyscall.call(
+        &mut state,
+        &[RustBV::concrete(0x2FF8, 64), RustBV::concrete(0, 64)],
+    );
+    assert!(err.is_err(), "unmapped tv_usec must bounce");
+    assert_eq!(state.memory_load(0x2FF8, 8).unwrap().as_u64(), Some(0));
+}
+
+/// angr-vmi2l.140: an unmapped `*tloc` bounces before `fresh_monotonic_time`
+/// constrains the solver and advances `last_time`.
+#[test]
+fn time_unmapped_pointer_falls_back_without_advancing_last_time() {
+    let mut state = fresh_state();
+    let err = NativeTimeSyscall.call(&mut state, &[RustBV::concrete(0x9000, 64)]);
+    assert!(err.is_err(), "unmapped *tloc must bounce");
+    assert!(state.last_time().is_none());
+}

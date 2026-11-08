@@ -122,6 +122,27 @@ impl FileSystem {
         self.file_contents.get(&self.normalize_path(path)).cloned()
     }
 
+    /// How many bytes [`read_sym`](Self::read_sym) would serve for
+    /// `(fd, count)`, without reading or moving the position: `None` exactly
+    /// when `read_sym` returns `None`. A native syscall checks its
+    /// destination for that many bytes before the read advances the
+    /// position (angr-vmi2l.140).
+    pub fn sym_read_len(&self, fd: u32, count: usize) -> Option<usize> {
+        self.sym_read_window(fd, count).map(|(_, n)| n)
+    }
+
+    /// `(start, n)` of the slice [`read_sym`](Self::read_sym) serves.
+    fn sym_read_window(&self, fd: u32, count: usize) -> Option<(usize, usize)> {
+        let desc = self.fds.get(&self.desc_key(fd))?;
+        if !desc.is_open {
+            return None;
+        }
+        let content = desc.content_sym.as_ref()?;
+        let start = (desc.position as usize).min(content.len());
+        // overflow-ok: `start` is clamped to `content.len()` on the line above.
+        Some((start, count.min(content.len() - start)))
+    }
+
     /// Read up to `count` bytes of bounded symbolic content from `fd` at its
     /// current position, advancing the position (CoW via `Arc::make_mut`,
     /// like the concrete `read`). Returns `None` when the fd is absent, is
@@ -141,17 +162,9 @@ impl FileSystem {
     /// (once per guest call that served >0 bytes), not here — `readv`
     /// calls this once per iovec segment.
     pub fn read_sym(&mut self, fd: u32, count: usize) -> Option<Vec<RustBV>> {
-        let fd = self.desc_key(fd);
         // Peek to compute the byte count without forcing CoW at EOF.
-        let (start, n) = {
-            let desc = self.fds.get(&fd)?;
-            if !desc.is_open {
-                return None;
-            }
-            let content = desc.content_sym.as_ref()?;
-            let start = (desc.position as usize).min(content.len());
-            (start, count.min(content.len() - start))
-        };
+        let (start, n) = self.sym_read_window(fd, count)?;
+        let fd = self.desc_key(fd);
         if n == 0 {
             return Some(Vec::new());
         }

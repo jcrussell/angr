@@ -206,6 +206,24 @@ pub(crate) fn refuse_short_read(state: &RustSimState, what: &str) -> Result<(), 
     Ok(())
 }
 
+/// Refuse, before any mutation, a handler whose `len`-byte buffer write at
+/// `addr` would fail ([`crate::memory::SymbolicMemory::check_store_range`]).
+///
+/// Every handler that mutates state ahead of a fallible buffer store (mints
+/// stdin bytes, advances a file position, moves a CGC high-water mark,
+/// adds a time constraint) calls this first for each buffer it will write,
+/// so its `Err` leaves the state as it found it ([`NativeSyscall::call`]).
+pub(crate) fn ensure_storable(
+    state: &RustSimState,
+    addr: u64,
+    len: u64,
+) -> Result<(), SyscallError> {
+    state
+        .memory()
+        .check_store_range(addr, len)
+        .map_err(SyscallError::Memory)
+}
+
 /// Allocate the `<prefix>_<id>_<i>` names for a batch of `count` fresh
 /// symbolic bytes, drawing one index from the `counter` key of
 /// [`crate::symbolic::names`] for the whole batch.
@@ -236,6 +254,7 @@ pub(crate) fn mint_symbolic_bytes(
     prefix: &str,
     counter: &str,
 ) -> Result<(), SyscallError> {
+    ensure_storable(state, base, count)?;
     let names = fresh_byte_names(prefix, counter, count);
     let sym_bytes: Vec<RustBV> = { names.iter().map(|name| RustBV::symbol(name, 8)).collect() };
     crate::procedures::strings::write_bv_bytes(state, base, sym_bytes)?;
@@ -268,6 +287,18 @@ pub trait NativeSyscall: Send + Sync {
     /// registered" in a debug log, and `native_syscall_table()` reports it.
     fn name(&self) -> &'static str;
     fn num_args(&self) -> usize;
+    /// Run the syscall on `state`.
+    ///
+    /// # Errors
+    /// Any `Err` bounces the syscall to its Python implementation, which then
+    /// runs on this same state. So an `Err` must leave `state` untouched: a
+    /// handler validates every destination it will write
+    /// (`syscalls::support::ensure_storable`) and every argument before its first mutation —
+    /// stdin bytes, file positions, emitted output, constraints, the CGC
+    /// allocation base, a partial buffer write (angr-vmi2l.140). The one
+    /// deliberate exception is the write-path demotion
+    /// (`write_gate::write_path_gate`), which hands symbolic file content to
+    /// Python on purpose.
     fn call(
         &self,
         state: &mut RustSimState,

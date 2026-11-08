@@ -681,6 +681,51 @@ impl SymbolicMemory {
         Ok(())
     }
 
+    /// Whether `len` byte stores at `addr, addr + 1, …` (wrapping, as the
+    /// native syscall and procedure buffer writes address them) would all
+    /// succeed through `store_concrete_automap_internal`, without touching
+    /// memory. A page fails when it is unmapped outside every lazy region
+    /// (`Unmapped`) or, with permissions enforced, mapped without W
+    /// (`Permission`); an unmapped page inside a lazy region auto-maps RWX
+    /// and passes.
+    ///
+    /// A native syscall calls this before its first state mutation, so a
+    /// store that would fail bounces to Python with the state untouched
+    /// (`NativeSyscall::call`'s contract, angr-vmi2l.140).
+    ///
+    /// # Errors
+    /// The first failing page's `Unmapped` / `Permission` error, the same
+    /// one the store would have returned.
+    pub fn check_store_range(&self, addr: u64, len: u64) -> Result<(), MemoryError> {
+        let mut off = 0u64;
+        while off < len {
+            let byte = Address::from(addr.wrapping_add(off));
+            let page_num = byte.page_num();
+            match self.pages.get(&page_num) {
+                Some(page) => {
+                    let actual = page.permissions();
+                    if self.enforce_permissions && !actual.allows(Permission::W) {
+                        return Err(MemoryError::Permission {
+                            addr: byte.page_base(),
+                            required: Permission::W,
+                            actual,
+                        });
+                    }
+                }
+                None if self.is_in_lazy_region(page_num) => {}
+                None => {
+                    return Err(MemoryError::Unmapped {
+                        addr: byte.page_base(),
+                        size: PAGE_SIZE,
+                    });
+                }
+            }
+            // overflow-ok: `page_offset() < PAGE_SIZE`, so the step is 1..=PAGE_SIZE.
+            off = off.saturating_add(PAGE_SIZE - u64::from(byte.page_offset()));
+        }
+        Ok(())
+    }
+
     /// Set whether to fill unconstrained memory with zeros.
     pub fn set_zero_fill_unconstrained(&mut self, enabled: bool) {
         self.zero_fill_unconstrained = enabled;

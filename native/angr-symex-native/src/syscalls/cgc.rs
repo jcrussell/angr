@@ -53,8 +53,8 @@
 
 use super::require_syscall_args;
 use super::{
-    MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, exit,
-    extract_concrete_arg, extract_int_fd_arg, fresh_byte_names, gather_concrete_bytes,
+    MAX_IO_SIZE as MAX_CGC_BYTES, NativeSyscall, SyscallError, SyscallOutcome, ensure_storable,
+    exit, extract_concrete_arg, extract_int_fd_arg, fresh_byte_names, gather_concrete_bytes,
     mint_symbolic_bytes,
 };
 use crate::memory::{PAGE_MASK, PAGE_SIZE, PageIndex, Permission};
@@ -217,6 +217,11 @@ impl NativeSyscall for NativeTransmitSyscall {
         // A refusal means the fd carried bounded symbolic content (now
         // demoted) — bounce to Python (angr-0xyq2 Phase 2; see
         // FileSystem::write).
+        // `*tx_bytes` must take its store before the bytes are emitted
+        // (angr-vmi2l.140).
+        if tx_bytes != 0 {
+            ensure_storable(state, tx_bytes, 4)?;
+        }
         if !state.write_fd(fd_u32, &bytes) {
             return Err(SyscallError::Other(format!(
                 "transmit to fd={fd} with symbolic content falls back to Python (demoted)"
@@ -318,6 +323,12 @@ impl NativeSyscall for NativeReceiveSyscall {
                 "receive: the harness stdin seed ends before the read; Python models the EOF"
                     .to_string(),
             ));
+        }
+        // Both destinations are checked before `mint_stdin_bytes` records
+        // stdin symbols and seed constraints (angr-vmi2l.140).
+        ensure_storable(state, buf, count)?;
+        if rx_bytes != 0 {
+            ensure_storable(state, rx_bytes, 4)?;
         }
         let names = fresh_byte_names("cgc_receive", RECEIVE_COUNTER, count);
         // Not `mint_symbolic_bytes`: `mint_stdin_bytes` binds each leaf to a
@@ -473,6 +484,11 @@ impl NativeSyscall for NativeRandomSyscall {
             return Ok(SyscallOutcome::Continue { ret: 0 });
         }
 
+        // `mint_symbolic_bytes` checks `buf`; `*rnd_bytes` must also take
+        // its store before `buf` is filled (angr-vmi2l.140).
+        if rnd_bytes != 0 {
+            ensure_storable(state, rnd_bytes, 4)?;
+        }
         mint_symbolic_bytes(state, buf, count, "cgc_random", RANDOM_COUNTER)?;
 
         if rnd_bytes != 0 {
@@ -538,6 +554,10 @@ impl NativeSyscall for NativeAllocateSyscall {
         }
 
         let aligned_length = length.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        // `*addr` must take the store before the sinkhole take or the bump
+        // moves `cgc_allocation_base` (angr-vmi2l.140). A pointer into the
+        // region this call maps bounces too; Python handles that rare case.
+        ensure_storable(state, addr_ptr, 4)?;
 
         // First-fit over the sinkhole freelist; bump otherwise.
         let chosen = if let Some(addr) = state.cgc_take_max_sinkhole(aligned_length) {
