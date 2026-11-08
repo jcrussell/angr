@@ -6,7 +6,13 @@
 //! Both procedures support symbolic target bytes and symbolic memory bytes.
 //! Concrete inputs take a fast scan path; if the target is symbolic OR a
 //! loaded memory byte is symbolic, we switch to building an ITE chain over
-//! up to MAX_SCAN positions: result = ITE(byte_i == target, addr+i, ...).
+//! the collected positions: result = ITE(byte_i == target, addr+i, ...).
+//! Collection stops at the scan bound (MAX_SCAN, or `n`), at a concrete null
+//! for the null-terminated flavors, or once
+//! [`MAX_SYMBOLIC_SCAN_BYTES`]
+//! symbolic bytes have been collected. No scan here asserts its match lies in
+//! the collected prefix, so a spent budget defers to Python rather than let
+//! the chain's NULL default stand for bytes nobody read.
 //! Concrete addresses are still required (symbolic addresses fall back to
 //! Python via SymbolicArgument).
 

@@ -18,7 +18,7 @@
 //!   back to Python when that bound is unknown or exceeds
 //!   `MAX_SYMBOLIC_BYTEWISE_SIZE`.
 //! - Copies data byte-by-byte, preserving symbolic values
-//! - Maximum concrete copy size is 1MB (configurable)
+//! - Maximum concrete copy size is `MAX_COPY_SIZE` (1MB).
 
 use super::mem_common::{
     bounded_symbolic_size, check_store_budget, check_symbolic_addr_size, enumerate_addr_candidates,

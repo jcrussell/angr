@@ -735,10 +735,14 @@ every byte is concrete it short-circuits at the first ``\0``. As soon
 as it encounters a symbolic byte it switches to collecting
 ``(position, byte)`` pairs and, at the end, folds them into a
 right-to-left ``ITE`` chain so that the returned ``RustBV`` is a
-symbolic ``size_t`` that earlier-positioned nulls win on. The procedure
-saturates at ``MAX_STRLEN = 4096`` and falls back to Python via
-``ProcedureError::MaxIterations`` if it sees that many bytes with no
-concrete null.
+symbolic ``size_t`` that earlier-positioned nulls win on. Collection
+stops at a concrete null, at ``MAX_STRLEN``, or once
+``MAX_SYMBOLIC_SCAN_BYTES`` symbolic bytes have been collected (Python's
+``buf_symbolic_bytes``). strlen then asserts ``null_exists_constraint``
+over the collected bytes, so the length lies inside the window and
+states where none of them is null are pruned, as Python's strlen
+prunes them. A concrete scan of ``MAX_STRLEN`` bytes with no null
+falls back to Python via ``ProcedureError::MaxIterations``.
 
 Things to take away from this example:
 
@@ -748,9 +752,9 @@ Things to take away from this example:
   procedure works with them directly using
   ``state.solver().borrow()`` and the ``RustBV::ite`` /
   ``RustBV::eq`` combinators.
-* The fallback path is ``MaxIterations(MAX_STRLEN)`` — large or
-  truly unbounded inputs go back to Python rather than producing a
-  4096-deep ITE chain inside Z3.
+* The symbolic window is bounded by ``MAX_SYMBOLIC_SCAN_BYTES``, so the
+  ITE chain stays small; an unterminated concrete string goes back to
+  Python through ``MaxIterations(MAX_STRLEN)``.
 
 Worked example 2: graded symbolic fallback — ``memcpy``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

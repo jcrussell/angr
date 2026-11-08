@@ -17,7 +17,7 @@
 //!   than the concrete chunked path, so its cap is much smaller).
 //! - A symbolic byte `value` is handled natively: the low 8 bits are stored
 //!   (symbolically) into every byte of the region — no Python fallback.
-//! - Maximum concrete size is 1MB (configurable)
+//! - Maximum concrete size is `MAX_MEMSET_SIZE` (1MB).
 
 use super::mem_common::{
     bounded_symbolic_size, check_store_budget, check_symbolic_addr_size, enumerate_addr_candidates,

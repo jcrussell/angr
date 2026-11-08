@@ -17,7 +17,7 @@
 //!    Helpers: [`scan_for_null_symbolic`], [`build_strlen_chain`].
 //!
 //! Centralizing these means null-boundary edge cases live in one place. Tests
-//! for the shared helpers live in this file.
+//! for the shared helpers live in `strings_tests.rs`.
 
 use super::{ProcedureError, extract_concrete_arg};
 use crate::state::RustSimState;
@@ -25,7 +25,7 @@ use crate::symbolic::RustBV;
 
 /// Shared upper bound on a concrete null-terminated string scan for the
 /// str-family procedures (strcpy/strncpy/strcat/strncat, strstr, strpbrk,
-/// memset-of-string, strchr/memchr, strlen/strnlen, …) and for the other
+/// strchr/memchr, strlen/strnlen, …) and for the other
 /// procedures that scan a C string argument: `getopt` (optstring and argv
 /// elements), `perror`, `getenv`/`setenv`/`putenv`, and `sprintf_conv.rs`'s `%s`
 /// conversion argument. Hitting this without a null terminator bails to Python

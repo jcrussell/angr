@@ -29,7 +29,7 @@
 //!   internally consistent, which is what exact-value consumers
 //!   (`res == -1`, table indexing) need. The clamp is also cheaper for Z3
 //!   than a 32-bit subtraction per position.
-//! - Maximum compare length is 4096 bytes (configurable).
+//! - Maximum compare length is `MAX_STRCMP_LEN` bytes.
 
 use super::ProcedureError;
 use super::check_max;

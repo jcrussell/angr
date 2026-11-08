@@ -10,10 +10,16 @@
 //! - When a symbolic byte is encountered, we build an ITE chain expressing
 //!   the symbolic null position:
 //!   result = ITE(b_i == 0, i, result_next)
-//!   built right-to-left up to MAX_STRLEN (or a concrete null). The chain's
-//!   initial right-most value is the upper bound (MAX_STRLEN for strlen,
-//!   maxlen for strnlen). This is an approximation: if no null is ever
-//!   reachable in MAX_STRLEN bytes the result will saturate at MAX_STRLEN.
+//!   built right-to-left over the collected window, which ends at a concrete
+//!   null, at the scan bound, or once
+//!   [`MAX_SYMBOLIC_SCAN_BYTES`]
+//!   symbolic bytes have been collected. strlen also asserts
+//!   [`null_exists_constraint`], so
+//!   the length lies inside that window and the chain's default is never
+//!   taken; this prunes the states where every collected byte is non-null, as
+//!   Python's strlen does. strnlen asserts nothing: its default is `maxlen`,
+//!   so it defers to Python when the symbolic budget is spent before `maxlen`.
+//! - A concrete scan with no null in MAX_STRLEN bytes defers to Python.
 //! - Maximum string length is the str-family-wide
 //!   [`strings::MAX_STRING_SCAN`](super::strings::MAX_STRING_SCAN), aliased
 //!   here as `MAX_STRLEN`.
