@@ -86,7 +86,13 @@ pub(super) fn extract_bv_value_wide(bv: &z3::ast::BV, width: u32) -> Option<Vec<
 }
 
 /// Create a Z3 BV constant from a u128 value.
+///
+/// `width` must be non-zero: Z3 has no 0-bit sort. Every caller takes the
+/// width from a value it has already lowered through `ToZ3::to_z3_ast`, which
+/// refuses the zero-width `Concrete`, or from a Z3 term, so width 0 cannot
+/// arrive here.
 pub(super) fn make_bv_const(value: u128, width: u32) -> z3::ast::BV {
+    debug_assert!(width > 0, "make_bv_const: Z3 has no 0-bit sort");
     if width <= 64 {
         z3::ast::BV::from_u64(value as u64, width)
     } else {

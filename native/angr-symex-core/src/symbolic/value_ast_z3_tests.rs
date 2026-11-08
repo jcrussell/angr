@@ -101,3 +101,13 @@ fn a_comparison_bit_lowers_to_the_native_comparison() {
     let flag = RustBV::from_clarirs(ctx().bools("ast_cmp_flag").unwrap()).unwrap();
     assert_eq!(flag.to_z3_bool().unwrap(), z3::ast::Bool::new_const("ast_cmp_flag"));
 }
+
+/// The empty bitvector has no Z3 term: lowering it is an error, not a request
+/// for a 0-bit sort, which Z3 rejects (angr-vmi2l.84).
+#[test]
+fn zero_width_concrete_does_not_lower() {
+    let empty = RustBV::concrete(0, 0);
+    assert!(empty.to_z3_ast().is_err());
+    let symbol = RustBV::symbol("zero_width_lower", 0);
+    assert!(symbol.to_z3_ast().is_err());
+}

@@ -84,6 +84,15 @@ impl ToZ3 for RustBV {
         }
         super::stats::record_z3_ast_cache_miss();
         let result = match self {
+            // Z3 has no 0-bit sort, and the empty bitvector is always this
+            // `Concrete` (`RustBV::symbol` folds a width-0 leaf, clarirs has no
+            // width-0 term), so this is the one arm that can hand
+            // `make_bv_const` width 0 (`invariant-rustbv-zero-width`).
+            RustBV::Concrete { width: 0, .. } => {
+                return Err(LowerError::InvalidArgs(
+                    "a zero-width value has no Z3 term".into(),
+                ));
+            }
             RustBV::Concrete { value, width } => super::bv_codec::make_bv_const(*value, *width),
             RustBV::Ast { ast, .. } => super::z3_lower::lower_bv(ast)?,
         };
