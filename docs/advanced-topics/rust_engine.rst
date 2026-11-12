@@ -1317,6 +1317,16 @@ zero-cost when not read. They reset alongside the Z3 counters via
   per-context ``z3_assertions`` vec and scales constraint-export and
   lineage-switch work for nothing (``angr-dtrl``).
 
+* **Residual log** (bumped in
+  ``symbolic/local_constraints.rs::LocalConstraints::push_residual``, the
+  one place a constraint with no ``assumed`` pair is recorded):
+
+  * ``residual_logged`` — constraints recorded in the residual log.
+  * ``residual_without_term`` — the subset recorded with a Z3 term only
+    and no clarirs term: a raw pointer import, an SMT-LIB2 residual
+    replayed from a snapshot, a ``merge`` guard. These are the
+    constraints that cannot be rebuilt without Z3.
+
 ``tests/benchmarks/run_single.py`` prints these counters grouped by
 category whenever the Rust engine ran with non-zero counters;
 ``--dump-counters`` prints every one and ``--counters-json`` emits the

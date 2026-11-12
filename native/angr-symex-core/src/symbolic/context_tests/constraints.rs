@@ -1223,3 +1223,72 @@ fn test_add_in_a_nested_scope_leaves_the_branch_scope_open() {
     ctx.close_branch_scope();
     assert!(ctx.solution(&x, 6));
 }
+
+/// angr-az6ru.2: a residual sink handed a `LoweredConstraint` keeps the
+/// clarirs term beside the Z3 one, the term lowers back to the very Bool that
+/// was asserted, and `fork` carries it. A raw Z3 Bool has no term to keep.
+#[test]
+fn test_residual_keeps_clarirs_term() {
+    use crate::symbolic::LoweredConstraint;
+    use crate::symbolic::z3_lower::lower_bool;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_residual_term_x", 8);
+    let constraint = LoweredConstraint::of_bit(&x.eq(&RustBV::concrete(5, 8))).unwrap();
+    let asserted = constraint.z3().clone();
+    ctx.add_constraint_lowered(constraint);
+    assert_eq!(ctx.residual_term_coverage(), (1, 1));
+    {
+        let local = ctx.local_constraints.lock();
+        let entry = &local.non_bv_assertions[0];
+        assert_eq!(entry.z3, asserted);
+        let term = entry.term.as_ref().expect("the lowered sink keeps its term");
+        assert_eq!(
+            lower_bool(term).unwrap(),
+            entry.z3,
+            "the kept term must lower to the Bool on the solver"
+        );
+    }
+    assert!(ctx.solution(&x, 5));
+    assert!(!ctx.solution(&x, 6));
+
+    ctx.add_constraint_raw(raw_entry(&x.ne(&RustBV::concrete(9, 8))));
+    assert_eq!(
+        ctx.residual_term_coverage(),
+        (1, 2),
+        "a raw Z3 Bool is logged without a term"
+    );
+
+    let child = ctx.fork();
+    assert_eq!(
+        child.residual_term_coverage(),
+        (1, 2),
+        "fork freezes the residual log with its terms"
+    );
+}
+
+/// angr-az6ru.2: `add_bv_constraint` (address concretization) records
+/// `bv == value` as a clarirs term equivalent to the Z3 equality it asserts.
+#[test]
+fn test_add_bv_constraint_records_equivalent_term() {
+    use crate::symbolic::z3_lower::lower_bool;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_bv_constraint_term_x", 32);
+    ctx.add_bv_constraint(&x, 0x2000);
+    assert_eq!(ctx.residual_term_coverage(), (1, 1));
+
+    let (asserted, relowered) = {
+        let local = ctx.local_constraints.lock();
+        let entry = &local.non_bv_assertions[0];
+        let term = entry.term.as_ref().expect("bv == value has a clarirs form");
+        (entry.z3.clone(), lower_bool(term).unwrap())
+    };
+    let differ = z3::Solver::new();
+    differ.assert(asserted.iff(&relowered).not());
+    assert_eq!(
+        differ.check(),
+        z3::SatResult::Unsat,
+        "the term and the asserted Bool must agree on every model"
+    );
+}

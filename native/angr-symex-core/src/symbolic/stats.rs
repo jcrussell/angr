@@ -167,6 +167,11 @@ pub(crate) static CONCRETIZE_DISJUNCTION_MAX_TERMS: AtomicU32 = AtomicU32::new(0
 // (different Z3_ast pointer). Population total = Z3_ASSUME_SYMBOLIC_COUNT +
 // ADD_CONSTRAINT_RAW_TOTAL_COUNT — both pre-existing/added below.
 pub(crate) static ADD_CONSTRAINT_RAW_TOTAL_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Constraints recorded in the residual log, and how many of them carry no
+/// clarirs term (`Residual::term`). The second is what still ties a state's
+/// constraint list to Z3 (angr-az6ru.2).
+pub(crate) static RESIDUAL_LOGGED_COUNT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static RESIDUAL_WITHOUT_TERM_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BRANCH_COND_SIMPLIFY_SAMPLED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Every Nth assertion runs Z3 simplify() for measurement.  Driven by a
@@ -468,6 +473,8 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     // Constraint intake and simplify sampling (the sampling *phase* counter,
     // `SIMPLIFY_SAMPLE_TICKER`, is deliberately absent — see its doc comment).
     ("add_constraint_raw_total", &ADD_CONSTRAINT_RAW_TOTAL_COUNT),
+    ("residual_logged", &RESIDUAL_LOGGED_COUNT),
+    ("residual_without_term", &RESIDUAL_WITHOUT_TERM_COUNT),
     (
         "branch_cond_simplify_sampled",
         &BRANCH_COND_SIMPLIFY_SAMPLED_COUNT,

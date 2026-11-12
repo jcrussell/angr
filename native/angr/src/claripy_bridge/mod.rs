@@ -36,7 +36,7 @@ mod lower;
 
 pub(crate) use export::*;
 pub(crate) use import::*;
-pub(crate) use lower::lower_claripy_bool;
+pub(crate) use lower::{lower_claripy_bool, lower_claripy_constraint};
 
 /// The claripy Python module (clarirs, built into this extension).
 ///

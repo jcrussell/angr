@@ -22,7 +22,7 @@ use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
 
-use super::local_constraints::LocalConstraints;
+use super::local_constraints::{LocalConstraints, LoweredConstraint, bool_term};
 use super::solver_build::*;
 use super::stats::*;
 use std::sync::Arc;
@@ -231,7 +231,15 @@ impl SymContext {
     /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
     /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
     pub fn add_constraint_raw(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, true);
+        self.add_constraint_raw_inner(ast, ResidualLog::Log(None));
+    }
+
+    /// [`Self::add_constraint_raw`] for a caller that still holds the clarirs
+    /// term the Z3 Bool was lowered from: the residual entry keeps the term,
+    /// so the constraint can be rebuilt without Z3 (angr-az6ru.2).
+    pub fn add_constraint_lowered(&self, constraint: LoweredConstraint) {
+        let (term, z3) = constraint.into_parts();
+        self.add_constraint_raw_inner(z3, ResidualLog::Log(Some(term)));
     }
 
     /// `add_constraint_raw` for a caller that records an `assumed` pair for the
@@ -245,7 +253,7 @@ impl SymContext {
     /// pinned outside its assumption literal, and an all-Python contradiction
     /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
     pub fn add_constraint_raw_assumed(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, false);
+        self.add_constraint_raw_inner(ast, ResidualLog::Skip);
     }
 
     /// Record an *already-asserted* constraint in the residual log.
@@ -266,14 +274,23 @@ impl SymContext {
     /// The caller must already have pushed the same `Bool` into
     /// `z3_assertions`, keeping the residual log a subset of it — the
     /// invariant `to_snapshot`'s `debug_assert!` pair checks.
-    pub fn push_residual_assertion(&self, constraint: z3::ast::Bool) {
-        self.local_constraints
-            .lock()
-            .non_bv_assertions
-            .push(constraint);
+    pub fn push_residual_assertion(&self, constraint: LoweredConstraint) {
+        let (term, z3) = constraint.into_parts();
+        self.local_constraints.lock().push_residual(z3, Some(term));
     }
 
-    fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, log_residual: bool) {
+    /// How many residual entries this context holds, and how many of them
+    /// carry a clarirs term: `(with_term, total)`.
+    pub fn residual_term_coverage(&self) -> (usize, usize) {
+        let shared = Arc::clone(&self.non_bv_assertions_shared.lock());
+        let local = self.local_constraints.lock();
+        let entries = shared.iter().chain(local.non_bv_assertions.iter());
+        entries.fold((0, 0), |(with_term, total), r| {
+            (with_term + usize::from(r.term.is_some()), total + 1)
+        })
+    }
+
+    fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, residual: ResidualLog) {
         self.close_branch_scope_before_permanent_add();
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
@@ -288,7 +305,7 @@ impl SymContext {
         let was_dup = {
             let mut local = self.local_constraints.lock();
             let dup = self.seed_and_check_z3_dedup(&mut local, &constraint);
-            if !dup && log_residual {
+            if !dup && let ResidualLog::Log(term) = residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
                 // constraint (Python claripy-sync fallback / cross-process
                 // ptr import) has no `assumed` entry to reconstruct it from,
@@ -297,7 +314,7 @@ impl SymContext {
                 // already counted on its first add. `seed_and_check_z3_dedup`
                 // pushed the same Bool to `z3_assertions` just above, so the
                 // residual log stays a subset of `z3_assertions`.
-                local.non_bv_assertions.push(constraint.clone());
+                local.push_residual(constraint.clone(), term);
             }
             dup
         };
@@ -642,10 +659,14 @@ impl SymContext {
         // `z3_assertions`) and on snapshot. Push to BOTH logs: `z3_assertions`
         // so a forked/rematerialized solver replays it, and `non_bv_assertions`
         // so it round-trips via `residual_smtlib2` (it has no `assumed` entry).
+        //
+        // The residual entry's clarirs term is `bv == value` built as a
+        // value; a width the value layer cannot compare leaves it `None`.
+        let term = bool_term(&bv.eq(&RustBV::concrete(value, bv.width()))).ok(); // SILENT(cat-a): no term is a counted state (`residual_without_term`), and the Z3 form above is still asserted
         {
             let mut local = self.local_constraints.lock();
             local.push_assertion(constraint.clone());
-            local.non_bv_assertions.push(constraint.clone());
+            local.push_residual(constraint.clone(), term);
         }
         self.add_constraint(constraint);
     }
@@ -727,6 +748,15 @@ impl SymContext {
         }
         self.add_constraint_unscoped(constraint);
     }
+}
+
+/// Whether [`SymContext::add_constraint_raw_inner`] records its constraint in
+/// the residual log, and with which clarirs term.
+enum ResidualLog {
+    /// The caller records an `assumed` pair for the constraint instead.
+    Skip,
+    /// Record it, with the term when the caller has one.
+    Log(Option<clarirs_core::prelude::AstRef<'static>>),
 }
 
 test_submod!("constraint_ops_tests.rs" => constraint_ops_tests);

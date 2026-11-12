@@ -279,15 +279,15 @@ impl SymContext {
         // exact structural identity, not a heuristic.
         let shared_non_bv = self.non_bv_assertions_shared.lock().clone();
         for c in shared_non_bv.iter() {
-            if !guarded.contains(c) {
-                solver.assert(c);
+            if !guarded.contains(&c.z3) {
+                solver.assert(&c.z3);
             }
         }
         {
             let local = self.local_constraints.lock();
             for c in local.non_bv_assertions.iter() {
-                if !guarded.contains(c) {
-                    solver.assert(c);
+                if !guarded.contains(&c.z3) {
+                    solver.assert(&c.z3);
                 }
             }
         }

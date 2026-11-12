@@ -146,8 +146,10 @@ pub(crate) enum ConstraintImport {
 /// is `None` too (angr-mx00p.41): asserting it would trip Z3's silent
 /// sort-mismatch guard (angr-d01qu), and the RustBV tier's `as_bool` lowers it
 /// to the proper `!= 0`.
-fn claripy_z3_ptr(item: &pyo3::Bound<'_, pyo3::types::PyAny>) -> Option<z3::ast::Bool> {
-    crate::claripy_bridge::lower_claripy_bool(item).ok()
+fn claripy_z3_ptr(
+    item: &pyo3::Bound<'_, pyo3::types::PyAny>,
+) -> Option<crate::symbolic::LoweredConstraint> {
+    crate::claripy_bridge::lower_claripy_constraint(item).ok()
 }
 
 /// Coerce a converted constraint to the width-1 form the solver's assumed log
@@ -190,12 +192,12 @@ pub(crate) fn import_one_constraint(
             // rather than double-logged as a residual — see
             // `SymContext::add_constraint_raw_assumed` (angr-op0dn.14.2).
             Ok(bv) => {
-                ctx.add_constraint_raw_assumed(z3_ast);
+                ctx.add_constraint_raw_assumed(z3_ast.into_z3());
                 ctx.assumed_constraints_push(as_bool(bv), true);
                 ConstraintImport::Assumed
             }
             Err(e) => {
-                ctx.add_constraint_raw(z3_ast);
+                ctx.add_constraint_lowered(z3_ast);
                 ConstraintImport::RawOnly(e)
             }
         };
@@ -213,7 +215,7 @@ pub(crate) fn import_one_constraint(
             // asserting the lowered clarirs AST, keeping the round-trip
             // lossless.
             if let Some(z3_ast) = claripy_z3_ptr(item) {
-                ctx.add_constraint_raw(z3_ast);
+                ctx.add_constraint_lowered(z3_ast);
                 return ConstraintImport::RawOnly(e);
             }
             ConstraintImport::Failed(e)

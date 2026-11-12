@@ -11,6 +11,10 @@
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashSet;
+use std::sync::atomic::Ordering;
+
+use clarirs_core::GLOBAL_CONTEXT;
+use clarirs_core::prelude::*;
 
 use super::RustBV;
 #[expect(
@@ -18,6 +22,69 @@ use super::RustBV;
     reason = "referenced only by the intra-doc links below; rustc's unused_imports pass does not see doc-link uses"
 )]
 use super::SymContext;
+use super::stats::{RESIDUAL_LOGGED_COUNT, RESIDUAL_WITHOUT_TERM_COUNT};
+use super::z3_lower::{LowerError, lower_bool};
+
+/// A clarirs Bool together with its Z3 lowering.
+///
+/// The only constructors lower the term themselves, so the two halves cannot
+/// disagree: a residual sink handed one of these records a constraint that can
+/// be rebuilt from clarirs alone (angr-az6ru.2).
+pub struct LoweredConstraint {
+    term: AstRef<'static>,
+    z3: z3::ast::Bool,
+}
+
+impl LoweredConstraint {
+    /// Lower a Bool-sorted clarirs term. A term of any other sort is `Err`,
+    /// as it is for `z3_lower::expect_bool`.
+    pub fn lower(term: AstRef<'static>) -> Result<Self, LowerError> {
+        let z3 = lower_bool(&term)?;
+        Ok(Self { term, z3 })
+    }
+
+    /// The constraint a 1-bit value stands for: the Bool inside its
+    /// `ite(c, 1, 0)` encoding, or `bit != 0`.
+    pub fn of_bit(bit: &RustBV) -> Result<Self, LowerError> {
+        Self::lower(bool_term(bit)?)
+    }
+
+    /// The Z3 form.
+    pub fn z3(&self) -> &z3::ast::Bool {
+        &self.z3
+    }
+
+    /// The Z3 form alone, for a caller that records the constraint in the
+    /// `assumed` log instead of the residual one.
+    pub fn into_z3(self) -> z3::ast::Bool {
+        self.z3
+    }
+
+    pub(super) fn into_parts(self) -> (AstRef<'static>, z3::ast::Bool) {
+        (self.term, self.z3)
+    }
+}
+
+/// The clarirs Bool a 1-bit value stands for.
+pub(super) fn bool_term(bit: &RustBV) -> Result<AstRef<'static>, LowerError> {
+    let term = match bit {
+        RustBV::Concrete { value, .. } => GLOBAL_CONTEXT.boolv(*value != 0),
+        RustBV::Ast { ast, .. } => angr_bv::bool_of(ast),
+    };
+    term.map_err(|err| LowerError::InvalidArgs(format!("no Bool view: {err}")))
+}
+
+/// One entry of the residual log: a constraint with no `assumed` pair.
+///
+/// `term` is its clarirs form. It is `None` for the sinks that hold only a Z3
+/// term: a raw pointer import, an SMT-LIB2 residual replayed from a snapshot,
+/// and `merge`'s guards. `residual_without_term` in the solver stats counts
+/// those.
+#[derive(Clone)]
+pub(super) struct Residual {
+    pub(super) z3: z3::ast::Bool,
+    pub(super) term: Option<AstRef<'static>>,
+}
 
 /// Local-only constraint state added after fork.
 ///
@@ -48,7 +115,7 @@ pub(super) struct LocalConstraints {
     /// and `merge` carry it without new logic. Dumped to `residual_smtlib2`
     /// in `to_snapshot`; the assume class is reconstructed from
     /// `assumed_constraints` IR instead.
-    pub(super) non_bv_assertions: Vec<z3::ast::Bool>,
+    pub(super) non_bv_assertions: Vec<Residual>,
     /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_raw`.
     /// Holds ptrs for every assertion known to be currently asserted on the
     /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
@@ -90,5 +157,15 @@ impl LocalConstraints {
             self.dedup_set.insert(ptr);
         }
         self.z3_assertions.push(b);
+    }
+
+    /// Record a constraint in the residual log. Every residual sink goes
+    /// through here, so the `residual_*` counters see each one.
+    pub(super) fn push_residual(&mut self, z3: z3::ast::Bool, term: Option<AstRef<'static>>) {
+        RESIDUAL_LOGGED_COUNT.fetch_add(1, Ordering::Relaxed);
+        if term.is_none() {
+            RESIDUAL_WITHOUT_TERM_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        self.non_bv_assertions.push(Residual { z3, term });
     }
 }

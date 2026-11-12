@@ -107,6 +107,7 @@ pub use angr_bv::{
 };
 pub use context::{DEFAULT_SOLVER_TIMEOUT_MS, SymContext};
 pub use context_snapshot::{ResidualParseError, SymContextSnapshot};
+pub use local_constraints::LoweredConstraint;
 pub use sharing::{ConstraintSharingStats, ConstraintSharingWalk};
 #[cfg(test)]
 pub(crate) use solver_build::stop_enumeration_after_for_test;

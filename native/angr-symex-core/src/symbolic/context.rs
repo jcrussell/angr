@@ -149,7 +149,7 @@ pub struct SymContext {
     /// the residual subset (raw / bv-eq / merge-guard); the assume class is
     /// reconstructed from `assumed_constraints` IR. Dumped to
     /// `residual_smtlib2` in `to_snapshot`.
-    pub(super) non_bv_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
+    pub(super) non_bv_assertions_shared: Mutex<Arc<Vec<super::local_constraints::Residual>>>,
 
     /// Whether this context's `assumed` pairs are directly asserted on the
     /// solver (angr-t3l5o Phase 1). `true` for normal contexts — re-asserting

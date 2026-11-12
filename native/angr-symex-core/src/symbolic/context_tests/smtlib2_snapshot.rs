@@ -980,8 +980,8 @@ fn test_snapshot_tracked_residual_roundtrip() {
     let target = RustBV::concrete(0x2000, 32);
     // Exactly what solver.rs's `add_constraint_tracked_ast` fast path does for
     // an AST `claripy_to_rustbv` rejects: assert-and-track, then log residual.
-    let constraint = x.eq(&target).to_z3_bool().unwrap();
-    let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
+    let constraint = crate::symbolic::LoweredConstraint::of_bit(&x.eq(&target)).unwrap();
+    let idx = ctx.add_constraint_tracked_indexed(constraint.z3().clone());
     ctx.push_residual_assertion(constraint);
     assert_eq!(idx, 0, "first tracked constraint gets tracker index 0");
     assert!(ctx.is_sat());

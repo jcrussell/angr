@@ -6,6 +6,7 @@ use z3::ast::Dynamic;
 
 use super::BridgeError;
 use crate::claripy::ast::base::Base;
+use crate::symbolic::LoweredConstraint;
 use crate::symbolic::z3_lower::{LowerError, expect_bool, lower};
 
 impl From<LowerError> for BridgeError {
@@ -39,4 +40,15 @@ pub(crate) fn lower_claripy_ast(obj: &Bound<'_, PyAny>) -> Result<Dynamic, Bridg
 /// treated as a truthiness test lowers it through `claripy_to_rustbv` instead.
 pub(crate) fn lower_claripy_bool(obj: &Bound<'_, PyAny>) -> Result<z3::ast::Bool, BridgeError> {
     Ok(expect_bool(lower_claripy_ast(obj)?)?)
+}
+
+/// [`lower_claripy_bool`] keeping the clarirs term beside its lowering, for a
+/// caller that may record the constraint in the residual log.
+pub(crate) fn lower_claripy_constraint(
+    obj: &Bound<'_, PyAny>,
+) -> Result<LoweredConstraint, BridgeError> {
+    let base = obj
+        .cast::<Base>()
+        .map_err(|e| BridgeError::TypeMismatch(e.to_string()))?;
+    Ok(LoweredConstraint::lower(base.get().ast())?)
 }

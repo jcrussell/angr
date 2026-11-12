@@ -37,7 +37,7 @@ use std::rc::Rc;
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, clarirs_node, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
-use crate::claripy_bridge::lower_claripy_bool;
+use crate::claripy_bridge::{lower_claripy_bool, lower_claripy_constraint};
 use z3_ast_extract::node_to_eval_bv;
 
 pub(crate) mod z3_ast_extract;
@@ -201,7 +201,7 @@ impl RustSolverContext {
             // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
             // a BV used as a truthiness constraint) falls through to the slow
             // path below, which lowers it to a proper `!= 0` Bool.
-            if let Ok(z3_ast) = lower_claripy_bool(ast) {
+            if let Ok(lowered) = lower_claripy_constraint(ast) {
                 // angr-sqfj8.121: a constraint with a RustBV form must land
                 // in EXACTLY ONE of the residual (`add_constraint_raw`) or
                 // assumed (`add_constraint_raw_assumed` +
@@ -213,10 +213,10 @@ impl RustSolverContext {
                 // first and branch on it, instead of unconditionally calling
                 // both.
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
-                    ctx.add_constraint_raw_assumed(z3_ast);
+                    ctx.add_constraint_raw_assumed(lowered.into_z3());
                     ctx.assumed_constraints_push(bv, true);
                 } else {
-                    ctx.add_constraint_raw(z3_ast);
+                    ctx.add_constraint_lowered(lowered);
                 }
                 return Ok(());
             }
@@ -315,10 +315,10 @@ impl RustSolverContext {
             // function still returns Ok(idx) as if tracking succeeded.
             // `lower_claripy_bool` refuses a non-Bool lowering, which falls
             // through to the slow path below.
-            if let Ok(constraint) = lower_claripy_bool(ast) {
+            if let Ok(constraint) = lower_claripy_constraint(ast) {
                 // Cloned (a `Z3_inc_ref`) so the residual branch below still
                 // has the Bool `add_constraint_tracked_indexed` consumes.
-                let idx = ctx.add_constraint_tracked_indexed(constraint.clone());
+                let idx = ctx.add_constraint_tracked_indexed(constraint.z3().clone());
                 // angr-03vl4.74: same "exactly one log" invariant
                 // `add_constraint_ast` upholds above — a constraint that is
                 // live on the solver must be recorded in the assumed log or

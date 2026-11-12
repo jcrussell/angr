@@ -228,12 +228,12 @@ impl SymContext {
         let mut any = false;
         let shared = Arc::clone(&self.non_bv_assertions_shared.lock());
         for c in shared.iter() {
-            temp.assert(c);
+            temp.assert(&c.z3);
             any = true;
         }
         let local = self.local_constraints.lock();
         for c in local.non_bv_assertions.iter() {
-            temp.assert(c);
+            temp.assert(&c.z3);
             any = true;
         }
         if any {
@@ -906,7 +906,7 @@ impl SymContext {
                 let mut ml = merged.local_constraints.lock();
                 for assertion in common_prefix.iter() {
                     ml.push_assertion(assertion.clone());
-                    ml.non_bv_assertions.push(assertion.clone());
+                    ml.push_residual(assertion.clone(), None);
                 }
             }
             for assertion in common_prefix.iter() {
@@ -976,7 +976,7 @@ impl SymContext {
                     // from `assumed`, so record it in the residual log too.
                     let mut ml = merged.local_constraints.lock();
                     ml.push_assertion(guarded.clone());
-                    ml.non_bv_assertions.push(guarded.clone());
+                    ml.push_residual(guarded.clone(), None);
                 }
                 merged.add_constraint(guarded);
                 #[cfg(test)]
@@ -1025,7 +1025,7 @@ impl SymContext {
             // angr-t3l5o Phase 1: residual sink #3 (merge `Or` guard).
             let mut ml = merged.local_constraints.lock();
             ml.push_assertion(or_conds.clone());
-            ml.non_bv_assertions.push(or_conds.clone());
+            ml.push_residual(or_conds.clone(), None);
         }
         merged.add_constraint(or_conds);
         #[cfg(test)]
