@@ -23,6 +23,7 @@ use super::SymContext;
 use super::ToZ3;
 
 use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin, bool_term};
+use super::model_cache::ModelRef;
 use super::solver_build::*;
 use super::stats::*;
 use std::sync::Arc;
@@ -551,7 +552,10 @@ impl SymContext {
         if cache.is_none() && alt.is_none() {
             return;
         }
-        let keep = |slot: Option<std::rc::Rc<z3::Model>>| slot.filter(|m| satisfies(m));
+        // A token with no model on this thread is dropped with the stale ones.
+        let keep = |slot: Option<ModelRef>| {
+            slot.filter(|token| token.get().is_some_and(|model| satisfies(&model)))
+        };
         let primary = keep(cache.take());
         let secondary = keep(alt.take());
         match primary {

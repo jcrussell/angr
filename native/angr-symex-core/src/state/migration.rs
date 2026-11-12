@@ -4,8 +4,8 @@
 //! worker that owns it to a stealing worker on another thread. `RustSimState`
 //! is irreducibly `!Send`: its register/memory/solver graph is built from
 //! [`RustBV`], which carries thread-local-context-bound
-//! Z3 ASTs (`z3::ast::BV`), and the solver holds a `z3::Solver`/`z3::Model`.
-//! None of those may cross a thread.
+//! Z3 ASTs (`z3::ast::BV`), and the solver context's constraint log holds Z3
+//! terms. None of those may cross a thread.
 //!
 //! Rather than asserting `unsafe impl Send for RustSimState` — which is
 //! **unsound** (it would let the stealing thread read the owner's *live* Z3

@@ -153,6 +153,33 @@ savepoints; a solver is a cache of that list, kept per thread in
 builds and the time to build and fill them; ``z3_solver_cache_evict``
 counts evictions.
 
+The model cache
+~~~~~~~~~~~~~~~
+
+A ``SymContext`` owns no Z3 model either. Its two witness slots
+(``model_cache`` / ``alt_model_cache``) each hold a ``ModelRef``, a
+token that is plain data, and the model it names is in the thread's
+table in ``symbolic/model_cache.rs``.
+
+* **A fork** clones the token, so parent and child read one model.
+* **A read** goes through ``SymContext::cached_model``, which resolves
+  the token in the current thread's table. A token whose model is not
+  there, because it was evicted or was stored on another thread, is an
+  empty slot: the query runs a check, as it does for a context that
+  never had a witness. A held token is never taken as proof of a model.
+* **Lifetime.** A model leaves the table when the last clone of its
+  token is dropped on that thread. The table also keeps at most
+  ``ANGR_RUST_MODEL_CACHE_SIZE`` models
+  (``model_cache::DEFAULT_CAPACITY`` when unset), least recently read
+  first out, which bounds the models whose tokens were dropped
+  elsewhere.
+
+``z3_model_cache_evict`` counts evictions. The capacity is a backstop
+and not a memory control: a lost witness costs the checks it was
+saving, and the states that then query build solvers they did not need
+before, so a table smaller than the live witnesses raises both check
+counts and peak memory.
+
 Why not ``Z3_solver_translate``?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -331,6 +358,9 @@ Counter cheat-sheet relevant to per-context solver behavior:
   built and the time to build and fill them from the assertion log.
 * ``z3_solver_cache_evict`` — built solvers dropped to keep a thread
   within the solver cache's capacity.
+* ``z3_model_cache_evict`` — models dropped to keep a thread within
+  the model cache's capacity; each is a witness some context no longer
+  has.
 * ``z3_ast_build`` — number of *top-level* ``to_z3_ast()`` /
   ``to_z3_bool()`` entry calls, **not** the number of ``Z3_mk_*`` FFI
   calls: one entry lowers a whole clarirs term, so one increment can

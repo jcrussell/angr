@@ -43,6 +43,7 @@
 //! | `transaction_ops.rs` | Slice 10: solver scoping (`push` / `pop` / `try_pop`), timeout accessors, SAT-cache primer. |
 //! | `snapshot_fork_ops.rs` | Slice 11: lifecycle — `fork`, `merge`, `to_snapshot` / `restore_from_snapshot`, and the `freeze_into_shared` helper those three share. |
 //! | `lineage_ops.rs` | Slice 6: the accessors over the shared-lineage cells (`lineage`, `scope_path`, savepoints). Not purely lineage-scoped: `fold_sharing_walk` reads the assumed-constraint log, and the savepoint push/pop pair records/truncates `local_constraints` — see the module doc. |
+//! | `model_cache.rs` | The per-thread table of Z3 models and `ModelRef`, the `Send` token a context's witness slots hold in place of a model. **(z3)** |
 //! | `solver_cache.rs` | The per-thread cache of built solvers and `SolverSlot`, a context's identity in it. A context owns no solver; `SymContext::with_own_solver` in `context.rs` syncs the cached one to the assertion log. **(z3)** |
 //! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
 //! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |
@@ -84,6 +85,7 @@ mod context_snapshot;
 pub mod lineage;
 mod lineage_ops;
 mod local_constraints;
+pub mod model_cache;
 mod query_class;
 mod sharing;
 mod snapshot_fork_ops;

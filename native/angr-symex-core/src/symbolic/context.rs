@@ -61,6 +61,7 @@ use parking_lot::Mutex;
 
 use super::RustBV;
 use super::local_constraints::LocalConstraints;
+use super::model_cache::ModelRef;
 // Constraint-sharing analysis types live in `sharing.rs` (angr-a2br.2 slice 3).
 // `fold_sharing_walk` below takes a `&mut ConstraintSharingWalk`.
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
@@ -194,18 +195,20 @@ pub struct SymContext {
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
     /// (slice 7, angr-wf6f) can read/write it.
     pub(super) sat_cache: Cell<Option<bool>>,
-    /// Cached Z3 model, invalidated on constraint addition.
-    /// `pub(super)` so the read-path query methods in `solving_ops.rs`
-    /// (slice 7, angr-wf6f) can read/write it. Held in an `Rc` so a fork
+    /// A witness of the current constraints, dropped when a constraint it
+    /// fails is added. The slot holds a token; the model is in this thread's
+    /// model table (`model_cache.rs`), and a fork clones the token so it
     /// shares the parent's model instead of copying it (angr-gorvf.16).
-    pub(super) model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
+    /// A held token does not prove a model: read it through
+    /// [`cached_model`](Self::cached_model), never with `is_some()`.
+    pub(super) model_cache: RefCell<Option<ModelRef>>,
     /// A second witness of the current constraints: the model of the branch
     /// side `check_branch_feasibility` checked that `model_cache` does not
     /// already satisfy. Whichever side the state then assumes keeps a
     /// witness, so `is_sat_checked` on the successor needs no fresh Z3
     /// check (angr-vmi2l.318). Same invariant and invalidation as
     /// `model_cache`, which it is promoted into when that one goes stale.
-    pub(super) alt_model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
+    pub(super) alt_model_cache: RefCell<Option<ModelRef>>,
     /// `(track_bool, constraint)` pairs for unsat core mapping; a tracker's
     /// position is the index `unsat_core` reports. Each constraint is also
     /// in the z3 assertion log once, in an entry that carries the tracker,

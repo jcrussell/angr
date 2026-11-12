@@ -29,6 +29,7 @@
 use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
+use super::model_cache::ModelRef;
 
 use super::bv_codec::*;
 use super::lowered_or_warn;
@@ -333,7 +334,7 @@ impl SymContext {
         // `invalidate_model_if_inconsistent` keeps), so it proves SAT without
         // a check: the taken side of a branch keeps the model its feasibility
         // check found (angr-vmi2l.318).
-        if self.model_cache.borrow().is_some() {
+        if self.cached_model().is_some() {
             self.sat_cache.set(Some(true));
             return Some(true);
         }
@@ -355,11 +356,10 @@ impl SymContext {
                 // Populate model_cache — get_model is essentially free
                 // after a successful check, and the model lets
                 // check_branch_feasibility skip one of two Z3 checks.
-                let mut cache = self.model_cache.borrow_mut();
-                if cache.is_none()
+                if self.cached_model().is_none()
                     && let Some(m) = solver.get_model()
                 {
-                    *cache = Some(std::rc::Rc::new(m));
+                    self.cache_model(m);
                 }
             }
             // None (Unknown) propagates untouched: the caller leaves sat_cache
@@ -440,9 +440,7 @@ impl SymContext {
         self.with_z3_solver(|solver| {
             // Try to predict one direction with the cached parent model.
             let predicted: Option<bool> = self
-                .model_cache
-                .borrow()
-                .as_ref()
+                .cached_model()
                 .and_then(|m| m.eval(&bool_ast, true))
                 .and_then(|b| b.as_bool());
 
@@ -506,6 +504,41 @@ impl SymContext {
         })
     }
 
+    /// The primary witness of the current constraints, if this thread still
+    /// holds its model.
+    ///
+    /// A token whose model is gone (evicted, or stored on another thread) is
+    /// cleared, and the second witness takes its place when that one
+    /// resolves, so afterwards an occupied `model_cache` names a live model.
+    pub(super) fn cached_model(&self) -> Option<std::rc::Rc<z3::Model>> {
+        let mut cache = self.model_cache.borrow_mut();
+        if let Some(model) = cache.as_ref().and_then(ModelRef::get) {
+            return Some(model);
+        }
+        *cache = self.alt_model_cache.borrow_mut().take();
+        let model = cache.as_ref().and_then(ModelRef::get);
+        if model.is_none() {
+            *cache = None;
+        }
+        model
+    }
+
+    /// Make `model` the primary witness. The caller has just read it off a
+    /// solver holding exactly the current constraints.
+    fn cache_model(&self, model: z3::Model) {
+        *self.model_cache.borrow_mut() = Some(ModelRef::store(model));
+    }
+
+    /// Test-only: whether each witness slot resolves to a model on this
+    /// thread, primary first.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn cached_models_for_test(&self) -> (bool, bool) {
+        let live = |slot: &std::cell::RefCell<Option<ModelRef>>| {
+            slot.borrow().as_ref().and_then(ModelRef::get).is_some()
+        };
+        (live(&self.model_cache), live(&self.alt_model_cache))
+    }
+
     /// Run one side's check inside `check_branch_feasibility`'s push scope and
     /// keep its model as a witness of the current constraints: a model of
     /// `constraints ∧ side` satisfies `constraints`. It fills `model_cache`
@@ -517,12 +550,10 @@ impl SymContext {
         if decided == Some(true)
             && let Some(model) = solver.get_model()
         {
-            let model = Some(std::rc::Rc::new(model));
-            let mut primary = self.model_cache.borrow_mut();
-            if primary.is_none() {
-                *primary = model;
+            if self.cached_model().is_none() {
+                self.cache_model(model);
             } else {
-                *self.alt_model_cache.borrow_mut() = model;
+                *self.alt_model_cache.borrow_mut() = Some(ModelRef::store(model));
             }
         }
         decided
@@ -576,13 +607,10 @@ impl SymContext {
 
         let ast = lowered_or_warn(bv.to_z3_ast(), "eval")?;
         // Try to use cached model first (avoids re-checking SAT)
+        if let Some(model) = self.cached_model()
+            && let Some(result) = model.eval(&ast, true)
         {
-            let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache
-                && let Some(result) = model.eval(&ast, true)
-            {
-                return extract_bv_value(&result);
-            }
+            return extract_bv_value(&result);
         }
 
         // Need a fresh model — check(), get_model(), and the AST evaluation
@@ -611,7 +639,7 @@ impl SymContext {
             let model = solver.get_model()?;
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value(&result);
-            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
+            self.cache_model(model);
             value
         })
     }
@@ -638,8 +666,7 @@ impl SymContext {
         ast: &z3::ast::BV,
         extract: impl Fn(&z3::ast::BV) -> Option<T>,
     ) -> Option<T> {
-        let cache = self.model_cache.borrow();
-        let model = cache.as_ref()?;
+        let model = self.cached_model()?;
         let result = model.eval(ast, true)?;
         extract(&result)
     }
@@ -761,13 +788,10 @@ impl SymContext {
         }
 
         let ast = lowered_or_warn(bv.to_z3_ast(), "eval_wide")?;
+        if let Some(model) = self.cached_model()
+            && let Some(result) = model.eval(&ast, true)
         {
-            let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache
-                && let Some(result) = model.eval(&ast, true)
-            {
-                return extract_bv_value_wide(&result, width);
-            }
+            return extract_bv_value_wide(&result, width);
         }
 
         // Need a fresh model — check(), get_model(), and the AST evaluation
@@ -786,7 +810,7 @@ impl SymContext {
             let model = solver.get_model()?;
             let result = model.eval(&ast, true)?;
             let value = extract_bv_value_wide(&result, width);
-            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
+            self.cache_model(model);
             value
         })
     }
@@ -842,13 +866,10 @@ impl SymContext {
                 .collect();
         }
 
+        if let Some(model) = self.cached_model()
+            && let Some(values) = eval_all_in_model(&model, bvs)
         {
-            let cache = self.model_cache.borrow();
-            if let Some(ref model) = *cache
-                && let Some(values) = eval_all_in_model(model, bvs)
-            {
-                return Some(values);
-            }
+            return Some(values);
         }
 
         let _class = query_class::scope(|| {
@@ -868,7 +889,7 @@ impl SymContext {
 
             let model = solver.get_model()?;
             let values = eval_all_in_model(&model, bvs);
-            *self.model_cache.borrow_mut() = Some(std::rc::Rc::new(model));
+            self.cache_model(model);
             values
         })
     }

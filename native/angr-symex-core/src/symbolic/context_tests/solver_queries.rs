@@ -1929,3 +1929,80 @@ fn branch_check_models_follow_fork_and_pop() {
     ctx.pop();
     assert!(ctx.model_cache.borrow().is_none() && ctx.alt_model_cache.borrow().is_none());
 }
+
+// ---------------------------------------------------------------------------
+// angr-az6ru.2: the witness slots hold tokens, and the models live in the
+// thread's table. A token with no model behind it is an empty cache.
+// ---------------------------------------------------------------------------
+
+/// Losing every cached model changes no answer: each query that would have
+/// read a witness asks the solver instead.
+#[test]
+fn evicted_model_is_a_resolve_not_a_wrong_answer() {
+    use crate::symbolic::model_cache::evict_all_for_test;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("model_evict_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    let v = ctx.eval(&x).expect("a satisfiable context evals");
+    assert_eq!(ctx.cached_models_for_test(), (true, false));
+
+    evict_all_for_test();
+    assert_eq!(ctx.cached_models_for_test(), (false, false));
+    // The held token must not stand in for the model it named: this
+    // constraint is one the lost model failed.
+    ctx.assume_true(&x.ne(&RustBV::concrete(v, 32)));
+    assert_eq!(ctx.cached_models_for_test(), (false, false));
+    assert_eq!(ctx.is_sat_checked(), Some(true));
+    assert_eq!(
+        ctx.cached_models_for_test(),
+        (true, false),
+        "with no witness Z3 decides, and its model is the new one"
+    );
+    let w = ctx.eval(&x).expect("still satisfiable");
+    assert!(w > 10 && w != v);
+
+    // UNSAT is still decided by Z3 after an eviction.
+    evict_all_for_test();
+    ctx.assume_true(&x.ult(&RustBV::concrete(5, 32)));
+    assert_eq!(ctx.is_sat_checked(), Some(false));
+    assert_eq!(ctx.eval(&x), None);
+}
+
+/// When the primary witness is gone and the second one is not, the second
+/// one is promoted.
+#[test]
+fn surviving_second_witness_is_promoted() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("model_promote_x", 32);
+    let cond = x.ugt(&RustBV::concrete(10, 32));
+    assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
+    assert_eq!(ctx.cached_models_for_test(), (true, true));
+
+    *ctx.model_cache.borrow_mut() = None;
+    assert!(ctx.cached_model().is_some());
+    assert_eq!(ctx.cached_models_for_test(), (true, false));
+}
+
+/// A fork reads its parent's model through the cloned token, and the model
+/// outlives the parent.
+#[test]
+fn fork_shares_the_parents_model() {
+    use crate::symbolic::model_cache::live_models;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("model_fork_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    let v = ctx.eval(&x).expect("a satisfiable context evals");
+    let models = live_models();
+
+    let child = ctx.fork();
+    assert_eq!(live_models(), models, "a fork stores no model");
+    drop(ctx);
+    assert_eq!(live_models(), models);
+    assert_eq!(child.cached_models_for_test(), (true, false));
+    assert_eq!(child.eval(&x), Some(v), "the parent's witness, not a new one");
+    assert_eq!(live_models(), models);
+    drop(child);
+    assert_eq!(live_models(), models - 1);
+}

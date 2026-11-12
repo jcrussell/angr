@@ -965,6 +965,9 @@ The returned dict includes:
 * ``z3_solver_cache_evict`` — built solvers dropped from a thread's
   solver cache; its capacity is ``ANGR_RUST_SOLVER_CACHE_SIZE`` (see
   :ref:`rust-z3-sharing-fork-lazy`).
+* ``z3_model_cache_evict`` — models dropped from a thread's model
+  cache; its capacity is ``ANGR_RUST_MODEL_CACHE_SIZE`` (see
+  :ref:`rust-z3-sharing-fork-lazy`).
 * ``z3_assume_concrete`` / ``z3_assume_symbolic`` —
   ``assume_true``/``assume_false`` fast-path counters.
 * ``z3_branch_check``, ``z3_branch_concrete``, ``z3_branch_model_hit``,
