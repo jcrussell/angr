@@ -916,8 +916,8 @@ fn test_snapshot_pure_assume_residual_empty() {
 }
 
 /// An `add_bv_constraint` (address-concretization) constraint has no `RustBV`
-/// assume entry, so it round-trips via the residual text dump. The restored
-/// solver must pin x to the concretized value.
+/// assume entry, so it round-trips as a residual term (angr-az6ru.2; before,
+/// as residual text). The restored solver must pin x to the concretized value.
 #[test]
 fn test_snapshot_add_bv_constraint_roundtrip() {
     let ctx = SymContext::new();
@@ -936,10 +936,12 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
         0,
         "add_bv_constraint records no assume entry"
     );
-    assert!(
-        !snap.residual_smtlib2.is_empty(),
-        "the bv-eq constraint must live in the residual dump"
+    assert_eq!(
+        snap.residual_terms.len(),
+        1,
+        "the bv-eq constraint must live in the residual terms"
     );
+    assert_eq!(snap.residual_smtlib2, "", "and needs no text beside it");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -993,11 +995,13 @@ fn test_snapshot_tracked_residual_roundtrip() {
         0,
         "the tracked no-RustBV path records no assume entry"
     );
-    assert!(
-        !snap.residual_smtlib2.is_empty(),
-        "the tracked constraint must live in the residual dump — without \
+    assert_eq!(
+        snap.residual_terms.len(),
+        1,
+        "the tracked constraint must live in the residual terms — without \
          push_residual_assertion it is in neither log and is lost here"
     );
+    assert_eq!(snap.residual_smtlib2, "");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -1100,10 +1104,12 @@ fn test_snapshot_merge_context_roundtrip() {
         !snap.reassert_assumed,
         "a merged context must NOT re-assert its export-only assume pairs"
     );
-    assert!(
-        !snap.residual_smtlib2.is_empty(),
-        "merge guards live in the residual dump"
+    assert_eq!(
+        snap.residual_terms.len(),
+        3,
+        "the two merge guards and the arm disjunction go out as terms"
     );
+    assert_eq!(snap.residual_smtlib2, "");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -1136,17 +1142,14 @@ fn test_snapshot_merge_context_roundtrip() {
     );
 }
 
-/// A merged context's snapshot, whose residual is its whole constraint set.
-fn merged_snapshot(tag: &str) -> SymContextSnapshot {
-    let ctx1 = SymContext::new();
+/// A snapshot with residual text: a raw Z3 Bool is the sink that has no
+/// clarirs term to send instead (a merged context's guards now have one).
+fn text_residual_snapshot(tag: &str) -> SymContextSnapshot {
+    let ctx = SymContext::new();
     let x = RustBV::symbol(format!("vmi2l94_{tag}_x"), 32);
-    ctx1.assume_true(&x.ugt(&RustBV::concrete(5, 32)));
-    let ctx2 = SymContext::new();
-    ctx2.assume_true(&x.ult(&RustBV::concrete(3, 32)));
-    let m1 = RustBV::symbol(format!("vmi2l94_{tag}_m1"), 1);
-    let m2 = RustBV::symbol(format!("vmi2l94_{tag}_m2"), 1);
-    let snap = ctx1.merge(&[&ctx2], &[m1, m2]).to_snapshot();
-    assert!(!snap.reassert_assumed && !snap.residual_smtlib2.is_empty());
+    ctx.add_constraint_raw(x.ugt(&RustBV::concrete(5, 32)).to_z3_bool().unwrap());
+    let snap = ctx.to_snapshot();
+    assert!(snap.residual_terms.is_empty() && !snap.residual_smtlib2.is_empty());
     snap
 }
 
@@ -1155,7 +1158,7 @@ fn merged_snapshot(tag: &str) -> SymContextSnapshot {
 /// the prefix that did parse and reported success.
 #[test]
 fn test_snapshot_malformed_residual_is_rejected() {
-    let mut snap = merged_snapshot("malformed");
+    let mut snap = text_residual_snapshot("malformed");
     // A valid assertion first, so a prefix replay would have asserted something.
     snap.residual_smtlib2.push_str("(assert (bvult undeclared_vmi2l94 #x00000001))\n");
     let err = SymContext::new()
@@ -1166,7 +1169,7 @@ fn test_snapshot_malformed_residual_is_rejected() {
         "unexpected error {err:?}"
     );
 
-    let mut snap = merged_snapshot("unbalanced");
+    let mut snap = text_residual_snapshot("unbalanced");
     snap.residual_smtlib2.push_str("(assert (= #x00 ");
     assert!(matches!(
         SymContext::new().restore_from_snapshot(&snap),
@@ -1179,7 +1182,7 @@ fn test_snapshot_malformed_residual_is_rejected() {
 /// `panic = "abort"`).
 #[test]
 fn test_snapshot_residual_with_nul_is_rejected() {
-    let mut snap = merged_snapshot("nul");
+    let mut snap = text_residual_snapshot("nul");
     let offset = snap.residual_smtlib2.len();
     snap.residual_smtlib2.push('\0');
     assert_eq!(
@@ -1192,10 +1195,35 @@ fn test_snapshot_residual_with_nul_is_rejected() {
 /// bench hook reports the same count.
 #[test]
 fn test_snapshot_wellformed_residual_still_restores() {
-    let snap = merged_snapshot("wellformed");
+    let snap = text_residual_snapshot("wellformed");
     let ctx = SymContext::new();
     ctx.restore_from_snapshot(&snap).expect("restore");
     assert!(ctx.is_sat());
     let n = SymContext::bench_parse_smtlib2(&snap.residual_smtlib2).expect("parse");
-    assert!(n > 0, "the merge guards parse back");
+    assert!(n > 0, "the raw constraint parses back");
+}
+
+/// angr-az6ru.2: a snapshot sends each residual in exactly one of the two
+/// forms, a term where the sink kept one and text otherwise, and restore
+/// asserts both. The restored entries that came as terms keep them.
+#[test]
+fn test_snapshot_splits_residual_between_terms_and_text() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("az6ru2_split_x", 32);
+    ctx.add_bv_constraint(&x.extract(7, 0), 0x41);
+    ctx.add_constraint_raw(x.ugt(&RustBV::concrete(0x1000, 32)).to_z3_bool().unwrap());
+
+    let snap = ctx.to_snapshot();
+    assert_eq!(snap.residual_terms.len(), 1);
+    assert!(!snap.residual_smtlib2.is_empty());
+
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
+    let ctx2 = SymContext::new();
+    ctx2.restore_from_snapshot(&restored).expect("restore");
+    assert_eq!(ctx2.num_constraints(), ctx.num_constraints());
+    assert_eq!(ctx2.residual_term_coverage(), (1, 2));
+    assert!(ctx2.solution(&x, 0x1041));
+    assert!(!ctx2.solution(&x, 0x1042), "the term residual is in force");
+    assert!(!ctx2.solution(&x, 0x41), "the text residual is in force");
 }

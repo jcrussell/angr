@@ -32,10 +32,11 @@ use super::SymContext;
 ///   — the raw entries from [`SymContext::add_constraint_raw`] (Python
 ///   claripy-sync fallback + cross-process pointer import), the
 ///   address-concretization equalities from [`SymContext::add_bv_constraint`],
-///   and the `merge()` guard/`Or` disjunctions. These are carried as an
-///   SMT-LIB2 text dump in `residual_smtlib2`, which is **empty** in the
-///   common case (no raw/bv/merge constraints) — the win path that collapses
-///   the old full-solver text round-trip.
+///   and the `merge()` guard/`Or` disjunctions. One whose sink kept a clarirs
+///   term is carried in `residual_terms`; the rest go as an SMT-LIB2 text
+///   dump in `residual_smtlib2`. Both are **empty** in the common case (no
+///   raw/bv/merge constraints) — the win path that collapses the old
+///   full-solver text round-trip.
 ///
 /// Per-Z3-context cache state (solver, model_cache, sat_cache, lineage
 /// scope_path, push stacks) is NOT included — these are runtime caches that
@@ -64,18 +65,27 @@ pub struct SymContextSnapshot {
     /// Residual Z3 solver state as an SMT-LIB2 dump (angr-t3l5o Phase 1,
     /// renamed from `solver_smtlib2`).
     ///
-    /// Carries ONLY the residual class — the solver assertions with no
-    /// [`RustBV`] form (raw / bv-eq / merge-guard). Empty in the common
-    /// assume-only case, so no `format!` text emit happens on the hot path.
+    /// Carries ONLY the part of the residual class — the solver assertions
+    /// with no [`RustBV`] form (raw / bv-eq / merge-guard) — that was logged
+    /// with a Z3 term alone; `residual_terms` carries the rest. Empty in the
+    /// common assume-only case, so no `format!` text emit happens on the hot
+    /// path.
     ///
     /// When `reassert_assumed` is false (a merged context, see that field)
-    /// this instead carries the **full** solver dump and the `assumed`
-    /// pairs are NOT re-asserted on restore.
+    /// the two fields instead carry the **full** solver between them and
+    /// the `assumed` pairs are NOT re-asserted on restore.
     ///
     /// `#[serde(default)]` keeps deserialization tolerant of a missing field
     /// (empty residual → assume-only replay).
     #[serde(default)]
     pub residual_smtlib2: String,
+    /// The residual constraints that have a clarirs form, each as its 1-bit
+    /// encoding, in assertion order (angr-az6ru.2). Restore asserts them
+    /// before replaying `residual_smtlib2`, which holds only the residuals
+    /// logged with a Z3 term alone. For a merged context
+    /// (`reassert_assumed == false`) the two together are the full solver.
+    #[serde(default)]
+    pub residual_terms: Vec<RustBV>,
     /// Whether `assumed_constraints` should be re-asserted on the solver at
     /// restore time (angr-t3l5o Phase 1).
     ///
@@ -162,4 +172,7 @@ pub enum ResidualParseError {
     /// Z3's parser rejected the text.
     #[error("Z3 rejected the snapshot residual SMT-LIB2 ({code}): {message}")]
     Rejected { code: String, message: String },
+    /// A `residual_terms` entry has no Z3 form.
+    #[error("snapshot residual term {index} cannot be lowered: {message}")]
+    Term { index: usize, message: String },
 }

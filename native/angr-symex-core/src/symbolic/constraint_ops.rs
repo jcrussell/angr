@@ -22,7 +22,7 @@ use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
 
-use super::local_constraints::{LocalConstraints, LoweredConstraint, bool_term};
+use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin, bool_term};
 use super::solver_build::*;
 use super::stats::*;
 use std::sync::Arc;
@@ -47,6 +47,7 @@ impl SymContext {
         &self,
         local: &mut LocalConstraints,
         constraint: &z3::ast::Bool,
+        origin: Origin,
     ) -> bool {
         use z3::ast::Ast;
         if !local.dedup_set_seeded {
@@ -54,19 +55,19 @@ impl SymContext {
             let local_len = local.z3_assertions.len();
             local.dedup_set.reserve(shared.len() + local_len);
             for c in shared.iter() {
-                local.dedup_set.insert(c.get_z3_ast().as_ptr() as usize);
+                local.dedup_set.insert(c.z3.get_z3_ast().as_ptr() as usize);
             }
             // Collect local ptrs into a separate Vec to avoid the
             // simultaneous mut+ref borrow on `local`.
             let local_ptrs: Vec<usize> = local
                 .z3_assertions
                 .iter()
-                .map(|c| c.get_z3_ast().as_ptr() as usize)
+                .map(|c| c.z3.get_z3_ast().as_ptr() as usize)
                 .collect();
             local.dedup_set.extend(local_ptrs);
             local.dedup_set_seeded = true;
         }
-        Self::contains_or_insert_ptr(local, constraint)
+        Self::contains_or_insert_ptr(local, constraint, origin)
     }
 
     /// Shared dedup tail: returns `true` if `constraint`'s Z3_ast ptr is
@@ -74,14 +75,18 @@ impl SymContext {
     /// otherwise inserts the ptr, pushes `constraint.clone()` onto
     /// `local.z3_assertions`, and returns `false`. Counter bookkeeping stays
     /// with the caller so each site attributes hits to its own counter.
-    fn contains_or_insert_ptr(local: &mut LocalConstraints, constraint: &z3::ast::Bool) -> bool {
+    fn contains_or_insert_ptr(
+        local: &mut LocalConstraints,
+        constraint: &z3::ast::Bool,
+        origin: Origin,
+    ) -> bool {
         use z3::ast::Ast;
         let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
         if local.dedup_set.contains(&new_ptr) {
             true
         } else {
             local.dedup_set.insert(new_ptr);
-            local.z3_assertions.push(constraint.clone());
+            local.log_asserted(constraint.clone(), origin);
             false
         }
     }
@@ -103,15 +108,16 @@ impl SymContext {
         &self,
         local: &mut LocalConstraints,
         constraint: &z3::ast::Bool,
+        origin: Origin,
     ) -> bool {
         if !local.dedup_set_seeded {
             // No seed yet — match the legacy push_assertion behavior and
             // let the caller fall through to add_constraint.
-            local.z3_assertions.push(constraint.clone());
+            local.log_asserted(constraint.clone(), origin);
             return false;
         }
         Z3_ASSUME_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
-        let dup = Self::contains_or_insert_ptr(local, constraint);
+        let dup = Self::contains_or_insert_ptr(local, constraint, origin);
         // angr-gmad2 diagnostic: a dedup HIT should always be backed by a
         // live, structurally-equal Bool in shared+local z3_assertions —
         // Z3 hash-consing returns an existing ptr only for a live equal AST.
@@ -140,12 +146,12 @@ impl SymContext {
         let in_local = local
             .z3_assertions
             .iter()
-            .any(|c| c.get_z3_ast().as_ptr() as usize == ptr);
+            .any(|c| c.z3.get_z3_ast().as_ptr() as usize == ptr);
         let in_shared = {
             let shared = Arc::clone(&self.z3_assertions_shared.lock());
             shared
                 .iter()
-                .any(|c| c.get_z3_ast().as_ptr() as usize == ptr)
+                .any(|c| c.z3.get_z3_ast().as_ptr() as usize == ptr)
         };
         (in_local, in_shared)
     }
@@ -231,7 +237,7 @@ impl SymContext {
     /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
     /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
     pub fn add_constraint_raw(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, ResidualLog::Log(None));
+        self.add_constraint_raw_inner(ast, Origin::Z3Only, true);
     }
 
     /// [`Self::add_constraint_raw`] for a caller that still holds the clarirs
@@ -239,7 +245,14 @@ impl SymContext {
     /// so the constraint can be rebuilt without Z3 (angr-az6ru.2).
     pub fn add_constraint_lowered(&self, constraint: LoweredConstraint) {
         let (term, z3) = constraint.into_parts();
-        self.add_constraint_raw_inner(z3, ResidualLog::Log(Some(term)));
+        self.add_constraint_raw_inner(z3, Origin::Term(term), true);
+    }
+
+    /// [`Self::add_constraint_raw_assumed`] for a caller that still holds the
+    /// clarirs term: the assertion-log entry keeps it.
+    pub fn add_constraint_lowered_assumed(&self, constraint: LoweredConstraint) {
+        let (term, z3) = constraint.into_parts();
+        self.add_constraint_raw_inner(z3, Origin::Term(term), false);
     }
 
     /// `add_constraint_raw` for a caller that records an `assumed` pair for the
@@ -253,7 +266,7 @@ impl SymContext {
     /// pinned outside its assumption literal, and an all-Python contradiction
     /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
     pub fn add_constraint_raw_assumed(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, ResidualLog::Skip);
+        self.add_constraint_raw_inner(ast, Origin::Z3Only, false);
     }
 
     /// Record an *already-asserted* constraint in the residual log.
@@ -290,7 +303,12 @@ impl SymContext {
         })
     }
 
-    fn add_constraint_raw_inner(&self, constraint: z3::ast::Bool, residual: ResidualLog) {
+    fn add_constraint_raw_inner(
+        &self,
+        constraint: z3::ast::Bool,
+        origin: Origin,
+        log_residual: bool,
+    ) {
         self.close_branch_scope_before_permanent_add();
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
@@ -304,8 +322,12 @@ impl SymContext {
         ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint);
-            if !dup && let ResidualLog::Log(term) = residual {
+            let term = match &origin {
+                Origin::Term(term) => Some(term.clone()),
+                Origin::Assume(..) | Origin::Z3Only => None,
+            };
+            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint, origin);
+            if !dup && log_residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
                 // constraint (Python claripy-sync fallback / cross-process
                 // ptr import) has no `assumed` entry to reconstruct it from,
@@ -430,6 +452,11 @@ impl SymContext {
             .into_iter()
             .map(|(ast, bv, is_true)| (ast, (bv, is_true)))
             .unzip();
+        // Each entry's pair is also its assertion-log origin.
+        let origins: Vec<Origin> = assumed
+            .iter()
+            .map(|(bv, is_true)| Origin::Assume(bv.clone(), *is_true))
+            .collect();
         // The ptr-keyed dedup on the batch path (angr-sfp9, angr-5mnx3.43):
         // without it this API would push/assert/count every entry unconditionally, so a
         // constraint already asserted (a duplicate inside this very batch,
@@ -453,7 +480,9 @@ impl SymContext {
             // `local.z3_assertions` itself, so no separate bulk push.
             constraints
                 .into_iter()
-                .filter(|c| !self.seed_and_check_z3_dedup(&mut local, c))
+                .zip(origins)
+                .filter(|(c, origin)| !self.seed_and_check_z3_dedup(&mut local, c, origin.clone()))
+                .map(|(c, _)| c)
                 .collect()
         };
         // overflow-ok: `constraints` was just rebound by a `filter` over the
@@ -567,6 +596,19 @@ impl SymContext {
     ///   route through `with_z3_solver`'s closure form (it would land
     ///   the assert at scope 0 = the lineage base = sibling leak).
     pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
+        self.add_constraint_tracked_inner(constraint, Origin::Z3Only)
+    }
+
+    /// [`Self::add_constraint_tracked_indexed`] for a caller that still holds
+    /// the clarirs term: the assertion-log entry keeps it.
+    pub fn add_constraint_tracked_lowered(&self, constraint: &LoweredConstraint) -> usize {
+        self.add_constraint_tracked_inner(
+            constraint.z3().clone(),
+            Origin::Term(constraint.term().clone()),
+        )
+    }
+
+    fn add_constraint_tracked_inner(&self, constraint: z3::ast::Bool, origin: Origin) -> usize {
         self.close_branch_scope_before_permanent_add();
         let idx = self.constraint_count.load(Ordering::SeqCst);
         let track_name = format!("__track_{idx}");
@@ -616,7 +658,7 @@ impl SymContext {
         {
             use z3::ast::Ast;
             let mut local = self.local_constraints.lock();
-            local.z3_assertions.push(constraint.clone());
+            local.log_asserted(constraint.clone(), origin);
             if local.dedup_set_seeded {
                 local
                     .dedup_set
@@ -665,7 +707,8 @@ impl SymContext {
         let term = bool_term(&bv.eq(&RustBV::concrete(value, bv.width()))).ok(); // SILENT(cat-a): no term is a counted state (`residual_without_term`), and the Z3 form above is still asserted
         {
             let mut local = self.local_constraints.lock();
-            local.push_assertion(constraint.clone());
+            let origin = term.clone().map_or(Origin::Z3Only, Origin::Term);
+            local.push_assertion(constraint.clone(), origin);
             local.push_residual(constraint.clone(), term);
         }
         self.add_constraint(constraint);
@@ -740,7 +783,8 @@ impl SymContext {
         let was_dup = {
             let mut local = self.local_constraints.lock();
             local.assumed.push((cond.clone(), want_true));
-            self.check_z3_dedup_if_seeded(&mut local, &constraint)
+            let origin = Origin::Assume(cond.clone(), want_true);
+            self.check_z3_dedup_if_seeded(&mut local, &constraint, origin)
         };
         if was_dup {
             Z3_ASSUME_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -748,15 +792,6 @@ impl SymContext {
         }
         self.add_constraint_unscoped(constraint);
     }
-}
-
-/// Whether [`SymContext::add_constraint_raw_inner`] records its constraint in
-/// the residual log, and with which clarirs term.
-enum ResidualLog {
-    /// The caller records an `assumed` pair for the constraint instead.
-    Skip,
-    /// Record it, with the term when the caller has one.
-    Log(Option<clarirs_core::prelude::AstRef<'static>>),
 }
 
 test_submod!("constraint_ops_tests.rs" => constraint_ops_tests);

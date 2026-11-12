@@ -22,7 +22,9 @@ use super::RustBV;
     reason = "referenced only by the intra-doc links below; rustc's unused_imports pass does not see doc-link uses"
 )]
 use super::SymContext;
-use super::stats::{RESIDUAL_LOGGED_COUNT, RESIDUAL_WITHOUT_TERM_COUNT};
+use super::stats::{
+    ASSERTED_WITHOUT_TERM_COUNT, RESIDUAL_LOGGED_COUNT, RESIDUAL_WITHOUT_TERM_COUNT,
+};
 use super::z3_lower::{LowerError, lower_bool};
 
 /// A clarirs Bool together with its Z3 lowering.
@@ -45,13 +47,23 @@ impl LoweredConstraint {
 
     /// The constraint a 1-bit value stands for: the Bool inside its
     /// `ite(c, 1, 0)` encoding, or `bit != 0`.
+    ///
+    /// Counts as one `to_z3_bool` in the solver stats, which it replaces at
+    /// its call sites.
     pub fn of_bit(bit: &RustBV) -> Result<Self, LowerError> {
+        super::stats::record_z3_ast_build();
+        super::stats::record_z3_bool_build();
         Self::lower(bool_term(bit)?)
     }
 
     /// The Z3 form.
     pub fn z3(&self) -> &z3::ast::Bool {
         &self.z3
+    }
+
+    /// The clarirs form.
+    pub fn term(&self) -> &AstRef<'static> {
+        &self.term
     }
 
     /// The Z3 form alone, for a caller that records the constraint in the
@@ -72,6 +84,52 @@ pub(super) fn bool_term(bit: &RustBV) -> Result<AstRef<'static>, LowerError> {
         RustBV::Ast { ast, .. } => angr_bv::bool_of(ast),
     };
     term.map_err(|err| LowerError::InvalidArgs(format!("no Bool view: {err}")))
+}
+
+/// Where an asserted constraint came from, which is also how its clarirs form
+/// is recovered.
+#[derive(Clone)]
+pub(super) enum Origin {
+    /// `assume_true` / `assume_false` of this 1-bit value, or a batch entry
+    /// standing for the same pair. The term is derived on demand, so the
+    /// branch path pays one refcount bump and builds no clarirs node.
+    Assume(RustBV, bool),
+    /// A sink that held the clarirs Bool.
+    Term(AstRef<'static>),
+    /// A sink that held only the Z3 term; `asserted_without_term` in the
+    /// solver stats counts these.
+    Z3Only,
+}
+
+/// One entry of the assertion log: a constraint asserted on the solver, with
+/// what is needed to rebuild it from clarirs alone (angr-az6ru.2).
+#[derive(Clone)]
+pub(super) struct Asserted {
+    pub(super) z3: z3::ast::Bool,
+    pub(super) origin: Origin,
+}
+
+impl Asserted {
+    /// The constraint as a clarirs Bool, or `None` for a [`Origin::Z3Only`]
+    /// entry.
+    pub(super) fn term(&self) -> Option<AstRef<'static>> {
+        match &self.origin {
+            Origin::Assume(cond, want_true) => {
+                // SILENT(cat-a): an assume whose cond has no Bool view never
+                // reaches the log (`assume_unscoped` returns before pushing),
+                // so `None` here is unreachable in practice and reads as an
+                // entry without a term, which is counted.
+                let term = bool_term(cond).ok()?;
+                if *want_true {
+                    Some(term)
+                } else {
+                    GLOBAL_CONTEXT.not(term).ok() // SILENT(cat-a): same as above
+                }
+            }
+            Origin::Term(term) => Some(term.clone()),
+            Origin::Z3Only => None,
+        }
+    }
 }
 
 /// One entry of the residual log: a constraint with no `assumed` pair.
@@ -106,7 +164,7 @@ pub(super) struct LocalConstraints {
     /// (slice 9, angr-a2br.2.7).
     pub(super) assumed: Vec<(RustBV, bool)>,
     /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
-    pub(super) z3_assertions: Vec<z3::ast::Bool>,
+    pub(super) z3_assertions: Vec<Asserted>,
     /// Local residual (no-[`RustBV`]) Z3 Bool assertions added after fork
     /// (angr-t3l5o Phase 1). A strict subset of `z3_assertions`: the entries
     /// pushed by the three residual sinks — `add_constraint_raw` (non-dup),
@@ -150,13 +208,23 @@ impl LocalConstraints {
     /// re-assert already-asserted constraints (angr-5mnx3.43). A bulk caller wanting dedup
     /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
     /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
-    pub(super) fn push_assertion(&mut self, b: z3::ast::Bool) {
+    pub(super) fn push_assertion(&mut self, b: z3::ast::Bool, origin: Origin) {
         if self.dedup_set_seeded {
             use z3::ast::Ast;
             let ptr = b.get_z3_ast().as_ptr() as usize;
             self.dedup_set.insert(ptr);
         }
-        self.z3_assertions.push(b);
+        self.log_asserted(b, origin);
+    }
+
+    /// Append to `z3_assertions` without touching the dedup set. Every push
+    /// onto the log goes through here, so `asserted_without_term` sees each
+    /// [`Origin::Z3Only`] entry.
+    pub(super) fn log_asserted(&mut self, z3: z3::ast::Bool, origin: Origin) {
+        if matches!(origin, Origin::Z3Only) {
+            ASSERTED_WITHOUT_TERM_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+        self.z3_assertions.push(Asserted { z3, origin });
     }
 
     /// Record a constraint in the residual log. Every residual sink goes

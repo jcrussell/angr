@@ -141,7 +141,7 @@ pub struct SymContext {
     /// (avoids cloning every Bool — each Bool::clone would call Z3_inc_ref).
     /// `pub(super)` for the dedup-seed path in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
-    pub(super) z3_assertions_shared: Mutex<Arc<Vec<z3::ast::Bool>>>,
+    pub(super) z3_assertions_shared: Mutex<Arc<Vec<super::local_constraints::Asserted>>>,
 
     /// Shared (frozen) residual (no-[`RustBV`]) Z3 Bool assertions from
     /// parent (angr-t3l5o Phase 1) — mirrors `z3_assertions_shared` exactly so
@@ -406,11 +406,11 @@ impl SymContext {
             };
             let shared = Arc::clone(&self.z3_assertions_shared.lock());
             for constraint in shared.iter() {
-                replay(constraint);
+                replay(&constraint.z3);
             }
             let local = self.local_constraints.lock();
             for constraint in local.z3_assertions.iter() {
-                replay(constraint);
+                replay(&constraint.z3);
             }
 
             *guard = Some(new_solver);
@@ -470,13 +470,24 @@ impl SymContext {
         let mut ptrs = Vec::new();
         let shared = Arc::clone(&self.z3_assertions_shared.lock());
         for constraint in shared.iter() {
-            ptrs.push(constraint.get_z3_ast().as_ptr() as usize);
+            ptrs.push(constraint.z3.get_z3_ast().as_ptr() as usize);
         }
         let local = self.local_constraints.lock();
         for constraint in local.z3_assertions.iter() {
-            ptrs.push(constraint.get_z3_ast().as_ptr() as usize);
+            ptrs.push(constraint.z3.get_z3_ast().as_ptr() as usize);
         }
         ptrs
+    }
+
+    /// Every asserted constraint as a clarirs Bool, shared prefix first, in
+    /// assertion order. `None` marks an entry logged with a Z3 term only.
+    pub fn asserted_terms(&self) -> Vec<Option<clarirs_core::prelude::AstRef<'static>>> {
+        let shared = Arc::clone(&self.z3_assertions_shared.lock());
+        let local = self.local_constraints.lock();
+        let entries = shared.iter().chain(local.z3_assertions.iter());
+        entries
+            .map(super::local_constraints::Asserted::term)
+            .collect()
     }
 
     // Constraint-mutation &self methods (add_constraint / add_constraint_raw /

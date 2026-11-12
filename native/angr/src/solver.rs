@@ -26,7 +26,6 @@
 // `#[allow(unsafe_code)]` (angr-8ucb3).
 #![forbid(unsafe_code)]
 
-use crate::symbolic::ToZ3;
 use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
@@ -213,7 +212,7 @@ impl RustSolverContext {
                 // first and branch on it, instead of unconditionally calling
                 // both.
                 if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
-                    ctx.add_constraint_raw_assumed(lowered.into_z3());
+                    ctx.add_constraint_lowered_assumed(lowered);
                     ctx.assumed_constraints_push(bv, true);
                 } else {
                     ctx.add_constraint_lowered(lowered);
@@ -316,9 +315,7 @@ impl RustSolverContext {
             // `lower_claripy_bool` refuses a non-Bool lowering, which falls
             // through to the slow path below.
             if let Ok(constraint) = lower_claripy_constraint(ast) {
-                // Cloned (a `Z3_inc_ref`) so the residual branch below still
-                // has the Bool `add_constraint_tracked_indexed` consumes.
-                let idx = ctx.add_constraint_tracked_indexed(constraint.z3().clone());
+                let idx = ctx.add_constraint_tracked_lowered(&constraint);
                 // angr-03vl4.74: same "exactly one log" invariant
                 // `add_constraint_ast` upholds above — a constraint that is
                 // live on the solver must be recorded in the assumed log or
@@ -344,10 +341,9 @@ impl RustSolverContext {
             let bv = claripy_to_rustbv(py, ast, &ctx)?;
             // A constraint with no Z3 form raises (a RecursionError when too
             // deep), rather than being tracked as something it is not.
-            let constraint = bool_constraint_bv(&bv)
-                .to_z3_bool()
+            let constraint = crate::symbolic::LoweredConstraint::of_bit(&bool_constraint_bv(&bv))
                 .map_err(BridgeError::from)?;
-            let idx = ctx.add_constraint_tracked_indexed(constraint);
+            let idx = ctx.add_constraint_tracked_lowered(&constraint);
             ctx.assumed_constraints_push(bv, true);
             Ok(idx)
         }

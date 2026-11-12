@@ -27,7 +27,11 @@ use super::*;
 // shape. A v1 envelope replayed under v2 would double-assert the assume class
 // (full text dump re-asserted AND `assumed_constraints` re-asserted), so reject
 // it via the version gate rather than silently mixing the formats.
-pub const SNAPSHOT_VERSION: u8 = 2;
+// v3 (angr-az6ru.2): `SymContextSnapshot` gained `residual_terms`, which
+// carries the residual constraints that have a clarirs form; `residual_smtlib2`
+// now holds only the rest. A v2 reader would drop `residual_terms` unread and
+// restore the state with fewer constraints than it had.
+pub const SNAPSHOT_VERSION: u8 = 3;
 
 /// Errors raised by [`RustSimState::from_serialized`] /
 /// `StashManager::load_snapshot`.

@@ -1321,11 +1321,14 @@ zero-cost when not read. They reset alongside the Z3 counters via
   ``symbolic/local_constraints.rs::LocalConstraints::push_residual``, the
   one place a constraint with no ``assumed`` pair is recorded):
 
+  * ``asserted_without_term`` — constraints logged as asserted with a Z3
+    term only, so the assertion log cannot be rebuilt from clarirs: a
+    raw pointer import, an SMT-LIB2 residual replayed from a snapshot,
+    a ``merge`` guard whose condition has no Z3 form.
   * ``residual_logged`` — constraints recorded in the residual log.
   * ``residual_without_term`` — the subset recorded with a Z3 term only
-    and no clarirs term: a raw pointer import, an SMT-LIB2 residual
-    replayed from a snapshot, a ``merge`` guard. These are the
-    constraints that cannot be rebuilt without Z3.
+    and no clarirs term, a subset of ``asserted_without_term``. A
+    snapshot sends these as SMT-LIB2 text and the rest as terms.
 
 ``tests/benchmarks/run_single.py`` prints these counters grouped by
 category whenever the Rust engine ran with non-zero counters;

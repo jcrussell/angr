@@ -1292,3 +1292,112 @@ fn test_add_bv_constraint_records_equivalent_term() {
         "the term and the asserted Bool must agree on every model"
     );
 }
+
+/// Every entry of `ctx`'s assertion log has a clarirs term, and the term
+/// lowers to a Bool equivalent to the one on the solver. Returns how many
+/// entries lowered to the very same Z3 node.
+fn assert_asserted_terms_rebuild_the_log(ctx: &SymContext) -> (usize, usize) {
+    use crate::symbolic::z3_lower::lower_bool;
+
+    let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
+    let local = ctx.local_constraints.lock();
+    let mut same_node = 0;
+    let mut total = 0;
+    for entry in shared.iter().chain(local.z3_assertions.iter()) {
+        total += 1;
+        let term = entry
+            .term()
+            .unwrap_or_else(|| panic!("entry {} has no clarirs term", entry.z3));
+        let relowered = lower_bool(&term).unwrap();
+        if relowered == entry.z3 {
+            same_node += 1;
+            continue;
+        }
+        let differ = z3::Solver::new();
+        differ.assert(entry.z3.iff(&relowered).not());
+        assert_eq!(
+            differ.check(),
+            z3::SatResult::Unsat,
+            "term {relowered} is not equivalent to asserted {}",
+            entry.z3
+        );
+    }
+    (same_node, total)
+}
+
+/// angr-az6ru.2: the assume class is rebuilt from its `(cond, polarity)`
+/// origin, in both polarities and across a fork, and lowers to the same Z3
+/// node the solver holds, so deriving the Z3 log from terms changes nothing
+/// the solver sees.
+#[test]
+fn test_assume_origin_rebuilds_the_same_z3_node() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_origin_assume_x", 32);
+    ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    ctx.assume_false(&x.eq(&RustBV::concrete(77, 32)));
+    let child = ctx.fork();
+    child.assume_false(&x.ult(&RustBV::concrete(5, 32)));
+    child.assume_true(&x.extract(0, 0));
+
+    assert_eq!(assert_asserted_terms_rebuild_the_log(&child), (4, 4));
+    assert_eq!(child.asserted_terms().len(), 4);
+    assert!(child.asserted_terms().iter().all(Option::is_some));
+}
+
+/// angr-az6ru.2: every sink that holds a clarirs form logs it: the lowered
+/// raw sink, its assumed variant, the tracked adder, the batch and
+/// `add_bv_constraint`. A raw Z3 Bool is the one entry without a term.
+#[test]
+fn test_term_keeping_sinks_log_their_terms() {
+    use crate::symbolic::LoweredConstraint;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_origin_sinks_x", 16);
+    let c = |v: u128| x.ne(&RustBV::concrete(v, 16));
+    ctx.add_constraint_lowered(LoweredConstraint::of_bit(&c(1)).unwrap());
+    ctx.add_constraint_lowered_assumed(LoweredConstraint::of_bit(&c(2)).unwrap());
+    ctx.add_constraint_tracked_lowered(&LoweredConstraint::of_bit(&c(3)).unwrap());
+    ctx.add_constraints_raw_batch(vec![(raw_entry(&c(4)), c(4), true)]);
+    ctx.add_bv_constraint(&x.extract(7, 0), 0x41);
+    let (_, total) = assert_asserted_terms_rebuild_the_log(&ctx);
+    assert_eq!(total, 5);
+
+    ctx.add_constraint_raw(raw_entry(&c(6)));
+    let terms = ctx.asserted_terms();
+    assert_eq!(terms.len(), 6);
+    assert!(terms[5].is_none(), "a raw Z3 Bool has no term to log");
+    assert!(terms[..5].iter().all(Option::is_some));
+}
+
+/// angr-az6ru.2: `merge` logs its guards and the arm disjunction with
+/// clarirs terms equivalent to the Z3 guards, on the shared-prefix path and
+/// on the full-guard fallback.
+#[test]
+fn test_merge_guards_carry_terms() {
+    let base = SymContext::new();
+    let x = RustBV::symbol("test_origin_merge_x", 32);
+    base.assume_true(&x.ugt(&RustBV::concrete(100, 32)));
+    let arm_a = base.fork();
+    arm_a.assume_true(&x.ult(&RustBV::concrete(250, 32)));
+    let arm_b = base.fork();
+    arm_b.assume_false(&x.ult(&RustBV::concrete(250, 32)));
+    let flags = [
+        RustBV::symbol("test_origin_merge_f0", 1),
+        RustBV::symbol("test_origin_merge_f1", 1),
+    ];
+
+    let merged = arm_a.merge(&[&arm_b], &flags);
+    // The prefix once, one guard per arm, and the arm disjunction.
+    let (_, total) = assert_asserted_terms_rebuild_the_log(&merged);
+    assert_eq!(total, 4);
+    assert_eq!(merged.residual_term_coverage(), (4, 4));
+
+    // No common frozen prefix: every constraint of every arm is guarded.
+    let lone_a = SymContext::new();
+    lone_a.assume_true(&x.ugt(&RustBV::concrete(1, 32)));
+    let lone_b = SymContext::new();
+    lone_b.assume_true(&x.ult(&RustBV::concrete(9, 32)));
+    let merged = lone_a.merge(&[&lone_b], &flags);
+    let (_, total) = assert_asserted_terms_rebuild_the_log(&merged);
+    assert_eq!(total, 3);
+}
