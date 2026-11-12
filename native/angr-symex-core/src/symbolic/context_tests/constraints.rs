@@ -617,6 +617,44 @@ fn test_fork_keeps_tracked_constraints_in_unsat_core() {
     assert_eq!(untracked.unsat_core(), vec![0]);
 }
 
+/// angr-az6ru.2: adding constraints to a fork does not build its solver.
+/// Every adder leaves it unbuilt, and the first query builds it once from the
+/// log and sees all of them. `add_constraint`, which does not log, is the
+/// exception and builds it.
+#[test]
+fn test_adds_to_a_fork_leave_its_solver_unbuilt() {
+    let parent = SymContext::new();
+    let x = RustBV::symbol("test_unbuilt_x", 8);
+    let y = RustBV::symbol("test_unbuilt_y", 8);
+    parent.assume_true(&x.ult(&RustBV::concrete(10, 8)));
+
+    let child = parent.fork();
+    child.assume_true(&x.ugt(&RustBV::concrete(5, 8)));
+    child.assume_false(&x.eq(&RustBV::concrete(6, 8)));
+    child.add_bv_constraint(&y, 3);
+    let raw = x.ne(&RustBV::concrete(7, 8)).to_z3_bool().unwrap();
+    child.add_constraint_raw(raw);
+    let tracked = x.ne(&RustBV::concrete(8, 8)).to_z3_bool().unwrap();
+    child.add_constraint_tracked_indexed(tracked);
+    let batched = x.ne(&RustBV::concrete(0, 8));
+    child.add_constraints_raw_batch(vec![(batched.to_z3_bool().unwrap(), batched, true)]);
+    assert!(child.solver.lock().is_none(), "an add built the solver");
+
+    // 5 < x < 10 without 6, 7 and 8 leaves 9.
+    assert_eq!(child.eval(&x), Some(9));
+    assert_eq!(child.eval(&y), Some(3));
+    assert!(child.solver.lock().is_some());
+
+    // A later add lands on the built solver.
+    child.assume_true(&x.eq(&RustBV::concrete(4, 8)));
+    assert!(!child.is_sat());
+
+    let unlogged = parent.fork();
+    unlogged.add_constraint(x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap());
+    assert!(unlogged.solver.lock().is_some());
+    assert_eq!(unlogged.eval(&x), Some(2));
+}
+
 /// angr-v5a5 slice 4c.2b: with a lineage attached,
 /// `add_constraint_tracked_indexed` mints a fresh `ScopeFrame`,
 /// appends it to `scope_path`, and routes the assert through the
