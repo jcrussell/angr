@@ -50,6 +50,7 @@ use crate::syscalls::NativeSyscallRegistry;
 use std::cell::Cell;
 
 mod callback_types;
+mod constraint_log;
 mod constraint_sync;
 mod constraints;
 mod core_outcome;
@@ -150,6 +151,7 @@ pub(crate) use self::callback_types::CallbackReason;
 pub(crate) use self::callback_types::PendingCallback;
 pub(crate) use self::callback_types::apply_deferred_fork_constraints;
 pub(crate) use self::callback_types::{ForkBundle, SimProcCall};
+pub(crate) use self::constraint_log::ConstraintLog;
 pub(crate) use self::event::ExplorationEvent;
 pub(crate) use self::native_technique::{NativeTechnique, TIMEOUT_STASH};
 
@@ -578,6 +580,7 @@ impl Drop for RustExplorationManager {
 pub(crate) fn register_exploration(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustExplorationManager>()?;
     m.add_class::<ExplorationEvent>()?;
+    m.add_class::<ConstraintLog>()?;
     m.add_function(pyo3::wrap_pyfunction!(get_stepping_state_id, m)?)?;
     crate::callbacks::inspect_view::register(m)?;
     Ok(())

@@ -1401,3 +1401,35 @@ fn test_merge_guards_carry_terms() {
     let (_, total) = assert_asserted_terms_rebuild_the_log(&merged);
     assert_eq!(total, 3);
 }
+
+/// angr-az6ru.2: a constraint log copied from one context is asserted on
+/// another with its origins, so the receiver can rebuild every entry from
+/// clarirs and a snapshot of it needs no SMT-LIB2 text. Importing the same
+/// log twice adds nothing.
+#[test]
+fn test_constraint_log_copies_constraints_with_their_terms() {
+    let source = SymContext::new();
+    let x = RustBV::symbol("test_log_copy_x", 32);
+    source.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
+    let source = source.fork();
+    source.assume_false(&x.ugt(&RustBV::concrete(20, 32)));
+    source.add_bv_constraint(&x.extract(0, 0), 1);
+    let log = source.export_constraint_log();
+    assert_eq!(log.len(), 3);
+    assert_eq!(log.len(), source.asserted_len());
+
+    let target = SymContext::new();
+    assert!(target.export_constraint_log().is_empty());
+    target.import_constraint_log(&log);
+    assert_eq!(assert_asserted_terms_rebuild_the_log(&target), (3, 3));
+    assert_eq!(target.residual_term_coverage(), (3, 3));
+    assert!(target.solution(&x, 11));
+    assert!(!target.solution(&x, 12), "the low bit is pinned to 1");
+    assert!(!target.solution(&x, 21));
+    let snap = target.to_snapshot();
+    assert_eq!(snap.residual_terms.len(), 3);
+    assert_eq!(snap.residual_smtlib2, "");
+
+    target.import_constraint_log(&log);
+    assert_eq!(target.asserted_len(), 3, "a repeated import is deduplicated");
+}

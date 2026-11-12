@@ -926,10 +926,10 @@ which is the same contract the Rust-side ``Enumeration`` carries
 
 The two constraint-import entry points on ``RustExplorationManager``
 follow the same pair convention: ``add_constraints_to_state()`` and
-``import_z3_constraint_ptrs()`` return the lenient bool (an undecided
+``import_constraint_log()`` return the lenient bool (an undecided
 post-import query reads as ``False``, with a ``[rust:WARN]`` line),
 while ``add_constraints_to_state_checked()`` and
-``import_z3_constraint_ptrs_checked()`` return ``None`` for that case.
+``import_constraint_log_checked()`` return ``None`` for that case.
 The constraints are imported either way — only the reported verdict
 differs — so a caller that prunes on ``False`` should use the checked
 form.
@@ -1322,9 +1322,9 @@ zero-cost when not read. They reset alongside the Z3 counters via
   one place a constraint with no ``assumed`` pair is recorded):
 
   * ``asserted_without_term`` — constraints logged as asserted with a Z3
-    term only, so the assertion log cannot be rebuilt from clarirs: a
-    raw pointer import, an SMT-LIB2 residual replayed from a snapshot,
-    a ``merge`` guard whose condition has no Z3 form.
+    term only, so the assertion log cannot be rebuilt from clarirs: an
+    SMT-LIB2 residual replayed from a snapshot, a ``merge`` guard whose
+    condition has no Z3 form.
   * ``residual_logged`` — constraints recorded in the residual log.
   * ``residual_without_term`` — the subset recorded with a Z3 term only
     and no clarirs term, a subset of ``asserted_without_term``. A
@@ -3340,8 +3340,7 @@ Python code that drives ``RustExplorationManager`` /
 non-adversarial collaborator code. The FFI surface validates inputs
 enough to keep well-behaved Python from corrupting Rust state, but it
 does **not** sandbox a hostile or buggy caller out of all undefined
-behavior. The narrow exception is the ``import_z3_constraint_ptrs``
-fast path documented below.
+behavior.
 
 The rules below cover every ``#[pyclass]`` / ``#[pymethods]`` /
 ``#[pyfunction]`` a user script is likely to drive directly:
@@ -3445,59 +3444,32 @@ unfamiliar op is not an error. A refusal is a ``BridgeError``, which
 for a non-AST input, ``ValueError`` for an invalid width or argument, and
 ``RecursionError`` past the import depth guard.
 
-Raw Z3 pointer fast path
-~~~~~~~~~~~~~~~~~~~~~~~~
+Copying constraints between states
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-``RustExplorationManager.import_z3_constraint_ptrs(state_id, ptrs:
-Vec<usize>)`` (``exploration/state_api.rs::_import_z3_constraint_ptrs``)
-is the one place a Python caller's input is treated as a raw *AST*
-pointer. ``SymContext::add_constraint_raw``
-(``symbolic/constraint_ops.rs``) is itself a safe fn: it takes a
-``z3::ast::Bool``, so the sort is carried by the type. The unsafe step is
-building that ``Bool``: ``_import_z3_constraint_ptrs`` calls
-``unsafe { Bool::wrap(&z3_ctx, raw) }``, whose contract requires each
-pointer to be a valid, live, Bool-sorted ``Z3_ast`` in the given
-context.
+``RustExplorationManager.export_constraint_log(state_id)`` returns a
+``ConstraintLog``, a copy of every constraint asserted on that state's
+solver, and ``import_constraint_log(state_id, log)`` asserts it on
+another state, on the same manager or another one
+(``exploration/state_api.rs::_import_constraint_log``,
+``SymContext::import_constraint_log``). ``rust_manager.py::_add_rust_state``
+uses the pair to carry a found state's constraints into a new manager,
+and the ``step_state`` hook in ``rust_techniques.py`` to give each
+successor its source's constraints.
 
-The other raw pointer Python hands across is the Z3 *context*:
-``set_shared_z3_context`` (``engine.rs``, body in
-``install_shared_z3_context``) wraps Python's ``z3.main_ctx().ctx.value``
-under ``unsafe``, rejecting only null. Its sole production caller is
-``rust_manager.py::_setup_shared_z3_context``; see
-:doc:`rust_z3_sharing`.
+The log is opaque (``exploration/constraint_log.rs``): Python can hold
+it and take its ``len()``, but cannot build one, so an import only ever
+sees constraints a solver on this thread already holds. Passing
+anything else is a ``TypeError`` raised before the state is touched.
+No raw pointer crosses the boundary. Each copied constraint keeps the
+origin it had, so one that could be rebuilt from clarirs on the source
+state can be on the receiver.
 
-* **Intended caller.** ``rust_manager.py::_add_rust_state`` always pairs
-  ``import_z3_constraint_ptrs`` with a prior
-  ``export_z3_constraint_ptrs(old_state_id)`` on the same process and
-  Z3 context, so the production trust model is sound. The method is
-  nonetheless ``pub fn`` on a ``#[pymethods]`` impl, so any Python
-  caller can pass arbitrary integers.
-* **Not reachable otherwise.** ``add_constraint_raw`` on
-  ``RustSolverContext`` is **not** Python-callable directly — it is
-  only reachable through ``add_constraint_ast`` /
-  ``add_constraint_tracked_ast``, which lower the claripy AST with
-  ``claripy_bridge::lower_claripy_bool`` (a checked
-  ``Dynamic::as_bool``) and so are safe by construction.
-* **Validation (angr-33t9).** ``_import_z3_constraint_ptrs`` validates
-  the whole list before any ``add_constraint_raw`` call, so a failure
-  leaves the state's solver unmutated
-  (``test_null_after_valid_ptr_rejected_atomically``):
-
-  * each pointer goes through ``NonNull::new`` (null raises
-    ``PyValueError("null pointer at index {i}")``);
-  * ``Z3_get_sort(raw_ctx, raw_ast)`` returns ``None`` for ASTs that do
-    not belong to the active thread-local context, raising
-    ``PyValueError("not a valid Z3 AST in the active context")``;
-  * ``Z3_get_sort_kind`` must return ``SortKind::Bool``; anything else
-    (most commonly a BV ptr exported by mistake) raises
-    ``PyValueError("sort kind {kind:?}, expected Bool")``.
-
-* **Residual UB.** Truly arbitrary integers (e.g. ``0xdeadbeef``)
-  still dereference inside Z3 and can segfault before the API call
-  returns. Closing that gap would need an opaque
-  ``Py<RustZ3AstHandle>`` newtype (constructible only from
-  ``export_z3_constraint_ptrs``) or a thread-local side-table of
-  blessed pointers. The validation covers the realistic misuse cases.
+``add_constraint_raw`` on ``RustSolverContext`` is **not**
+Python-callable directly — it is only reachable through
+``add_constraint_ast`` / ``add_constraint_tracked_ast``, which lower
+the claripy AST with ``claripy_bridge::lower_claripy_constraint`` (a
+checked ``Dynamic::as_bool``) and so are safe by construction.
 
 Stash name validation (footgun, not unsafe)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3545,8 +3517,7 @@ Summary
 
 State IDs, addresses, BV handles, callbacks and claripy ASTs all
 surface type/lookup errors as ``PyErr`` rather than panicking or
-UB-ing; ``import_z3_constraint_ptrs`` is the single validated-but-unsafe
-exception (angr-9l9j). A new pymethod keeps to the same
+UB-ing. A new pymethod keeps to the same
 shapes: look states up through ``find_state`` / ``find_state_mut``,
 take guest addresses rather than host pointers, and return ``PyErr``
 on malformed input.

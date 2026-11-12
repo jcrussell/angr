@@ -391,68 +391,40 @@ fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
     });
 }
 
-/// A BV-sorted pointer is rejected as the wrong sort kind rather than asserted
-/// as a Bool, which would corrupt the solver (angr-33t9). Driven from Rust
-/// because Python has no way left to obtain a non-Bool Z3 pointer.
+/// Same split on the constraint-log import path, which shares the verdict
+/// contract with `add_constraints_to_state`.
 #[test]
-fn import_z3_constraint_ptrs_rejects_bv_sorted_pointer() {
-    use z3::ast::Ast;
-
+fn import_constraint_log_separates_undecided_from_unsat() {
     Python::initialize();
     Python::attach(|py| {
         let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
-        let state = RustSimState::new("amd64").expect("amd64 state");
-        let state_id = state.state_id();
-        mgr.sm.push(STASH_FOUND, state);
 
-        // Held for the whole call so the pointer stays live.
-        let bv = z3::ast::BV::new_const("import_ptrs_bv_y", 64);
-        let ptr = bv.get_z3_ast().as_ptr() as usize;
-        let err = mgr
-            ._import_z3_constraint_ptrs(state_id, vec![ptr])
-            .expect_err("a BV-sorted pointer must be rejected");
-        assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py), "{err}");
-        assert!(err.to_string().contains("expected Bool"), "{err}");
-    });
-}
-
-/// Same split on the raw-Z3-pointer import path, which shares the verdict
-/// contract with `add_constraints_to_state`.
-#[test]
-fn import_z3_constraint_ptrs_separates_undecided_from_unsat() {
-    Python::initialize();
-    Python::attach(|_py| {
-        let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
-
-        // Donor state supplies a live Bool-sorted assertion pointer; it stays
-        // in the stash so the AST outlives the import.
         let donor = RustSimState::new("amd64").expect("amd64 state");
         {
             let ctx = donor.solver().borrow();
-            let y = RustBV::symbol("import_ptrs_donor_y", 32);
+            let y = RustBV::symbol("import_log_donor_y", 32);
             ctx.assume_true(&y.ugt(&RustBV::concrete(3, 32)));
         }
         let donor_id = donor.state_id();
         mgr.sm.push(STASH_FOUND, donor);
-        let ptrs = mgr
-            ._export_z3_constraint_ptrs(donor_id)
-            .expect("donor found");
-        assert!(!ptrs.is_empty(), "donor must export at least one assertion");
+        let log = Py::new(py, mgr.export_constraint_log(donor_id).expect("donor found"))
+            .expect("allocate the log handle");
+        assert_eq!(log.borrow(py).0.len(), 1, "the donor's one assertion");
 
-        let state_id = undecided_state_in(&mut mgr, "import_ptrs_undecided_x");
+        let state_id = undecided_state_in(&mut mgr, "import_log_undecided_x");
         assert_eq!(
-            mgr.import_z3_constraint_ptrs_checked(state_id, ptrs.clone())
+            mgr.import_constraint_log_checked(state_id, log.borrow(py))
                 .expect("state found"),
             None,
         );
         assert!(
-            !mgr.import_z3_constraint_ptrs(state_id, ptrs.clone())
+            !mgr.import_constraint_log(state_id, log.borrow(py))
                 .expect("state found"),
         );
 
         unpin_rlimit(&mgr, state_id);
         assert_eq!(
-            mgr.import_z3_constraint_ptrs_checked(state_id, ptrs)
+            mgr.import_constraint_log_checked(state_id, log.borrow(py))
                 .expect("state found"),
             Some(true),
         );

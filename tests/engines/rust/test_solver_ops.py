@@ -1189,7 +1189,7 @@ class TestExplorationIntegration:
         baseline_mgr = RustExplorationManager(proj, [baseline_state])
         baseline_mgr.run(max_steps=300)
         baseline_counts = sorted(
-            len(baseline_mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+            len(baseline_mgr._rust_mgr.export_constraint_log(sid))
             for stash in ("active", "found", "deadended")
             for sid in baseline_mgr._rust_mgr.get_state_ids(stash)
         )
@@ -1215,7 +1215,7 @@ class TestExplorationIntegration:
 
         assert hook_fired, "hook never fired"
         hooked_counts = sorted(
-            len(hooked_mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+            len(hooked_mgr._rust_mgr.export_constraint_log(sid))
             for stash in ("active", "found", "deadended")
             for sid in hooked_mgr._rust_mgr.get_state_ids(stash)
         )

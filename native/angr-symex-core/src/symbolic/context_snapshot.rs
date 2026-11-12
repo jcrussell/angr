@@ -30,7 +30,7 @@ use super::SymContext;
 /// * The **residual class** is the set of solver assertions that have no
 ///   [`RustBV`] form and so are not reconstructible from `assumed_constraints`
 ///   — the raw entries from [`SymContext::add_constraint_raw`] (Python
-///   claripy-sync fallback + cross-process pointer import), the
+///   claripy-sync fallback) and [`SymContext::import_constraint_log`], the
 ///   address-concretization equalities from [`SymContext::add_bv_constraint`],
 ///   and the `merge()` guard/`Or` disjunctions. One whose sink kept a clarirs
 ///   term is carried in `residual_terms`; the rest go as an SMT-LIB2 text

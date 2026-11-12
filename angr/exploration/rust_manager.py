@@ -1492,7 +1492,7 @@ class RustExplorationManager(
         # activate:   add initial states to the Rust 'active' stash. A state
         #             found by another manager is copied in, never adopted
         #             with that manager's core (angr-vmi2l.2):
-        #             ``_add_rust_state`` moves its constraints by Z3 pointer.
+        #             ``_add_rust_state`` copies its constraint log.
         self._phase_boot(
             project,
             save_unconstrained,
@@ -4216,7 +4216,7 @@ class RustExplorationManager(
         # Python mirror below, so Rust still sees the concretized+constrained
         # view. SimStateScratch.copy() drops the cross-manager transfer attrs
         # (rust_mgr / rust_found_state_id set by RustSolverFallback.attach),
-        # so carry them over explicitly — the Z3-pointer transfer path below
+        # so carry them over explicitly — the constraint-log transfer path below
         # reads them.
         caller_state = angr_state
         angr_state = caller_state.copy()
@@ -4500,9 +4500,8 @@ class RustExplorationManager(
             # (angr-tvpk). Two paths,
             # mutually exclusive:
             #   - Cross-manager transfer (state came from a previous
-            #     RustExplorationManager): copy Z3 ASTs by pointer from the
-            #     old solver.
-            #     Lossless and avoids a claripy round-trip.
+            #     RustExplorationManager): copy the old solver's constraint
+            #     log. Lossless and avoids a claripy round-trip.
             #   - Fresh Python state: install angr_state.solver.constraints.
             # Removed: the claripy round-trip via export_state_constraints
             # (bidirectional cycle) and the post-Z3 Python re-sync (second
@@ -4516,11 +4515,11 @@ class RustExplorationManager(
             installed = False
             if old_rust_mgr is not None and old_state_id is not None:
                 try:
-                    z3_ptrs = old_rust_mgr.export_z3_constraint_ptrs(old_state_id)
-                    if z3_ptrs:
-                        sat = self._rust_mgr.import_z3_constraint_ptrs(actual_state_id, z3_ptrs)
+                    constraint_log = old_rust_mgr.export_constraint_log(old_state_id)
+                    if len(constraint_log):
+                        sat = self._rust_mgr.import_constraint_log(actual_state_id, constraint_log)
                         l.debug(
-                            f"Transferred {len(z3_ptrs)} Z3 constraints from previous "
+                            f"Transferred {len(constraint_log)} constraints from previous "
                             f"Rust manager (state {old_state_id}), sat={sat}"
                         )
                         installed = True

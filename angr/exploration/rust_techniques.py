@@ -335,7 +335,7 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
         # The export carried no Python constraints (Rust holds the path
         # condition), so each successor holds only what the hook added: give
         # it the source's Rust constraints too (angr-mx00p.89).
-        source_constraints = mgr._rust_mgr.export_z3_constraint_ptrs(sid)
+        source_constraints = mgr._rust_mgr.export_constraint_log(sid)
         # Non-live successors go straight to their terminal stash (they are
         # never native-stepped). Live ones (None / "active") are parked in
         # _vt_hold now, not after the native run, which may stop on a pending
@@ -348,8 +348,8 @@ def dispatch_step_state_with_hooks(mgr: RustExplorationManager, batch_size, stas
             for st in states:
                 try:
                     new_id = mgr._add_rust_state(target, st)
-                    if source_constraints:
-                        mgr._rust_mgr.import_z3_constraint_ptrs(new_id, source_constraints)
+                    if len(source_constraints):
+                        mgr._rust_mgr.import_constraint_log(new_id, source_constraints)
                 except MemoryError:
                     raise
                 except Exception as e:

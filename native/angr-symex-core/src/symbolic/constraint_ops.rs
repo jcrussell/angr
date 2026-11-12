@@ -248,6 +248,16 @@ impl SymContext {
         self.add_constraint_raw_inner(z3, Origin::Term(term), true);
     }
 
+    /// Assert every constraint of `log`, another context's assertion log, on
+    /// this one. Each lands in the residual log (this context has no
+    /// `assumed` pair for it) with the origin it had, so one that could be
+    /// rebuilt from clarirs there can be here.
+    pub fn import_constraint_log(&self, log: &super::ConstraintLog) {
+        for entry in &log.0 {
+            self.add_constraint_raw_inner(entry.z3.clone(), entry.origin.clone(), true);
+        }
+    }
+
     /// [`Self::add_constraint_raw_assumed`] for a caller that still holds the
     /// clarirs term: the assertion-log entry keeps it.
     pub fn add_constraint_lowered_assumed(&self, constraint: LoweredConstraint) {
@@ -322,15 +332,13 @@ impl SymContext {
         ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            let term = match &origin {
-                Origin::Term(term) => Some(term.clone()),
-                Origin::Assume(..) | Origin::Z3Only => None,
-            };
+            let term = if log_residual { origin.term() } else { None };
             let dup = self.seed_and_check_z3_dedup(&mut local, &constraint, origin);
             if !dup && log_residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
-                // constraint (Python claripy-sync fallback / cross-process
-                // ptr import) has no `assumed` entry to reconstruct it from,
+                // constraint (Python claripy-sync fallback / a constraint
+                // log copied from another state) has no `assumed` entry to
+                // reconstruct it from,
                 // so record it in the residual log to round-trip via
                 // `residual_smtlib2`. Only on the non-dup path — a dup is
                 // already counted on its first add. `seed_and_check_z3_dedup`

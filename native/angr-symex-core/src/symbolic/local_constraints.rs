@@ -113,7 +113,32 @@ impl Asserted {
     /// The constraint as a clarirs Bool, or `None` for a [`Origin::Z3Only`]
     /// entry.
     pub(super) fn term(&self) -> Option<AstRef<'static>> {
-        match &self.origin {
+        self.origin.term()
+    }
+}
+
+/// A copy of one context's assertion log, for asserting the same constraints
+/// on another context on the same thread ([`SymContext::export_constraint_log`],
+/// [`SymContext::import_constraint_log`]). Opaque: it can only come from a
+/// context, so every entry is a constraint some solver already holds.
+pub struct ConstraintLog(pub(super) Vec<Asserted>);
+
+impl ConstraintLog {
+    /// How many constraints the log holds.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the log holds no constraint.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl Origin {
+    /// The constraint as a clarirs Bool, or `None` for [`Origin::Z3Only`].
+    pub(super) fn term(&self) -> Option<AstRef<'static>> {
+        match self {
             Origin::Assume(cond, want_true) => {
                 // SILENT(cat-a): an assume whose cond has no Bool view never
                 // reaches the log (`assume_unscoped` returns before pushing),
@@ -135,9 +160,9 @@ impl Asserted {
 /// One entry of the residual log: a constraint with no `assumed` pair.
 ///
 /// `term` is its clarirs form. It is `None` for the sinks that hold only a Z3
-/// term: a raw pointer import, an SMT-LIB2 residual replayed from a snapshot,
-/// and `merge`'s guards. `residual_without_term` in the solver stats counts
-/// those.
+/// term: an SMT-LIB2 residual replayed from a snapshot, and a `merge` guard
+/// whose condition has no Z3 form. `residual_without_term` in the solver
+/// stats counts those.
 #[derive(Clone)]
 pub(super) struct Residual {
     pub(super) z3: z3::ast::Bool,

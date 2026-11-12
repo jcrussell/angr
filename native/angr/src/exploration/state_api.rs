@@ -16,6 +16,10 @@
 //! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
 //! policy in `lib.rs`).
 #![deny(clippy::unwrap_used, clippy::expect_used)]
+// Nothing here takes a raw pointer from Python: constraints cross between
+// states as a `ConstraintLog`, not as Z3 pointers (angr-az6ru.2). `forbid`
+// keeps it so; see the same attribute in `solver.rs`.
+#![forbid(unsafe_code)]
 
 use super::*;
 use crate::errors::MapPyErr;
@@ -186,81 +190,26 @@ impl RustExplorationManager {
         })
     }
 
-    pub(crate) fn _export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
+    pub(crate) fn _export_constraint_log(
+        &self,
+        state_id: u64,
+    ) -> PyResult<crate::symbolic::ConstraintLog> {
         self.with_state(state_id, |state| {
-            let solver_ref = state.solver();
-            let ctx = solver_ref.borrow();
-            Ok(ctx.export_z3_assertion_ptrs())
+            Ok(state.solver().borrow().export_constraint_log())
         })
     }
 
-    /// Import raw Z3 assertion pointers onto the state's solver, reporting the
-    /// resulting satisfiability in the same decided-only form as
-    /// `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
-    pub(crate) fn _import_z3_constraint_ptrs(
+    /// Assert another state's constraint log on this state's solver,
+    /// reporting the resulting satisfiability in the same decided-only form
+    /// as `_add_constraints_to_state` — `None` is "Z3 gave up", not "unsat".
+    pub(crate) fn _import_constraint_log(
         &mut self,
         state_id: u64,
-        ptrs: Vec<usize>,
+        log: &crate::symbolic::ConstraintLog,
     ) -> PyResult<Option<bool>> {
-        // angr-33t9: validate every pointer is a Bool-sorted AST in the active
-        // thread-local Z3 context BEFORE the unsafe `Bool::wrap` below. This catches the realistic misuse cases — null in the
-        // middle of a list, a BV ptr exported by mistake, a foreign-context
-        // AST — and converts them to PyValueError. It does NOT defend against
-        // arbitrary integers (e.g. 0xdeadbeef): `Z3_get_sort` dereferences the
-        // pointer, so truly garbage values may still segfault before Z3 has a
-        // chance to signal an error; this check just rejects the
-        // cheap-to-detect failures.
-        // See "PyO3 API trust model" in docs/advanced-topics/rust_engine.rst.
-        use z3_sys::{SortKind, Z3_get_sort, Z3_get_sort_kind};
-        let z3_ctx_handle = z3::Context::thread_local();
-        let raw_ctx = z3_ctx_handle.get_z3_context();
-        let mut validated = Vec::with_capacity(ptrs.len());
-        for (idx, ptr) in ptrs.iter().enumerate() {
-            let raw_ast =
-                std::ptr::NonNull::new(*ptr as *mut z3_sys::_Z3_ast).ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "import_z3_constraint_ptrs: null pointer at index {idx}"
-                    ))
-                })?;
-            // SAFETY: `raw_ctx` is the active thread-local context for the
-            // duration of this call; `raw_ast` is non-null (checked above).
-            // Z3 returns None when `raw_ast` is not a valid AST belonging to
-            // `raw_ctx`; the binding's Option wrapping converts this safely.
-            // If `raw_ast` is non-AST garbage, the deref inside Z3 may
-            // segfault — that's the residual UB documented above.
-            let sort = unsafe { Z3_get_sort(raw_ctx, raw_ast) }.ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "import_z3_constraint_ptrs: pointer at index {idx} is not a valid Z3 AST in the active context"
-                ))
-            })?;
-            // SAFETY: `sort` came from `Z3_get_sort` on the same context, so
-            // it is a live `Z3_sort` in `raw_ctx`. `Z3_get_sort_kind` is a
-            // pure metadata read.
-            let kind = unsafe { Z3_get_sort_kind(raw_ctx, sort) };
-            if kind != SortKind::Bool {
-                return Err(PyValueError::new_err(format!(
-                    "import_z3_constraint_ptrs: pointer at index {idx} has sort kind {kind:?}, expected Bool"
-                )));
-            }
-            validated.push(raw_ast);
-        }
         self.with_state_mut(state_id, |state| {
-            let solver_ref = state.solver();
-            let ctx = solver_ref.borrow();
-            let z3_ctx = z3::Context::thread_local();
-            for raw in &validated {
-                // SAFETY: every pointer in `validated` passed the
-                // Z3_get_sort/sort_kind probe above: non-null, a live
-                // Bool-sorted AST in `z3_ctx`. `Bool::wrap` takes its own ref
-                // via `Z3_inc_ref`.
-                let constraint: z3::ast::Bool = unsafe { z3::ast::Ast::wrap(&z3_ctx, *raw) };
-                ctx.add_constraint_raw(constraint);
-            }
-            log::debug!(
-                "Imported {} Z3 constraints to state {}",
-                ptrs.len(),
-                state_id
-            );
+            state.solver().borrow().import_constraint_log(log);
+            log::debug!("Imported {} constraints to state {}", log.len(), state_id);
             Ok(state.satisfiable_checked())
         })
     }
@@ -277,14 +226,13 @@ impl RustExplorationManager {
             let scope_depth = ctx.scope_savepoint_depth();
             let bare_push_depth = ctx.bare_z3_push_depth();
             let n_constraints = ctx.num_constraints();
-            let ptrs = ctx.export_z3_assertion_ptrs();
             Ok(format!(
                 "scope_savepoint_depth={}, bare_z3_push_depth={}, \
-                 num_constraints={}, exported_ptrs={}",
+                 num_constraints={}, logged_assertions={}",
                 scope_depth,
                 bare_push_depth,
                 n_constraints,
-                ptrs.len()
+                ctx.asserted_len()
             ))
         })
     }

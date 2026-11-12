@@ -9,7 +9,7 @@
 //!
 //! - **Constraints / solvers**: `export_pending_constraints`,
 //!   `export_state_constraints`, `add_constraints_to_{pending,state}`,
-//!   `{export,import}_z3_constraint_ptrs`, `state_unsat_core`,
+//!   `{export,import}_constraint_log`, `import_constraint_log_checked`, `state_unsat_core`,
 //!   `{fork,borrow}_pending_solver`, `fork_state_solver`,
 //!   `{get,set}_state_solver_timeout`, `debug_solver_info`, `debug_solver_smtlib2`.
 //! - **Pending-state export/inspection**: `export_pending_state`,
@@ -259,46 +259,51 @@ impl RustExplorationManager {
         self._add_constraints_to_state(py, state_id, constraints)
     }
 
-    /// Export raw Z3 assertion pointers from a state's solver.
-    /// Lossless — captures ALL Z3 assertions, not just those tracked
-    /// in assumed_constraints (which drops constraints where claripy_to_rustbv fails).
-    pub fn export_z3_constraint_ptrs(&self, state_id: u64) -> PyResult<Vec<usize>> {
-        self._export_z3_constraint_ptrs(state_id)
+    /// A copy of a state's constraint log: every constraint asserted on its
+    /// solver, not just those in the assumed log. Hand it to
+    /// `import_constraint_log`, on this manager or another one on the same
+    /// thread, to assert the same constraints on another state.
+    pub fn export_constraint_log(&self, state_id: u64) -> PyResult<ConstraintLog> {
+        Ok(ConstraintLog(self._export_constraint_log(state_id)?))
     }
 
-    /// Import raw Z3 assertion pointers to a state's solver.
+    /// Assert an exported constraint log on a state's solver.
     ///
     /// Lenient form — see `add_constraints_to_state` for why `False` here can
-    /// also mean "Z3 gave up", and `import_z3_constraint_ptrs_checked` for the
+    /// also mean "Z3 gave up", and `import_constraint_log_checked` for the
     /// form that tells the two apart.
     #[angr_symex_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
-    pub fn import_z3_constraint_ptrs(&mut self, state_id: u64, ptrs: Vec<usize>) -> PyResult<bool> {
-        let checked = self._import_z3_constraint_ptrs(state_id, ptrs)?;
+    pub fn import_constraint_log(
+        &mut self,
+        state_id: u64,
+        log: PyRef<'_, ConstraintLog>,
+    ) -> PyResult<bool> {
+        let checked = self._import_constraint_log(state_id, &log.0)?;
         Ok(silent_default!(
             cat_c,
             checked,
             false,
-            "import_z3_constraint_ptrs: Z3 returned Unknown for state {state_id} after the \
-             import; reporting not-satisfiable (use import_z3_constraint_ptrs_checked to \
+            "import_constraint_log: Z3 returned Unknown for state {state_id} after the \
+             import; reporting not-satisfiable (use import_constraint_log_checked to \
              tell this apart from a proven contradiction)"
         ))
     }
 
-    /// `import_z3_constraint_ptrs`, but reporting an undecided satisfiability
+    /// `import_constraint_log`, but reporting an undecided satisfiability
     /// query as `None` rather than collapsing it into `False`.
     #[angr_symex_macros::steady_guard_exempt(
         reason = "imports assertions onto one state_id-scoped state's solver; does not mutate \
                   exploration config or the active stash."
     )]
-    pub fn import_z3_constraint_ptrs_checked(
+    pub fn import_constraint_log_checked(
         &mut self,
         state_id: u64,
-        ptrs: Vec<usize>,
+        log: PyRef<'_, ConstraintLog>,
     ) -> PyResult<Option<bool>> {
-        self._import_z3_constraint_ptrs(state_id, ptrs)
+        self._import_constraint_log(state_id, &log.0)
     }
 
     /// Debug: dump solver state for a given state.
@@ -306,7 +311,7 @@ impl RustExplorationManager {
     /// Interactive-debugging tool — it has no production caller in `angr/` by
     /// design (angr-sqfj8.59). The key set it emits is still a de-facto API,
     /// so `TestDebugSolverInfo` in `tests/engines/rust/test_misc.py` pins it
-    /// and cross-checks `exported_ptrs` against `export_z3_constraint_ptrs`.
+    /// and cross-checks `logged_assertions` against `export_constraint_log`.
     pub fn debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self._debug_solver_info(state_id)
     }

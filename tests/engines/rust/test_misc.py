@@ -976,89 +976,83 @@ class TestRustUnsupportedErrorParametrized:
         assert total >= 50, f"only {total} parametrized cases; need >=50"
 
 
-def _donor_bool_ptrs(proj, *constraints):
-    """Raw Bool Z3 pointers for ``constraints``, minted by a donor state's solver.
+def _donor_constraint_log(proj, *constraints):
+    """A constraint log holding exactly ``constraints``, exported from a donor state.
 
-    These live in the engine's thread-local Z3 context — exactly what
-    ``export_z3_constraint_ptrs`` hands a sibling manager in production. The
-    donor manager is returned alongside them: its state's solver holds the
-    references that keep the pointers valid, so callers keep it alive.
+    This is what ``export_constraint_log`` hands a sibling manager in
+    production. A fresh entry state asserts nothing, so the log holds the
+    added constraints and no others.
     """
     donor = RustExplorationManager(proj, [proj.factory.entry_state()])
     sid = next(iter(donor._rust_mgr.get_state_ids("active")))
-    before = set(donor._rust_mgr.export_z3_constraint_ptrs(sid))
+    assert len(donor._rust_mgr.export_constraint_log(sid)) == 0
     assert donor._rust_mgr.add_constraints_to_state(sid, list(constraints)) in (True, False)
-    new = [p for p in donor._rust_mgr.export_z3_constraint_ptrs(sid) if p not in before]
-    assert len(new) == len(constraints), f"expected {len(constraints)} new pointers, got {new}"
-    return donor, new
+    log = donor._rust_mgr.export_constraint_log(sid)
+    assert len(log) == len(constraints), f"expected {len(constraints)} entries, got {len(log)}"
+    return log
 
 
-class TestImportZ3ConstraintPtrsValidation:
-    """angr-33t9: validate import_z3_constraint_ptrs rejects malformed input.
+class TestConstraintLogImport:
+    """angr-az6ru.2: constraints move between states as an opaque log.
 
-    Catches the realistic misuse cases (null ptr, wrong sort) that the PyO3
-    trust-model audit (angr-9l9j) flagged. Does NOT exercise truly garbage
-    integers (e.g. 0xdeadbeef) — those still segfault inside Z3's deref,
-    and ruling them out would require a side-table of blessed ptrs.
+    The log replaced a raw Z3 pointer list (angr-33t9 validated those for null
+    and wrong-sort entries). A log can only come from ``export_constraint_log``,
+    so there is no malformed input left to validate: anything else is a
+    ``TypeError`` before the state is touched.
     """
 
-    def test_null_pointer_rejected(self, fauxware_project):
-        """A null (0) pointer in the ptrs list yields PyValueError."""
-
+    def test_anything_but_a_log_is_a_type_error(self, fauxware_project):
         proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
-        with pytest.raises(ValueError, match="null pointer at index"):
-            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [0])
+        for not_a_log in ([0], [0xDEADBEEF], None, "log"):
+            with pytest.raises(TypeError):
+                mgr._rust_mgr.import_constraint_log(sid, not_a_log)
+            with pytest.raises(TypeError):
+                mgr._rust_mgr.import_constraint_log_checked(sid, not_a_log)
+        assert len(mgr._rust_mgr.export_constraint_log(sid)) == 0
 
-    def test_null_after_valid_ptr_rejected_atomically(self, fauxware_project):
-        """A null partway through the list rejects the whole batch — validation
-        runs before any constraint is added, so the state's solver is
-        unmutated on failure."""
+    def test_a_log_cannot_be_constructed_from_python(self):
+        from angr.rustylib.vex_engine import ConstraintLog
+
+        with pytest.raises(TypeError):
+            ConstraintLog()
+
+    def test_round_trip_across_managers(self, fauxware_project):
+        """The imported constraint is in force on the receiving state and
+        shows up in its own exported log."""
         from angr import claripy
 
         proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
-        # Obtain a real Bool Z3 ptr to pair with the null.
-        _donor, (bool_ptr,) = _donor_bool_ptrs(proj, claripy.BVS("x_33t9", 32) == 0)
-        assert bool_ptr != 0
+        z = claripy.BVS("z_az6ru2", 32)
+        log = _donor_constraint_log(proj, z == 0x4242)
+        assert mgr._rust_mgr.import_constraint_log(sid, log) is True
+        assert len(mgr._rust_mgr.export_constraint_log(sid)) == 1
+        assert mgr._rust_mgr.add_constraints_to_state_checked(sid, [z != 0x4242]) is False
 
-        before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        with pytest.raises(ValueError, match="null pointer at index 1"):
-            mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr, 0])
-        after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        assert before == after, f"validation failure leaked partial constraints: before={before} after={after}"
-
-    def test_valid_bool_ptr_round_trip(self, fauxware_project):
-        """Sanity: a real Bool ptr is accepted and the constraint becomes
-        visible to subsequent export. Guards against the validation
-        accidentally rejecting valid input."""
+    def test_import_keeps_the_constraints_rebuildable(self, fauxware_project):
+        """A copied constraint keeps its clarirs form: the copy adds nothing to
+        the count of constraints logged with a Z3 term only."""
         from angr import claripy
 
         proj = fauxware_project
-        state = proj.factory.entry_state()
-        mgr = RustExplorationManager(proj, [state])
+        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
+        log = _donor_constraint_log(proj, claripy.BVS("w_az6ru2", 32) == 9)
 
-        _donor, (bool_ptr,) = _donor_bool_ptrs(proj, claripy.BVS("z_33t9", 32) == 0x4242)
-        assert bool_ptr != 0
-
-        before = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        sat = mgr._rust_mgr.import_z3_constraint_ptrs(sid, [bool_ptr])
-        assert sat is True, "constraint x==0x4242 should be satisfiable"
-        after = len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        assert after == before + 1, f"expected 1 constraint to be added; got before={before} after={after}"
+        before = mgr.stats["asserted_without_term"]
+        assert mgr._rust_mgr.import_constraint_log(sid, log) is True
+        assert mgr.stats["asserted_without_term"] == before
 
 
 class TestConstraintImportCheckedVariants:
     """angr-zoav9: the constraint-import calls have lenient and checked forms.
 
-    ``add_constraints_to_state`` / ``import_z3_constraint_ptrs`` return a
+    ``add_constraints_to_state`` / ``import_constraint_log`` return a
     plain bool, so a Z3 Unknown (timeout) after the import reads as ``False``
     — indistinguishable from a proven contradiction, and a caller that drops
     the state on ``False`` would delete a very likely feasible state
@@ -1097,7 +1091,7 @@ class TestConstraintImportCheckedVariants:
         x = claripy.BVS("zoav9_unsat_x", 32)
         assert mgr._rust_mgr.add_constraints_to_state_checked(sid, [x == 5, x == 6]) is False
 
-    def test_import_z3_ptrs_checked_matches_lenient_when_sat(self, fauxware_project):
+    def test_import_log_checked_matches_lenient_when_sat(self, fauxware_project):
         """The raw-Z3-pointer path carries the same contract."""
         from angr import claripy
 
@@ -1106,10 +1100,10 @@ class TestConstraintImportCheckedVariants:
         mgr = RustExplorationManager(proj, [state])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
-        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("zoav9_ptr_x", 32) == 0x1234)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, ptrs) is True
+        log = _donor_constraint_log(proj, claripy.BVS("zoav9_ptr_x", 32) == 0x1234)
+        assert mgr._rust_mgr.import_constraint_log_checked(sid, log) is True
 
-    def test_import_z3_ptrs_checked_reports_proven_unsat_as_false(self, fauxware_project):
+    def test_import_log_checked_reports_proven_unsat_as_false(self, fauxware_project):
         """Two contradictory assertions decide Unsat, so ``False`` is right."""
         from angr import claripy
 
@@ -1120,9 +1114,8 @@ class TestConstraintImportCheckedVariants:
 
         y = claripy.BVS("zoav9_ptr_unsat_y", 32)
         # Two donors: one solver holding both would already be contradictory.
-        _donor_eq, eq7 = _donor_bool_ptrs(proj, y == 7)
-        _donor_ne, ne7 = _donor_bool_ptrs(proj, y != 7)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs_checked(sid, eq7 + ne7) is False
+        assert mgr._rust_mgr.import_constraint_log_checked(sid, _donor_constraint_log(proj, y == 7)) is True
+        assert mgr._rust_mgr.import_constraint_log_checked(sid, _donor_constraint_log(proj, y != 7)) is False
 
 
 class TestDebugSolverInfo:
@@ -1154,11 +1147,11 @@ class TestDebugSolverInfo:
             "scope_savepoint_depth",
             "bare_z3_push_depth",
             "num_constraints",
-            "exported_ptrs",
+            "logged_assertions",
         }
 
-    def test_exported_ptrs_matches_export_api(self, fauxware_project):
-        """``exported_ptrs`` agrees with ``export_z3_constraint_ptrs``, and
+    def test_logged_assertions_matches_export_api(self, fauxware_project):
+        """``logged_assertions`` agrees with ``export_constraint_log``, and
         both grow by one when a constraint is imported."""
         from angr import claripy
 
@@ -1168,14 +1161,14 @@ class TestDebugSolverInfo:
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
 
         before = self._parse(mgr._rust_mgr.debug_solver_info(sid))
-        assert before["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        assert before["logged_assertions"] == len(mgr._rust_mgr.export_constraint_log(sid))
 
-        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("dbg_sqfj8_59", 32) == 7)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, ptrs) is True
+        log = _donor_constraint_log(proj, claripy.BVS("dbg_sqfj8_59", 32) == 7)
+        assert mgr._rust_mgr.import_constraint_log(sid, log) is True
 
         after = self._parse(mgr._rust_mgr.debug_solver_info(sid))
-        assert after["exported_ptrs"] == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
-        assert after["exported_ptrs"] == before["exported_ptrs"] + 1
+        assert after["logged_assertions"] == len(mgr._rust_mgr.export_constraint_log(sid))
+        assert after["logged_assertions"] == before["logged_assertions"] + 1
         assert after["num_constraints"] >= before["num_constraints"]
 
     def test_unknown_state_id_raises(self, fauxware_project):
@@ -1198,13 +1191,13 @@ class TestDebugSolverInfo:
         proj = fauxware_project
         mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
         sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
-        _donor, ptrs = _donor_bool_ptrs(proj, claripy.BVS("dbg_mx00p_24", 32) == 7)
-        assert mgr._rust_mgr.import_z3_constraint_ptrs(sid, ptrs) is True
+        log = _donor_constraint_log(proj, claripy.BVS("dbg_mx00p_24", 32) == 7)
+        assert mgr._rust_mgr.import_constraint_log(sid, log) is True
 
         smt = mgr._rust_mgr.debug_solver_smtlib2(sid)
         assert "dbg_mx00p_24" in smt
         assertions = z3.parse_smt2_string(smt)
-        assert len(assertions) == len(mgr._rust_mgr.export_z3_constraint_ptrs(sid))
+        assert len(assertions) == len(mgr._rust_mgr.export_constraint_log(sid))
 
 
 class TestStashNameValidation:

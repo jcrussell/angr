@@ -323,7 +323,7 @@ fn test_add_constraints_raw_batch_preserves_consistent_model() {
 #[test]
 fn test_add_constraints_raw_batch_tracks_local_assertions() {
     // The batch path must populate local_constraints.z3_assertions so
-    // export_z3_assertion_ptrs sees the same count as the per-constraint
+    // asserted_len sees the same count as the per-constraint
     // path. Regression guard against forgetting to extend the vector.
     let ctx = SymContext::new();
     let x = RustBV::symbol("x_batch_export", 32);
@@ -331,9 +331,9 @@ fn test_add_constraints_raw_batch_tracks_local_assertions() {
         batch_entry(&x.ugt(&RustBV::concrete(0, 32))),
         batch_entry(&x.ult(&RustBV::concrete(100, 32))),
     ];
-    let before = ctx.export_z3_assertion_ptrs().len();
+    let before = ctx.asserted_len();
     ctx.add_constraints_raw_batch(entries);
-    let after = ctx.export_z3_assertion_ptrs().len();
+    let after = ctx.asserted_len();
     assert_eq!(after - before, 2);
 }
 

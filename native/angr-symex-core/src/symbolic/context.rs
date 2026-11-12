@@ -462,21 +462,21 @@ impl SymContext {
         }
     }
 
-    /// Export all Z3 assertion pointers from the assertion cache.
-    /// Uses z3_assertions_shared + the local z3_assertions vector which track
-    /// every assertion made via assume_true/assume_false/add_constraint_raw.
-    pub fn export_z3_assertion_ptrs(&self) -> Vec<usize> {
-        use z3::ast::Ast;
-        let mut ptrs = Vec::new();
+    /// How many constraints the assertion log holds: every constraint
+    /// asserted via `assume_true` / `assume_false` / the `add_constraint_*`
+    /// family, shared prefix and local additions together.
+    pub fn asserted_len(&self) -> usize {
+        // overflow-ok: two live `Vec::len`s; their sum cannot near `usize::MAX`.
+        self.z3_assertions_shared.lock().len() + self.local_constraints.lock().z3_assertions.len()
+    }
+
+    /// A copy of the assertion log, shared prefix first, for
+    /// [`Self::import_constraint_log`] on another context.
+    pub fn export_constraint_log(&self) -> super::ConstraintLog {
         let shared = Arc::clone(&self.z3_assertions_shared.lock());
-        for constraint in shared.iter() {
-            ptrs.push(constraint.z3.get_z3_ast().as_ptr() as usize);
-        }
         let local = self.local_constraints.lock();
-        for constraint in local.z3_assertions.iter() {
-            ptrs.push(constraint.z3.get_z3_ast().as_ptr() as usize);
-        }
-        ptrs
+        let entries = shared.iter().chain(local.z3_assertions.iter());
+        super::ConstraintLog(entries.cloned().collect())
     }
 
     /// Every asserted constraint as a clarirs Bool, shared prefix first, in

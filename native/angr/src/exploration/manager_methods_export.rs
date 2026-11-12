@@ -34,7 +34,7 @@
 //! Five `export_*`-named methods live *elsewhere*, in
 //! `manager_methods_constraints`: `export_pending_{constraints,state}`,
 //! `export_state_constraints`, `export_callback_bundle` and
-//! `export_z3_constraint_ptrs`. They are grouped by subject (the pending
+//! `export_constraint_log`. They are grouped by subject (the pending
 //! state and its constraint plumbing), not by name prefix; look for an
 //! `export_*` method there before assuming it is missing.
 //!
