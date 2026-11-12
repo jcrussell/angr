@@ -78,6 +78,7 @@ fn test_dedup_backing_of_ptr_sees_frozen_shared_assertion() {
 
     // Stand in for freeze_into_shared: the assertion lives only in shared.
     *ctx.z3_assertions_shared.lock() = Arc::new(vec![Asserted {
+        tracker: None,
         z3: b.clone(),
         origin: Origin::Z3Only,
     }]);

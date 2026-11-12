@@ -97,11 +97,10 @@ Threading model at design time
 
 Single-threaded. The relevant pieces:
 
-* ``native/angr-symex-core/src/symbolic/context.rs:SymContext`` owns the single
-  ``z3::Context`` and the ``z3::Solver``. Constructed lazily on first
-  symbolic op (lazy materialization, see :doc:`rust_z3_sharing`) and
-  shared by every state forked
-  from the same parent through ``Arc``.
+* ``native/angr-symex-core/src/symbolic/context.rs:SymContext`` owns a state's
+  constraint list, whose prefix every state forked from the same parent
+  shares through ``Arc``. Its ``z3::Solver`` is built on the first query
+  and kept in the thread's solver cache (see :doc:`rust_z3_sharing`).
 * ``native/angr-symex-core/src/state/mod.rs`` ``RustSimState`` carries register values,
   memory pages, and a reference to the symcontext.
 * ``native/angr/src/exploration/run_loop.rs`` drives the

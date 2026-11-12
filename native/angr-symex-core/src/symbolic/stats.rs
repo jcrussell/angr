@@ -48,6 +48,10 @@ pub(crate) static Z3_CHECK_TIME_NS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static Z3_MATERIALIZE_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Total time (nanoseconds) spent materializing solvers.
 pub(crate) static Z3_MATERIALIZE_TIME_NS: AtomicU64 = AtomicU64::new(0);
+/// Built solvers dropped from a thread's solver cache to make room
+/// (`solver_cache.rs`). An evicted context rebuilds at its next query, which
+/// `z3_materialize_count` then counts.
+pub(crate) static SOLVER_CACHE_EVICT_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Checks whose capped non-incremental attempt timed out and that `mode_ladder_check`
 /// reran on the incremental core (angr-vmi2l.345).
 pub(crate) static SOLVER_MODE_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -417,6 +421,7 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     ("z3_check_time_ns", &Z3_CHECK_TIME_NS),
     ("z3_materialize_count", &Z3_MATERIALIZE_COUNT),
     ("z3_materialize_time_ns", &Z3_MATERIALIZE_TIME_NS),
+    ("z3_solver_cache_evict", &SOLVER_CACHE_EVICT_COUNT),
     ("z3_solver_mode_switch", &SOLVER_MODE_SWITCH_COUNT),
     ("z3_assume_concrete", &Z3_ASSUME_CONCRETE_COUNT),
     ("z3_assume_symbolic", &Z3_ASSUME_SYMBOLIC_COUNT),

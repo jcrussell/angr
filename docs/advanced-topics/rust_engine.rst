@@ -960,8 +960,11 @@ The returned dict includes:
 * ``z3_check_time_ns`` — total time spent in ``solver.check()``.
 * ``z3_sat_count`` / ``z3_unsat_count`` / ``z3_timeout_count`` — by
   ``SatResult``.
-* ``z3_materialize_count`` / ``z3_materialize_time_ns`` — lazy-fork
-  solver materialization.
+* ``z3_materialize_count`` / ``z3_materialize_time_ns`` — solvers built
+  from a state's constraint list, and the time taken.
+* ``z3_solver_cache_evict`` — built solvers dropped from a thread's
+  solver cache; its capacity is ``ANGR_RUST_SOLVER_CACHE_SIZE`` (see
+  :ref:`rust-z3-sharing-fork-lazy`).
 * ``z3_assume_concrete`` / ``z3_assume_symbolic`` —
   ``assume_true``/``assume_false`` fast-path counters.
 * ``z3_branch_check``, ``z3_branch_concrete``, ``z3_branch_model_hit``,

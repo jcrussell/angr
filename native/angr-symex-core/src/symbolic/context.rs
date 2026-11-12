@@ -45,17 +45,14 @@
 //!   opt-in: `docs/advanced-topics/rust_engine_decisions.rst` records why.
 //!
 //! **Panic policy / enforcement (angr-qwyti.11, angr-9ke6b.212):** this module
-//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`. It owns the Z3
-//! solver behind guest-derived constraints; the one surviving non-test
-//! `expect` in [`SymContext::solver`] reads back a lazily-materialized solver
-//! the same function just stored under the same held guard. (The deny also
-//! reaches the `#[cfg(test)]` children — `merge_instrument` and the
-//! `context_tests/` files — which opt out wholesale via a reasoned
-//! `#[allow]`, so count non-test sites only when checking that claim.)
+//! carries `#![deny(clippy::unwrap_used, clippy::expect_used)]`: it sits
+//! behind guest-derived constraints. (The deny also reaches the
+//! `#[cfg(test)]` children — `merge_instrument` and the `context_tests/`
+//! files — which opt out wholesale via a reasoned `#[allow]`.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -85,6 +82,19 @@ use super::solver_build::*;
 /// `RustExplorationManager::set_solver_timeout`.
 pub const DEFAULT_SOLVER_TIMEOUT_MS: u32 = 30_000;
 
+/// One open bare `push()` scope: where each local log stood when it opened.
+pub(super) struct Savepoint {
+    /// Unique per `push()`, so a cached solver can tell the scope it holds
+    /// from a later one opened at the same log length.
+    pub(super) id: u64,
+    /// `local_constraints.z3_assertions.len()` at the push.
+    pub(super) z3_len: usize,
+    /// `local_constraints.assumed.len()` at the push.
+    pub(super) assumed_len: usize,
+    /// `local_constraints.non_bv_assertions.len()` at the push.
+    pub(super) non_bv_len: usize,
+}
+
 /// Solver context for symbolic execution.
 ///
 /// Manages symbolic variable creation and, when Z3 is available,
@@ -108,8 +118,8 @@ pub struct SymContext {
     pub(super) symbol_table: Arc<HashMap<String, u64>>,
     /// Local-constraint savepoints for **bare** `push()`/`pop()` (angr-ph300.41/.42).
     ///
-    /// Each entry records `(z3_assertions.len(), assumed.len(),
-    /// non_bv_assertions.len())` captured by `scope_savepoint_push()` at the
+    /// Each [`Savepoint`] records the three local log lengths captured by
+    /// `scope_savepoint_push()` at the
     /// moment of a bare `push()`. `scope_savepoint_pop()` truncates all three
     /// local logs back to the saved lengths and drops the dedup side-table,
     /// so constraints added inside a bare push/pop scope do not leak past the
@@ -119,7 +129,7 @@ pub struct SymContext {
     /// stale log into the child as permanent asserts (.42).
     ///
     /// Pairs push↔pop exactly like `scope_savepoints`.
-    pub(super) bare_local_savepoints: Mutex<Vec<(usize, usize, usize)>>,
+    pub(super) bare_local_savepoints: Mutex<Vec<Savepoint>>,
 
     /// The `bare_local_savepoints` depth of the interpreter's open branch
     /// scope, if one is open (`push_branch_scope`). A permanent constraint
@@ -169,17 +179,16 @@ pub struct SymContext {
     /// (slice 9, angr-a2br.2.7).
     pub(super) local_constraints: Mutex<LocalConstraints>,
 
-    // Z3-specific fields (when feature is enabled)
-    /// Z3 solver — lazy: starts as None on fork(), materialized on first access.
-    /// This avoids O(n) assertion replay for forked states that are
-    /// pruned/avoided/deadended without ever querying the solver.
-    /// `pub(super)` so `set_timeout` in `transaction_ops.rs`
-    /// can re-apply params without forcing lazy materialization.
-    pub(super) solver: Mutex<Option<z3::Solver>>,
-    /// Whether `solver` has left Z3's non-incremental path: set by a push
-    /// and by [`mode_ladder_check`].
-    /// A fresh solver (construction, or the cold start after `fork`) starts
-    /// on it, so both constructors reset this to `false` (angr-vmi2l.345).
+    /// This context's identity in the per-thread solver cache
+    /// (`solver_cache.rs`). The context owns no solver: one is built from
+    /// the assertion log and the open savepoints at the first query, kept in
+    /// the cache between queries, and rebuilt after an eviction. A fork gets
+    /// a new slot, so a state that is never queried never builds one.
+    pub(super) solver_slot: super::solver_cache::SolverSlot,
+    /// Whether this context's cached solver has left Z3's non-incremental
+    /// path: set by a scope pushed onto it and by [`mode_ladder_check`].
+    /// A fresh solver starts on that path, so building one resets this to
+    /// `false` (angr-vmi2l.345).
     pub(super) solver_incremental: Cell<bool>,
     /// Cached SAT result, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
@@ -199,8 +208,8 @@ pub struct SymContext {
     pub(super) alt_model_cache: RefCell<Option<std::rc::Rc<z3::Model>>>,
     /// `(track_bool, constraint)` pairs for unsat core mapping; a tracker's
     /// position is the index `unsat_core` reports. Each constraint is also
-    /// in the z3 assertion log once, so the cold-start replay in
-    /// [`Self::solver`] re-tracks it, and `fork` clones the list so a child
+    /// in the z3 assertion log once, in an entry that carries the tracker,
+    /// so any solver built from the log tracks it, and `fork` clones the list so a child
     /// keeps the parent's index space (angr-vmi2l.91).
     /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
@@ -266,8 +275,8 @@ pub struct SymContext {
     /// truncates `scope_path` back to the most-recently-saved length.
     ///
     /// Only consulted on the `Some` (shared-lineage) dispatch branch —
-    /// the `None` branch keeps using the per-context Z3 solver's native
-    /// `push()/pop()`, so `scope_savepoints` stays empty unless a lineage
+    /// the `None` branch keeps its scopes in `bare_local_savepoints`,
+    /// so `scope_savepoints` stays empty unless a lineage
     /// is installed (the default, since the feature is opt-in). Under a
     /// lineage this stack is the per-state savepoint mechanism that lets
     /// the transactional plumbing (push/pop and transaction_*) coexist
@@ -275,16 +284,14 @@ pub struct SymContext {
     /// would corrupt sibling state.
     pub(super) scope_savepoints: Mutex<Vec<usize>>,
 
-    /// Outstanding bare Z3 pushes on the per-context solver
-    /// (angr-3ms1 step 1a).
+    /// Open bare scopes on this context (angr-3ms1 step 1a).
     ///
     /// Tracks calls to `scope_savepoint_push`
-    /// that took the **None** dispatch branch — i.e. those that issued
-    /// `solver.push()` directly on the per-context Z3 solver and have not
+    /// that took the **None** dispatch branch and have not
     /// yet been balanced by a matching pop. The **Some** branch records
     /// on `scope_savepoints` instead and leaves this counter alone, so
     /// with no lineage installed (the production default) the counter
-    /// mirrors the per-context solver's push depth exactly.
+    /// is the number of frames this context's solver holds once synced.
     ///
     /// Exposed via [`bare_z3_push_depth`](Self::bare_z3_push_depth) for
     /// telemetry and read by the fork-time materialization gate in
@@ -332,10 +339,7 @@ impl SymContext {
     // and compile-time asserted. Switching to Rc would propagate non-Send through the
     // SymContext API surface. See `arc_shared` in lib.rs for the full rationale.
     pub fn with_timeout(timeout_ms: u32) -> Self {
-        // unsat_core disabled for performance — tracking booleans add
-        // significant overhead per constraint.
-        let solver = build_solver(timeout_ms);
-
+        check_tactic_spec_once();
         SymContext {
             bare_local_savepoints: Mutex::new(Vec::new()),
             branch_scope_depth: Cell::new(None),
@@ -346,7 +350,7 @@ impl SymContext {
             non_bv_assertions_shared: Mutex::new(crate::arc_shared(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
-            solver: Mutex::new(Some(solver)),
+            solver_slot: super::solver_cache::SolverSlot::new(),
             solver_incremental: Cell::new(false),
             sat_cache: Cell::new(None),
             model_cache: RefCell::new(None),
@@ -367,60 +371,129 @@ impl SymContext {
         Self::new()
     }
 
-    /// Get or lazily create the Z3 solver.
+    /// Run `f` on this context's own solver, brought up to date with the
+    /// assertion log and the open savepoints first.
     ///
-    /// Forked contexts start with `solver = None` to avoid O(n) assertion
-    /// replay for states that are pruned/avoided without querying the solver.
-    /// On first access, a fresh solver is created and cached assertions are
-    /// replayed.
-    #[allow(
-        clippy::expect_used,
-        reason = "`guard` is `Some` here by construction: the block directly above stores `*guard = Some(new_solver)` on the `None` path and the guard is held across both, so no other thread can clear it in between. `MutexGuard::map` must yield a `&mut Solver`, so there is no `Option` return to widen into"
-    )]
-    pub(super) fn solver(&self) -> parking_lot::MappedMutexGuard<'_, z3::Solver> {
-        let mut guard = self.solver.lock();
-        if guard.is_none() {
-            use z3::ast::Ast;
-            let start = std::time::Instant::now();
-            let new_solver = build_solver(self.timeout_ms.load(Ordering::SeqCst));
-
-            // Replay cached Z3 assertions: shared prefix then local additions.
-            // A tracked constraint is replayed with its tracker, one log
-            // entry per tracker, so an identical untracked copy stays plain
-            // (angr-vmi2l.91).
-            let mut pending: HashMap<usize, VecDeque<z3::ast::Bool>> = HashMap::new();
-            for (tracker, constraint) in self.constraint_trackers.lock().iter() {
-                pending
-                    .entry(constraint.get_z3_ast().as_ptr() as usize)
-                    .or_default()
-                    .push_back(tracker.clone());
+    /// The solver comes out of the per-thread cache for the call and goes
+    /// back after it, so `f` may use other contexts but must not query this
+    /// one again. The second argument to `f` is whether the solver changed
+    /// since this context's last query (it was just built, or took a
+    /// constraint or a scope change): nothing a check left on it, such as an
+    /// unsat core, is still there.
+    pub(super) fn with_own_solver<R>(&self, f: impl FnOnce(&z3::Solver, bool) -> R) -> R {
+        let timeout_ms = self.timeout_ms.load(Ordering::SeqCst);
+        let (mut built, start) = match self.solver_slot.take() {
+            Some(built) => (built, None),
+            None => {
+                let start = std::time::Instant::now();
+                self.solver_incremental.set(false);
+                let built = super::solver_cache::BuiltSolver::new(timeout_ms);
+                (built, Some(start))
             }
-            let mut replay = |constraint: &z3::ast::Bool| {
-                let tracker = pending
-                    .get_mut(&(constraint.get_z3_ast().as_ptr() as usize))
-                    .and_then(VecDeque::pop_front);
-                match tracker {
-                    Some(t) => new_solver.assert_and_track(constraint, &t),
-                    None => new_solver.assert(constraint),
-                }
-            };
-            let shared = Arc::clone(&self.z3_assertions_shared.lock());
-            for constraint in shared.iter() {
-                replay(&constraint.z3);
-            }
-            let local = self.local_constraints.lock();
-            for constraint in local.z3_assertions.iter() {
-                replay(&constraint.z3);
-            }
-
-            *guard = Some(new_solver);
+        };
+        let mut changed = self.sync_solver(&mut built);
+        if built.timeout_ms != timeout_ms {
+            built.solver.set_params(&build_solver_params(timeout_ms));
+            built.timeout_ms = timeout_ms;
+        }
+        if let Some(start) = start {
+            changed = true;
             Z3_MATERIALIZE_COUNT.fetch_add(1, Ordering::Relaxed);
             Z3_MATERIALIZE_TIME_NS.fetch_add(crate::elapsed_ns(start), Ordering::Relaxed);
         }
-        parking_lot::MutexGuard::map(guard, |opt| {
-            opt.as_mut()
-                .expect("solver was just initialized in the None branch above")
-        })
+        let result = f(&built.solver, changed);
+        self.solver_slot.put(built);
+        result
+    }
+
+    /// Whether this context has a built solver in this thread's cache.
+    pub fn has_built_solver(&self) -> bool {
+        self.solver_slot.is_built()
+    }
+
+    /// Test-only: drop this context's cached solver, as an eviction would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn evict_solver_for_test(&self) {
+        drop(self.solver_slot.take());
+    }
+
+    /// Make `built` hold exactly this context's constraints: pop the scopes
+    /// the context has closed, then assert the log entries and push the
+    /// savepoints the solver has not seen, in list order. Returns whether
+    /// anything was done.
+    ///
+    /// The log only grows, except that closing a savepoint truncates it back
+    /// to where the savepoint opened; a savepoint's id tells a reopened
+    /// scope at the same length from the one the solver holds.
+    fn sync_solver(&self, built: &mut super::solver_cache::BuiltSolver) -> bool {
+        let shared = Arc::clone(&self.z3_assertions_shared.lock());
+        // A savepoint's log position is local, and stays valid while it is
+        // open: `fork` does not freeze `local` into `shared` under an open
+        // scope.
+        let savepoints: Vec<(u64, usize)> = self
+            .bare_local_savepoints
+            .lock()
+            .iter()
+            // overflow-ok: two live `Vec::len`s.
+            .map(|s| (s.id, shared.len() + s.z3_len))
+            .collect();
+        let local = self.local_constraints.lock();
+        // overflow-ok: two live `Vec::len`s.
+        let total = shared.len() + local.z3_assertions.len();
+        let mut changed = false;
+
+        let mut kept = built
+            .frames
+            .iter()
+            .zip(&savepoints)
+            .take_while(|(frame, (id, _))| frame.savepoint == *id)
+            .count();
+        if let Some(first_closed) = built.frames.get(kept) {
+            let closed = built.frames.len().saturating_sub(kept);
+            built.solver.pop(u32::try_from(closed).unwrap_or(u32::MAX));
+            built.asserted = first_closed.start;
+            built.frames.truncate(kept);
+            changed = true;
+        }
+        // The solver can only be behind the list. If it is somehow ahead,
+        // start over rather than answer for constraints the list dropped.
+        let next_bound = savepoints.get(kept).map_or(total, |(_, start)| *start);
+        if built.asserted > total || built.asserted > next_bound {
+            debug_assert!(false, "cached solver is ahead of its constraint list");
+            *built = super::solver_cache::BuiltSolver::new(built.timeout_ms);
+            self.solver_incremental.set(false);
+            kept = 0;
+            changed = true;
+        }
+
+        let assert_up_to = |built: &mut super::solver_cache::BuiltSolver, end: usize| {
+            for at in built.asserted..end {
+                let entry = match at.checked_sub(shared.len()) {
+                    None => shared.get(at),
+                    Some(local_at) => local.z3_assertions.get(local_at),
+                };
+                let Some(entry) = entry else { break };
+                match &entry.tracker {
+                    Some(tracker) => built.solver.assert_and_track(&entry.z3, tracker),
+                    None => built.solver.assert(&entry.z3),
+                }
+            }
+            let grew = end > built.asserted;
+            built.asserted = built.asserted.max(end);
+            grew
+        };
+        for (id, start) in savepoints.iter().skip(kept) {
+            assert_up_to(built, (*start).min(total));
+            built.solver.push();
+            self.solver_incremental.set(true);
+            built.frames.push(super::solver_cache::Frame {
+                savepoint: *id,
+                start: built.asserted,
+            });
+            changed = true;
+        }
+        changed |= assert_up_to(built, total);
+        changed
     }
 
     // next_id / num_constraints / new_bv / unique_name moved to bv_id_ops.rs

@@ -107,6 +107,9 @@ pub(super) enum Origin {
 pub(super) struct Asserted {
     pub(super) z3: z3::ast::Bool,
     pub(super) origin: Origin,
+    /// The tracking literal a solver asserts this entry under, for
+    /// `unsat_core`; `None` for a plain assert.
+    pub(super) tracker: Option<z3::ast::Bool>,
 }
 
 impl Asserted {
@@ -246,10 +249,32 @@ impl LocalConstraints {
     /// onto the log goes through here, so `asserted_without_term` sees each
     /// [`Origin::Z3Only`] entry.
     pub(super) fn log_asserted(&mut self, z3: z3::ast::Bool, origin: Origin) {
-        if matches!(origin, Origin::Z3Only) {
+        self.log_entry(Asserted {
+            z3,
+            origin,
+            tracker: None,
+        });
+    }
+
+    /// [`Self::log_asserted`] for a constraint asserted under `tracker`.
+    pub(super) fn log_tracked(
+        &mut self,
+        z3: z3::ast::Bool,
+        origin: Origin,
+        tracker: z3::ast::Bool,
+    ) {
+        self.log_entry(Asserted {
+            z3,
+            origin,
+            tracker: Some(tracker),
+        });
+    }
+
+    fn log_entry(&mut self, entry: Asserted) {
+        if matches!(entry.origin, Origin::Z3Only) {
             ASSERTED_WITHOUT_TERM_COUNT.fetch_add(1, Ordering::Relaxed);
         }
-        self.z3_assertions.push(Asserted { z3, origin });
+        self.z3_assertions.push(entry);
     }
 
     /// Record a constraint in the residual log. Every residual sink goes

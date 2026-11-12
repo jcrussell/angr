@@ -4,8 +4,7 @@
 //! most field-isolated methods of the original monolithic `impl SymContext`
 //! block. The core of the slice is the lineage cells (`lineage`, `scope_path`,
 //! `scope_savepoints`, `use_shared_lineage_solver`, `bare_z3_push_depth`) —
-//! promoted to `pub(super)` so this sibling module can reach them — plus the
-//! `solver()` accessor (also `pub(super)`) on the savepoint push/pop path.
+//! promoted to `pub(super)` so this sibling module can reach them.
 //!
 //! Three methods reach **outside** those cells, into constraint-log state
 //! owned by `context.rs` / `constraint_ops.rs`. A change here can therefore
@@ -79,7 +78,7 @@ impl SymContext {
     /// (angr-v5a5 slice 4b).
     ///
     /// Always 0 while `lineage` is `None` (the default-off case): that
-    /// branch uses the per-context Z3 solver's native `push()/pop()`
+    /// branch keeps its scopes in `bare_local_savepoints`
     /// instead. Exposed for telemetry and test assertions.
     pub fn scope_savepoint_depth(&self) -> usize {
         self.scope_savepoints.lock().len()
@@ -154,8 +153,9 @@ impl SymContext {
     /// (angr-v5a5 slice 4b).
     ///
     /// In the **None** dispatch path (today's only production path),
-    /// this directly pushes the per-context Z3 solver — preserving the
-    /// pre-slice behavior of `self.solver().push()`. In the **Some**
+    /// the recorded savepoint is the whole scope: the cached solver pushes
+    /// a frame for it at the next query (`SymContext::sync_solver`), and a
+    /// solver rebuilt after an eviction pushes it again. In the **Some**
     /// (shared-lineage) dispatch path, this records the current
     /// `scope_path.len()` on `scope_savepoints` so a later
     /// [`scope_savepoint_pop()`](Self::scope_savepoint_pop) can truncate
@@ -178,24 +178,23 @@ impl SymContext {
         // matching bare `pop()` can truncate everything added inside this
         // scope. Captured before the lineage dispatch so both branches share it.
         {
+            static NEXT_SAVEPOINT: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(1);
             let local = self.local_constraints.lock();
-            self.bare_local_savepoints.lock().push((
-                local.z3_assertions.len(),
-                local.assumed.len(),
-                local.non_bv_assertions.len(),
-            ));
+            self.bare_local_savepoints
+                .lock()
+                .push(super::context::Savepoint {
+                    id: NEXT_SAVEPOINT.fetch_add(1, Ordering::Relaxed),
+                    z3_len: local.z3_assertions.len(),
+                    assumed_len: local.assumed.len(),
+                    non_bv_len: local.non_bv_assertions.len(),
+                });
         }
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
-                let solver = self.solver();
-                solver.push();
-                self.solver_incremental.set(true);
-                // Release the per-context z3::Solver guard before the
-                // lock-independent atomic so the hottest lock in the engine
-                // is not held across the fetch_add (clippy nursery
-                // significant_drop_tightening).
-                drop(solver);
+                // The savepoint above is the scope. The cached solver takes
+                // its Z3 frame at the next query (`sync_solver`).
                 // angr-3ms1 step 1a: track the bare push so the slice-1c
                 // fork-time materialization gate can refuse to mint a
                 // lineage while bare pushes are outstanding.
@@ -211,9 +210,9 @@ impl SymContext {
     /// Restore the most-recently-saved scope-path savepoint, dispatching
     /// by lineage (angr-v5a5 slice 4b).
     ///
-    /// In the **None** dispatch path, this directly pops the per-context
-    /// Z3 solver — preserving the pre-slice behavior of
-    /// `self.solver().pop(1)`. In the **Some** (shared-lineage) dispatch
+    /// In the **None** dispatch path, removing the savepoint and truncating
+    /// the logs is the whole pop; the cached solver drops its frame at the
+    /// next query. In the **Some** (shared-lineage) dispatch
     /// path, this pops the most-recent savepoint off `scope_savepoints`
     /// and truncates `scope_path` back to that length, discarding any
     /// frames added after the matching
@@ -224,10 +223,8 @@ impl SymContext {
     /// `scope_savepoints` empties out and `scope_path` returns to its
     /// pre-push length.
     ///
-    /// Mismatched pops (no preceding push) are silently ignored in the
-    /// Some branch — `scope_savepoints` simply empties out. The None branch
-    /// inherits z3-rs's behavior (a panic on under-popping the solver),
-    /// which `try_pop()` guards against via `bare_z3_push_depth`.
+    /// Mismatched pops (no preceding push) are ignored in both branches:
+    /// there is no savepoint to remove.
     ///
     /// Does **not** invalidate `sat_cache` / `model_cache` on its own —
     /// the public wrapper (`pop()`) owns that.
@@ -241,7 +238,13 @@ impl SymContext {
         // before we acquire `local_constraints` — never hold both hot locks at
         // once (clippy nursery significant_drop_in_scrutinee, angr-zi35f.12).
         let popped = self.bare_local_savepoints.lock().pop();
-        if let Some((z3_len, assumed_len, non_bv_len)) = popped {
+        if let Some(super::context::Savepoint {
+            z3_len,
+            assumed_len,
+            non_bv_len,
+            ..
+        }) = popped
+        {
             let mut local = self.local_constraints.lock();
             if local.z3_assertions.len() > z3_len
                 || local.assumed.len() > assumed_len
@@ -260,23 +263,13 @@ impl SymContext {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
-                let solver = self.solver();
-                solver.pop(1);
-                // Release the per-context z3::Solver guard before the
-                // lock-independent atomic + debug_assert so the hottest lock
-                // in the engine is not held across them (clippy nursery
-                // significant_drop_tightening).
-                drop(solver);
-                // angr-3ms1 step 1a: decrement after the Z3 pop succeeds.
-                // z3-rs panics on under-pop, so we never reach this on
-                // an unbalanced sequence — the counter stays in sync
-                // with the per-context solver's actual push depth. Kept
-                // debug-only (angr-9ke6b.220) for exactly that reason: the
-                // failure is already caught loudly one line up.
-                let prev = self.bare_z3_push_depth.fetch_sub(1, Ordering::Relaxed);
-                debug_assert!(
-                    prev > 0,
-                    "bare_z3_push_depth underflowed — pop without matching push"
+                // Removing the savepoint above closed the scope; the cached
+                // solver pops its frame at the next query (`sync_solver`).
+                // A pop with no matching push leaves the counter at zero.
+                let _unmatched_pop = self.bare_z3_push_depth.try_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |depth| depth.checked_sub(1),
                 );
             }
             Some(_) => {

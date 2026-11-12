@@ -178,28 +178,15 @@ impl SymContext {
         }
     }
 
-    /// Run `assert` on the per-context solver if it has been built, and do
-    /// nothing otherwise.
-    ///
-    /// A context that has not built its solver (every fork starts that way)
-    /// has nothing to assert on: [`Self::solver`] replays the whole assertion
-    /// log when the first query builds it, and every adder logs what it
-    /// asserts. Building the solver here instead made each constraint added
-    /// to a fresh fork pay a full replay, whether or not the state was ever
-    /// queried (angr-az6ru.2).
-    fn assert_on_built_solver(&self, assert: impl FnOnce(&z3::Solver)) {
-        if let Some(solver) = self.solver.lock().as_ref() {
-            assert(solver);
-        }
-    }
-
     /// Install one constraint via the active lineage mode, then run the
     /// standard post-assert bookkeeping (constraint_count bump, sat_cache
     /// clear, model-consistency invalidation).
     ///
-    /// `assert_none` runs only on the non-lineage (`None`) path with the
-    /// per-context solver guard already acquired — it is where the single
-    /// real per-caller difference lives (`assert` vs `assert_and_track`).
+    /// The caller has already put the constraint in the assertion log. On
+    /// the non-lineage (`None`) path that is the install: the context's
+    /// solver takes it from the log at the next query
+    /// (`SymContext::sync_solver`), so an add costs no Z3 call and builds no
+    /// solver (angr-az6ru.2).
     /// The `Some` (shared-lineage) path mints a fresh
     /// [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
     /// pushes it onto `scope_path`, and calls
@@ -208,14 +195,10 @@ impl SymContext {
     /// through `with_z3_solver`'s closure form. Shared by
     /// [`Self::add_constraint_raw`], [`Self::add_constraint`], and
     /// [`Self::add_constraint_tracked_indexed`].
-    fn install_constraint(
-        &self,
-        constraint: &z3::ast::Bool,
-        assert_none: impl FnOnce(&z3::Solver),
-    ) {
+    pub(super) fn install_constraint(&self, constraint: &z3::ast::Bool) {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
-            None => self.assert_on_built_solver(assert_none),
+            None => {}
             Some(lin) => {
                 let frame = super::lineage::ScopeFrame::new(true, constraint.clone());
                 let path_snapshot = {
@@ -291,14 +274,13 @@ impl SymContext {
         self.add_constraint_raw_inner(ast, Origin::Z3Only, false);
     }
 
-    /// Record an *already-asserted* constraint in the residual log.
+    /// Record an *already-logged* constraint in the residual log.
     ///
-    /// The `add_constraint_raw*` pair assert **and** log; this is the
-    /// bookkeeping half on its own, for a caller that put the constraint on
-    /// the live solver by some other route — today only
-    /// [`Self::add_constraint_tracked_indexed`], which must go through
-    /// `assert_and_track` to keep unsat-core fidelity and so cannot reuse
-    /// `add_constraint_raw`.
+    /// The `add_constraint_raw*` pair write both logs; this is the residual
+    /// half on its own, for a caller that put the constraint in the
+    /// assertion log by some other route — today only
+    /// [`Self::add_constraint_tracked_indexed`], whose entry carries a
+    /// tracker and so cannot reuse `add_constraint_raw`.
     ///
     /// Same "exactly one log" contract as [`Self::add_constraint_raw_assumed`],
     /// from the other side: call this only for a constraint with NO RustBV
@@ -368,15 +350,15 @@ impl SymContext {
             // initial add).
             return;
         }
-        self.install_constraint(&constraint, |s| s.assert(&constraint));
+        self.install_constraint(&constraint);
     }
 
     /// Add a constraint (fast path: no tracking overhead).
     ///
     /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.1):
     ///
-    /// - **None** (today's only production path): asserts the constraint
-    ///   on the per-context Z3 solver.
+    /// - **None** (today's only production path): logs the constraint; the
+    ///   context's solver takes it at the next query.
     /// - **Some** (shared-lineage): mints a fresh
     ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
     ///   appends it to `self.scope_path`, and calls
@@ -408,19 +390,20 @@ impl SymContext {
         // NOTE: Don't cache here — callers (assume_true, assume_false,
         // add_constraint_raw) cache before calling this to avoid double-cache.
         self.close_branch_scope_before_permanent_add();
-        // This entry point does not log the constraint, so an unbuilt solver
-        // would never see it: build the solver first. The adders that log
-        // go through `add_constraint_unscoped` and leave it unbuilt.
-        if self.lineage.lock().is_none() {
-            drop(self.solver());
+        // Logged as a residual with no term: a caller that has the clarirs
+        // form uses `add_constraint_lowered`.
+        {
+            let mut local = self.local_constraints.lock();
+            local.push_assertion(constraint.clone(), Origin::Z3Only);
+            local.push_residual(constraint.clone(), None);
         }
-        self.add_constraint_unscoped(constraint);
+        self.install_constraint(&constraint);
     }
 
     /// Install a constraint the caller has already put in the assertion log,
     /// without closing the branch scope.
     fn add_constraint_unscoped(&self, constraint: z3::ast::Bool) {
-        self.install_constraint(&constraint, |s| s.assert(&constraint));
+        self.install_constraint(&constraint);
     }
 
     /// Batched fast path for `add_constraint_raw`: asserts N constraints under
@@ -444,9 +427,8 @@ impl SymContext {
     /// for [`Self::add_constraint_raw`], and slice 4c.2b for
     /// [`Self::add_constraint_tracked_indexed`]):
     ///
-    /// - **None** (today's only production path): asserts all N constraints
-    ///   on the per-context Z3 solver, if it is built, under a single solver
-    ///   guard.
+    /// - **None** (today's only production path): logs all N constraints;
+    ///   the context's solver takes them at the next query.
     /// - **Some** (shared-lineage): mints N fresh
     ///   [`ScopeFrame`](super::lineage::ScopeFrame)s carrying clones of the
     ///   constraints, appends them all to `self.scope_path` under one
@@ -526,12 +508,7 @@ impl SymContext {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
             None => {
-                // Single solver guard for all assertions.
-                self.assert_on_built_solver(|solver| {
-                    for c in &constraints {
-                        solver.assert(c);
-                    }
-                });
+                // Logged above; the solver takes them at the next query.
             }
             Some(lin) => {
                 // Mint N frames under one scope_path lock, snapshot, drop,
@@ -597,11 +574,9 @@ impl SymContext {
     /// pattern landed in slice 4c.1 for [`Self::add_constraint`] and slice
     /// 4c.2 for [`Self::add_constraint_raw`]):
     ///
-    /// - **None** (today's only production path): calls
-    ///   `solver.assert_and_track(&constraint, &track_bool)` on the
-    ///   per-context Z3 solver — byte-identical to the pre-slice
-    ///   `self.with_z3_solver(|s| s.assert_and_track(...))` call. Full
-    ///   unsat-core fidelity preserved.
+    /// - **None** (today's only production path): logs the constraint with
+    ///   its tracker, and the context's solver asserts it with
+    ///   `assert_and_track` at the next query. Full unsat-core fidelity.
     /// - **Some** (shared-lineage): mints a fresh
     ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the bare
     ///   constraint, appends it to `self.scope_path`, and calls
@@ -639,7 +614,7 @@ impl SymContext {
 
         // angr-sqfj8.101: every other adder (`add_constraint_raw_inner`,
         // `add_constraints_raw_batch`) logs into `local.z3_assertions`, so
-        // `fork()` and `SymContext::solver()`'s lazy rematerialization see
+        // `fork()` and the context's solver (`SymContext::sync_solver`) see
         // the constraint. This path used to skip that entirely. Push
         // unconditionally (no dedup-skip) rather than routing through
         // `seed_and_check_z3_dedup`/`contains_or_insert_ptr`: those
@@ -649,26 +624,21 @@ impl SymContext {
         // `tests/engines/rust/test_solver_ops.py`'s `tracker_idx == call
         // order` expectation) — every call here mints a tracker and asserts
         // regardless of dedup, so the bookkeeping must do the same.
-        self.install_constraint(&constraint, |s| {
-            s.assert_and_track(&constraint, &track_bool)
-        });
+        self.install_constraint(&constraint);
 
-        // A built solver took the tracked assert just above. An unbuilt one
-        // takes it from the cold-start replay in `context.rs::solver`, which
-        // pairs each tracker pushed here with one logged copy of its
-        // constraint (angr-vmi2l.91). Either way this call asserts the
-        // constraint once: a second, plain copy would let Z3 reach UNSAT
-        // without `track_bool` and drop it from `unsat_core()`.
+        // The log entry carries the tracker, so the solver asserts this
+        // copy under it whenever it is built (`SymContext::sync_solver`),
+        // and a fork's solver does too (angr-vmi2l.91).
         let tracker_idx = {
             let mut trackers = self.constraint_trackers.lock();
             let i = trackers.len();
-            trackers.push((track_bool, constraint.clone()));
+            trackers.push((track_bool.clone(), constraint.clone()));
             i
         };
         {
             use z3::ast::Ast;
             let mut local = self.local_constraints.lock();
-            local.log_asserted(constraint.clone(), origin);
+            local.log_tracked(constraint.clone(), origin, track_bool);
             if local.dedup_set_seeded {
                 local
                     .dedup_set
@@ -705,11 +675,10 @@ impl SymContext {
         let val_ast = super::bv_codec::make_bv_const(value, bv.width());
         let constraint = ast.eq(&val_ast);
         // angr-t3l5o Phase 1: residual sink #2 (address concretization).
-        // `add_constraint_unscoped` (below) only asserts on a built solver and
-        // does NOT seed the `z3_assertions` log, so without these pushes the
-        // constraint would be lost on fork (solver rebuild replays
-        // `z3_assertions`) and on snapshot. Push to BOTH logs: `z3_assertions`
-        // so a forked/rematerialized solver replays it, and `non_bv_assertions`
+        // `add_constraint_unscoped` (below) does NOT write the
+        // `z3_assertions` log, which is the only place a solver reads
+        // constraints from. Push to BOTH logs: `z3_assertions` so this
+        // context's solver and every fork's hold it, and `non_bv_assertions`
         // so it round-trips via `residual_smtlib2` (it has no `assumed` entry).
         //
         // The residual entry's clarirs term is `bv == value` built as a

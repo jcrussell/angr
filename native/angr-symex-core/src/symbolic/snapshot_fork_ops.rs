@@ -515,9 +515,8 @@ impl SymContext {
     ///   `context_tests_smtlib2_snapshot::test_fork_mints_lineage_when_gate_passes`.
     /// - `invariant-bare-z3-push-depth`: gate (b) reads the **parent's**
     ///   counter. The child's is reset to 0 (angr-c7xno.75) — it starts with
-    ///   an empty `bare_local_savepoints` and a `None` solver whose cold-start
-    ///   replay only ever emits flat `assert()`s, never `push()`es, so it
-    ///   genuinely owns zero open Z3 scopes.
+    ///   an empty `bare_local_savepoints`, so it owns zero open scopes and
+    ///   its solver, once built, takes the frozen set as flat `assert()`s.
     /// - `invariant-v5ht-dismantle-child-none`: whenever a gate refuses the
     ///   mint, the child gets `None` (NOT `Arc::clone(parent.lineage)`).
     ///   Cloning would give the child a stale base — see the inline comment
@@ -671,7 +670,7 @@ impl SymContext {
                 self.assume_class_reconstructible.load(Ordering::Relaxed),
             ),
             local_constraints: Mutex::new(LocalConstraints::new()),
-            solver: Mutex::new(None),
+            solver_slot: super::solver_cache::SolverSlot::new(),
             solver_incremental: Cell::new(false),
             // angr-gorvf.16: carry the parent's SAT/model witness into the
             // child. The child's frozen constraint set is exactly the parent's
@@ -702,14 +701,11 @@ impl SymContext {
             scope_savepoints: Mutex::new(Vec::new()),
             // angr-c7xno.75: the child starts at 0, NOT the parent's depth.
             // The counter means "open bare
-            // push scopes on *this* context's per-context Z3 solver"
+            // push scopes on *this* context"
             // (`invariant-bare-z3-push-depth`), and the child has none: its
-            // `bare_local_savepoints` is empty above, and its solver is
-            // `None` until `solver()` rebuilds it by replaying the frozen
-            // set as flat `assert()`s — that cold start never calls
-            // `push()`. Inheriting a non-zero value made `try_pop()` (gated
-            // solely on this counter) hand a `pop(1)` to a solver that was
-            // never pushed, and permanently disqualified the child from
+            // `bare_local_savepoints` is empty above. Inheriting a non-zero
+            // value made `try_pop()` (gated solely on this counter) accept a
+            // pop with no scope to close, and permanently disqualified the child from
             // lineage minting via gate (b).
             bare_z3_push_depth: AtomicUsize::new(0),
             // angr-3ms1 step 1b: inherit the opt-in flag from parent so
@@ -724,10 +720,10 @@ impl SymContext {
     /// Run a closure against this context's Z3 solver, dispatching through
     /// the shared-lineage solver when one is attached (angr-v5a5 slice 3b).
     ///
-    /// When `self.lineage` is `None` (today's only production path), this
-    /// is a thin wrapper over [`solver()`](Self::solver): the closure sees
-    /// the per-context lazy-materialized solver exactly as a direct
-    /// `let solver = self.solver();` would. When `self.lineage` is `Some`
+    /// When `self.lineage` is `None` (today's only production path), the
+    /// closure sees this context's solver from the per-thread cache, built
+    /// or brought up to date from the assertion log first
+    /// (`SymContext::with_own_solver`). When `self.lineage` is `Some`
     /// (currently only `set_lineage_for_testing` installs one), the call
     /// routes through
     /// [`SharedLineageSolver::with_solver`](crate::symbolic::lineage::SharedLineageSolver::with_solver),
@@ -743,16 +739,16 @@ impl SymContext {
     ///
     /// # Locking
     ///
-    /// - **None path:** holds the per-context `solver` mutex via
-    ///   [`solver()`](Self::solver) for the duration of `f`.
+    /// - **None path:** the solver is out of the cache for the duration of
+    ///   `f`.
     /// - **Some path:** snapshots `scope_path` under its own mutex
     ///   (released before `f` runs), then holds the lineage mutex for
     ///   the duration of `f`. The lineage mutex serializes sibling
     ///   states sharing the same `SharedLineageSolver`.
     ///
     /// In either case, `f` must not re-enter into `with_z3_solver` or
-    /// any SymContext method that would re-acquire the same lock — the
-    /// existing direct `self.solver()` callers have the same invariant.
+    /// any SymContext method that would query the same context, and must
+    /// leave the solver's scope stack as it found it.
     ///
     /// # Not for constraint-adding callers
     ///
@@ -769,19 +765,24 @@ impl SymContext {
     ///
     /// The per-call-site migration history is in `git log`; do not re-add it.
     pub(crate) fn with_z3_solver<R>(&self, f: impl FnOnce(&z3::Solver) -> R) -> R {
+        self.with_z3_solver_changed(|solver, _| f(solver))
+    }
+
+    /// [`Self::with_z3_solver`] for a caller that reads what the last check
+    /// left on the solver: `f`'s second argument is whether the per-context
+    /// solver changed since this context's last query
+    /// (`SymContext::with_own_solver`). Always `false` under a lineage.
+    pub(crate) fn with_z3_solver_changed<R>(&self, f: impl FnOnce(&z3::Solver, bool) -> R) -> R {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
-            None => {
-                let solver = self.solver();
-                f(&solver)
-            }
+            None => self.with_own_solver(f),
             Some(lin) => {
                 let path = self.scope_path.lock().clone();
                 let mut guard = lin.lock();
                 // angr-vmi2l.93: the timeout is per-context, the solver is
                 // per-lineage, so apply this context's timeout per query.
                 guard.apply_timeout(self.timeout_ms());
-                guard.with_solver(&path, f)
+                guard.with_solver(&path, |solver| f(solver, false))
             }
         }
     }
@@ -931,7 +932,7 @@ impl SymContext {
                 }
             }
             for assertion in common_prefix.iter() {
-                merged.add_constraint(assertion.z3.clone());
+                merged.install_constraint(&assertion.z3);
             }
         }
 
@@ -1016,7 +1017,7 @@ impl SymContext {
                     ml.push_assertion(guarded.clone(), origin);
                     ml.push_residual(guarded.clone(), guarded_term);
                 }
-                merged.add_constraint(guarded);
+                merged.install_constraint(&guarded);
                 #[cfg(test)]
                 super::context::merge_instrument::note_guarded();
             }
@@ -1070,7 +1071,7 @@ impl SymContext {
             ml.push_assertion(or_conds.clone(), origin);
             ml.push_residual(or_conds.clone(), any_arm_term);
         }
-        merged.add_constraint(or_conds);
+        merged.install_constraint(&or_conds);
         #[cfg(test)]
         super::context::merge_instrument::note_guarded();
 
@@ -1089,7 +1090,7 @@ impl SymContext {
             non_bv_assertions_shared,
             assume_class_reconstructible: _,
             local_constraints,
-            solver,
+            solver_slot,
             solver_incremental,
             sat_cache,
             model_cache,
@@ -1129,9 +1130,11 @@ impl SymContext {
             assume_class_reconstructible: AtomicBool::new(false),
             // The guarded constraints and export pairs built above.
             local_constraints,
-            // Holds every guarded `Or` asserted above.
-            solver,
-            // Caches over that solver, left as `add_constraint` left them.
+            // No solver is built yet: the first query builds one from the
+            // guarded `Or`s logged above.
+            solver_slot,
+            // Caches over the constraints, left as `install_constraint` left
+            // them.
             solver_incremental,
             sat_cache,
             model_cache,

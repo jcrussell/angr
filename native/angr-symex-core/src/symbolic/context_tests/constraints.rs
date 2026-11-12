@@ -619,8 +619,7 @@ fn test_fork_keeps_tracked_constraints_in_unsat_core() {
 
 /// angr-az6ru.2: adding constraints to a fork does not build its solver.
 /// Every adder leaves it unbuilt, and the first query builds it once from the
-/// log and sees all of them. `add_constraint`, which does not log, is the
-/// exception and builds it.
+/// log and sees all of them.
 #[test]
 fn test_adds_to_a_fork_leave_its_solver_unbuilt() {
     let parent = SymContext::new();
@@ -638,21 +637,96 @@ fn test_adds_to_a_fork_leave_its_solver_unbuilt() {
     child.add_constraint_tracked_indexed(tracked);
     let batched = x.ne(&RustBV::concrete(0, 8));
     child.add_constraints_raw_batch(vec![(batched.to_z3_bool().unwrap(), batched, true)]);
-    assert!(child.solver.lock().is_none(), "an add built the solver");
+    child.add_constraint(x.ne(&RustBV::concrete(1, 8)).to_z3_bool().unwrap());
+    assert!(!child.has_built_solver(), "an add built the solver");
 
     // 5 < x < 10 without 6, 7 and 8 leaves 9.
     assert_eq!(child.eval(&x), Some(9));
     assert_eq!(child.eval(&y), Some(3));
-    assert!(child.solver.lock().is_some());
+    assert!(child.has_built_solver());
 
     // A later add lands on the built solver.
     child.assume_true(&x.eq(&RustBV::concrete(4, 8)));
     assert!(!child.is_sat());
+}
 
-    let unlogged = parent.fork();
-    unlogged.add_constraint(x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap());
-    assert!(unlogged.solver.lock().is_some());
-    assert_eq!(unlogged.eval(&x), Some(2));
+/// angr-az6ru.2: a solver rebuilt after an eviction holds what the list
+/// holds: the base constraints, each open scope as a frame with its
+/// constraints inside, and the tracked ones under their trackers.
+#[test]
+fn test_evicted_solver_is_rebuilt_from_the_list() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_evict_x", 8);
+    ctx.assume_true(&x.ult(&RustBV::concrete(10, 8)));
+    ctx.push();
+    ctx.assume_true(&x.ugt(&RustBV::concrete(7, 8)));
+    ctx.push();
+    ctx.assume_true(&x.eq(&RustBV::concrete(9, 8)));
+    assert_eq!(ctx.eval(&x), Some(9));
+
+    ctx.evict_solver_for_test();
+    assert!(!ctx.has_built_solver());
+    assert_eq!(ctx.z3_assertion_count(), 3);
+    assert!(!ctx.solution(&x, 8));
+
+    // The rebuilt frames close like the originals.
+    ctx.pop();
+    assert!(ctx.solution(&x, 8));
+    assert!(!ctx.solution(&x, 7));
+    ctx.evict_solver_for_test();
+    ctx.pop();
+    assert!(ctx.solution(&x, 7));
+    assert_eq!(ctx.z3_assertion_count(), 1);
+
+    let c1 = x.eq(&RustBV::concrete(1, 8)).to_z3_bool().unwrap();
+    let c2 = x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap();
+    let first = ctx.add_constraint_tracked_indexed(c1);
+    let second = ctx.add_constraint_tracked_indexed(c2);
+    assert!(!ctx.is_sat());
+    ctx.evict_solver_for_test();
+    let mut core = ctx.unsat_core();
+    core.sort_unstable();
+    assert_eq!(core, vec![first, second]);
+}
+
+/// angr-az6ru.2: a scope reopened at the same log length is a different
+/// scope. The solver drops the frame it holds for the closed one, with the
+/// constraint asserted inside it, even though no query ran in between.
+#[test]
+fn test_reopened_scope_replaces_the_solvers_frame() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_reopen_x", 8);
+    ctx.push();
+    ctx.assume_true(&x.eq(&RustBV::concrete(1, 8)));
+    assert_eq!(ctx.eval(&x), Some(1));
+    ctx.pop();
+    ctx.push();
+    ctx.assume_true(&x.eq(&RustBV::concrete(2, 8)));
+    assert_eq!(ctx.eval(&x), Some(2));
+    ctx.pop();
+    assert!(ctx.solution(&x, 1));
+    assert_eq!(ctx.z3_assertion_count(), 0);
+}
+
+/// angr-az6ru.2: a context's solver leaves the thread's cache when the
+/// context is dropped, and a fork never shares its parent's.
+#[test]
+fn test_solver_cache_entry_follows_its_context() {
+    use crate::symbolic::solver_cache::live_solvers;
+    let x = RustBV::symbol("test_cache_x", 8);
+    let before = live_solvers();
+    let parent = SymContext::new();
+    parent.assume_true(&x.ult(&RustBV::concrete(10, 8)));
+    assert!(parent.is_sat());
+    let child = parent.fork();
+    assert!(parent.has_built_solver() && !child.has_built_solver());
+    child.assume_true(&x.ugt(&RustBV::concrete(20, 8)));
+    assert!(!child.is_sat());
+    assert!(parent.is_sat(), "the child's constraint reached the parent's solver");
+    assert_eq!(live_solvers(), before + 2);
+    drop(child);
+    drop(parent);
+    assert_eq!(live_solvers(), before);
 }
 
 /// angr-v5a5 slice 4c.2b: with a lineage attached,

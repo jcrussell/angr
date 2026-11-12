@@ -508,6 +508,19 @@ fn qfbv_smart_threshold() -> f64 {
     })
 }
 
+/// Fail on a bad `ANGR_Z3_TACTIC` when the first context is made, not at
+/// the first query: a context builds no solver of its own, so without this a
+/// misnamed tactic would surface only once a state is queried. Builds one
+/// throwaway solver per process, and none when the variable selects nothing.
+pub(crate) fn check_tactic_spec_once() {
+    static CHECKED: std::sync::Once = std::sync::Once::new();
+    CHECKED.call_once(|| {
+        if !matches!(tactic_spec(), TacticSpec::Default) {
+            drop(build_solver(super::context::DEFAULT_SOLVER_TIMEOUT_MS));
+        }
+    });
+}
+
 /// Construct a fresh Z3 solver per the active [`TacticSpec`], with timeout
 /// and bv_rewriter params applied. Three sites in this file rely on this:
 /// initial creation, lazy fork materialization, and `set_timeout`.
@@ -675,13 +688,19 @@ mod mode_ladder_tests {
         assert!(!incremental.get(), "an rlimit abort is not a timeout");
     }
 
-    /// A context push marks its solver incremental; a fork's fresh solver
-    /// starts on the non-incremental path again.
+    /// A scope the solver was queried under marks it incremental; a scope
+    /// closed before any query never reaches the solver. A fork's fresh
+    /// solver starts on the non-incremental path again.
     #[test]
     fn push_marks_incremental_and_fork_resets() {
         let ctx = SymContext::new();
         assert!(!ctx.solver_incremental.get());
         ctx.push();
+        ctx.pop();
+        assert!(ctx.is_sat());
+        assert!(!ctx.solver_incremental.get());
+        ctx.push();
+        assert!(ctx.is_sat());
         ctx.pop();
         assert!(ctx.solver_incremental.get());
         let child = ctx.fork();

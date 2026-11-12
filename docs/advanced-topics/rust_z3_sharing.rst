@@ -79,7 +79,7 @@ translation) and a constraint:
   ``#[pyclass(unsendable)]`` precisely so PyO3 refuses to ship it to
   another thread.
 * **Pointer-equality after fork.** ``SymContext::fork()`` returns a
-  child with a fresh ``Solver`` but the same context, so AST handles
+  child with no solver of its own yet but the same context, so AST handles
   created on the parent remain valid on the child without translation.
 
 The fork side of this is what makes :ref:`rust-z3-sharing-fork-lazy`
@@ -96,12 +96,10 @@ single-state solver wrapper. Each ``RustSimState`` owns one;
 ``RustSolverContext`` (Python-exposed) wraps one too. Production
 states travel through three phases:
 
-1. **Construction.** ``SymContext::new()`` allocates a
-   ``z3::Solver`` configured by ``build_solver(timeout_ms)`` — a plain
-   ``z3::Solver::new()`` unless ``ANGR_Z3_TACTIC`` selects a tactic
-   pipeline (see :doc:`rust_engine`). The solver is wrapped in
-   ``Mutex<Option<Solver>>`` so it can be lazily dropped/rebuilt on
-   fork. ``timeout_ms`` defaults to 30000 (30 s) per query.
+1. **Construction.** ``SymContext::new()`` builds no solver. The
+   context holds a ``SolverSlot``, its identity in the per-thread
+   solver cache (see :ref:`rust-z3-sharing-fork-lazy`), and a
+   ``timeout_ms`` that defaults to 30000 (30 s) per query.
 2. **Constraint accumulation.** ``add_constraint_raw`` / ``assume_*``
    append to two parallel structures: a frozen ``Arc<Vec<Bool>>``
    (``z3_assertions_shared``) and a per-fork ``Vec<Bool>``
@@ -113,24 +111,47 @@ states travel through three phases:
    drained into ``z3_assertions_shared`` (under ``Arc::get_mut``
    when uniquely owned, otherwise a clone). The child inherits the
    resulting ``Arc`` by ``Arc::clone`` (O(1)) and starts with an
-   empty ``LocalConstraints``. The child's ``solver: Mutex<None>`` is
-   lazily materialized on first query — see below.
+   empty ``LocalConstraints`` and a new ``SolverSlot``, so it has no
+   solver until its first query — see below.
 
 .. _rust-z3-sharing-fork-lazy:
 
-Lazy solver materialization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The solver cache
+~~~~~~~~~~~~~~~~
 
-A forked ``SymContext`` does **not** eagerly build a Z3 solver:
-``solver`` is ``Mutex<Option<Solver>>``, and remains ``None`` until
-the first ``with_z3_solver`` call. This matters for benchmarks that
-fork many states that are immediately pruned or avoided — those
-states never pay the O(n) assertion-replay cost.
+A ``SymContext`` owns no Z3 solver. Its constraints are the assertion
+log (``z3_assertions_shared`` followed by
+``local_constraints.z3_assertions``) and its open ``push()``
+savepoints; a solver is a cache of that list, kept per thread in
+``symbolic/solver_cache.rs``.
 
-When the solver is materialized, it replays every entry of
-``z3_assertions_shared`` followed by every entry of
-``local_constraints.z3_assertions``. The replay cost is tracked by
-the ``z3_materialize_count`` and ``z3_materialize_time_ns`` counters.
+* **Adding a constraint** appends to the log and makes no Z3 call. A
+  state that is forked, constrained and pruned without a query never
+  builds a solver.
+* **A query** (``with_z3_solver``) takes the context's solver out of the
+  cache, or builds one with ``build_solver(timeout_ms)`` — a plain
+  ``z3::Solver::new()`` unless ``ANGR_Z3_TACTIC`` selects a tactic
+  pipeline (see :doc:`rust_engine`). ``SymContext::sync_solver`` then
+  brings it up to date: it pops the frames of scopes the context has
+  closed, asserts the log entries the solver has not seen, and pushes a
+  frame for each savepoint opened since. A tracked constraint is
+  asserted under the tracker its log entry carries.
+* **``push()`` / ``pop()``** record and remove a savepoint and truncate
+  the logs. The solver's frames follow at the next query, so a scope
+  closed before any query never reaches Z3.
+* **Eviction.** A thread keeps at most ``ANGR_RUST_SOLVER_CACHE_SIZE``
+  built solvers (``solver_cache::DEFAULT_CAPACITY`` when unset), least
+  recently used first out, and a context's solver is dropped with the
+  context. An evicted context rebuilds at its next query from the same
+  list, open scopes included. The capacity trades memory for rebuilds:
+  a frontier wider than the capacity rebuilds a solver each time a
+  parked state is queried again.
+* **Ownership.** A solver serves the one context whose slot names it. A
+  fork does not inherit it.
+
+``z3_materialize_count`` and ``z3_materialize_time_ns`` count solver
+builds and the time to build and fill them; ``z3_solver_cache_evict``
+counts evictions.
 
 Why not ``Z3_solver_translate``?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -268,15 +289,15 @@ exploration and need a mental model:
   ``RustSimState`` for that lineage being pruned from a stash.
 * **``bare_z3_push_depth: AtomicUsize``** is just a counter, but
   observe: a runaway value indicates an unbalanced ``push`` /
-  ``pop`` pair on the per-context solver. Z3 itself will eventually
-  refuse to ``pop`` beyond level 0 (panic in z3-rs); the counter
-  surfaces the imbalance earlier via the fork-time gate.
+  ``pop`` pair on the context. An unmatched ``pop`` is ignored; the
+  counter surfaces a missing one via the fork-time gate.
+* **Built solvers** are bounded per thread by the solver cache's
+  capacity, not by the number of live states.
 
 ``z3_materialize_count`` divided by the number of forked states
-gives the fraction of forked solvers that actually fired a query
-(materialized). Benchmarks where this ratio is low (~10%) are
-the ones that benefit most from lazy materialization; benchmarks at
-~100% are paying the full assertion-replay cost on every fork.
+gives the solvers built per fork. It is low when most forks are never
+queried, and above one when ``z3_solver_cache_evict`` is high: the
+frontier is wider than the cache and parked states rebuild.
 
 Inspecting solver state
 -----------------------
@@ -306,10 +327,10 @@ Counter cheat-sheet relevant to per-context solver behavior:
 
 * ``z3_check_count`` / ``z3_check_time_ns`` — wall time the
   process spent inside ``solver.check()``.
-* ``z3_materialize_count`` / ``z3_materialize_time_ns`` — number
-  of lazy-fork solver materializations and total replay time. A
-  low ratio of materializations to forks confirms the lazy path
-  is helping.
+* ``z3_materialize_count`` / ``z3_materialize_time_ns`` — solvers
+  built and the time to build and fill them from the assertion log.
+* ``z3_solver_cache_evict`` — built solvers dropped to keep a thread
+  within the solver cache's capacity.
 * ``z3_ast_build`` — number of *top-level* ``to_z3_ast()`` /
   ``to_z3_bool()`` entry calls, **not** the number of ``Z3_mk_*`` FFI
   calls: one entry lowers a whole clarirs term, so one increment can

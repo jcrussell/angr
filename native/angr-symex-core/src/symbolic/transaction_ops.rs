@@ -38,15 +38,12 @@ use std::sync::atomic::Ordering;
 impl SymContext {
     /// Set the Z3 solver timeout in milliseconds.
     ///
-    /// The timeout belongs to this context alone. A materialized per-context
-    /// solver is re-paramed here; a shared lineage solver is re-paramed by
-    /// `with_z3_solver` at this context's next query,
-    /// so siblings on the same lineage keep their own timeouts.
+    /// The timeout belongs to this context alone. Its solver, cached or
+    /// shared with a lineage, is re-paramed by `with_z3_solver` at this
+    /// context's next query, so siblings on the same lineage keep their own
+    /// timeouts.
     pub fn set_timeout(&self, timeout_ms: u32) {
         self.timeout_ms.store(timeout_ms, Ordering::SeqCst);
-        if let Some(solver) = self.solver.lock().as_ref() {
-            solver.set_params(&build_solver_params(timeout_ms));
-        }
     }
 
     /// Get the Z3 solver timeout in milliseconds.
@@ -65,8 +62,8 @@ impl SymContext {
     ///
     /// Dispatches the Z3-side scope save through
     /// `scope_savepoint_push`
-    /// (angr-v5a5 slice 4b.2): in the None lineage branch this is the previous
-    /// `self.solver().push()`; in the Some (shared-lineage) branch it
+    /// (angr-v5a5 slice 4b.2): in the None lineage branch the savepoint it
+    /// records is the scope; in the Some (shared-lineage) branch it
     /// records the current `scope_path` length onto `scope_savepoints`
     /// and defers the Z3-side maintenance to the lazy `switch_to` in
     /// `with_z3_solver`. Cache invalidation
@@ -85,8 +82,8 @@ impl SymContext {
     ///
     /// Dispatches the Z3-side scope restore through
     /// `scope_savepoint_pop`
-    /// (angr-v5a5 slice 4b.3): in the None lineage branch this is the previous
-    /// `self.solver().pop(1)`; in the Some (shared-lineage) branch it
+    /// (angr-v5a5 slice 4b.3): in the None lineage branch it removes the
+    /// savepoint and truncates the logs; in the Some (shared-lineage) branch it
     /// pops the most-recent savepoint off `scope_savepoints` and
     /// truncates `scope_path` back to that length. Cache invalidation
     /// (`sat_cache`, `model_cache`) is owned here rather than by the
@@ -158,13 +155,11 @@ impl SymContext {
     /// Attempt a scope [`pop()`](Self::pop), refusing an unbalanced under-pop
     /// (angr-ph300.48).
     ///
-    /// In the **None** lineage branch a bare `pop()` forwards to
-    /// `z3::Solver::pop(1)`, which **panics** on under-pop — a Python caller
-    /// invoking `RustSolverContext.pop()` with no matching `push()` would
-    /// otherwise abort the interpreter. This gate consults
-    /// [`bare_z3_push_depth()`](Self::bare_z3_push_depth) (the counter
-    /// `scope_savepoint_push`/`pop` keep in lockstep with the per-context Z3
-    /// scope stack) and returns `false` instead of popping when it is `0`.
+    /// In the **None** lineage branch this gate consults
+    /// [`bare_z3_push_depth()`](Self::bare_z3_push_depth) (the count of open
+    /// bare scopes `scope_savepoint_push`/`pop` keep) and returns `false`
+    /// instead of popping when it is `0`, so a Python caller invoking
+    /// `RustSolverContext.pop()` with no matching `push()` is told so.
     ///
     /// In the **Some** (shared-lineage) branch a mismatched pop is already
     /// silently ignored (`scope_savepoints` empties out harmlessly), so it is
@@ -184,9 +179,16 @@ impl SymContext {
     /// Get the unsat core as indices of constraints added.
     ///
     /// Returns the indices of constraints that form the unsatisfiable core.
-    /// Call this after checking satisfiability and finding UNSAT.
+    /// Call this after checking satisfiability and finding UNSAT. The core
+    /// is read off the solver's last check; if the solver was rebuilt or
+    /// changed since (its cache entry was evicted, or a constraint was added),
+    /// the check is rerun first.
     pub fn unsat_core(&self) -> Vec<usize> {
-        let core_strs: Vec<String> = self.with_z3_solver(|solver| {
+        let core_strs: Vec<String> = self.with_z3_solver_changed(|solver, changed| {
+            if changed {
+                // Only the core matters here; Sat and Unknown leave it empty.
+                let _verdict = timed_check(solver, CheckSite::UnsatCore);
+            }
             solver
                 .get_unsat_core()
                 .iter()
