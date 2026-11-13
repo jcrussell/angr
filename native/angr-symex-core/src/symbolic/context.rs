@@ -566,10 +566,10 @@ impl SymContext {
             .collect()
     }
 
-    // Constraint-mutation &self methods (add_constraint / add_constraint_lowered /
+    // Constraint-mutation &self methods (add_constraint_lowered /
     // add_constraints_raw_batch / add_constraint_tracked_lowered /
     // add_bv_constraint / assume_true / assume_false, plus the dedup helpers
-    // seed_and_check_z3_dedup / check_z3_dedup_if_seeded and the model-cache
+    // seed_and_check_dedup / check_dedup_if_seeded and the model-cache
     // invalidators) moved to constraint_ops.rs (slice 9, angr-a2br.2.7).
 
     // Scoping &self methods (set_timeout / timeout_ms / set_sat_cache /

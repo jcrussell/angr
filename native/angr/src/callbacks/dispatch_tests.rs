@@ -620,8 +620,8 @@ fn fresh_page_set(
 /// Asserts on the latch and on how often `detail` is built rather than on the
 /// emitted line: `log::set_logger` is a process-global one-shot singleton that
 /// `engine_tests.rs`'s `set_rust_log_level_accepts_levels_and_specs` already
-/// claims in this test binary, so a capture logger here would race it — the
-/// same reasoning `symbolic/constraint_ops_tests.rs` records. That also means
+/// claims in this test binary, so a capture logger here would race it. That
+/// also means
 /// the *lower* bound is not assertable: with no subscriber listening
 /// `log::warn!` never evaluates its arguments, so a correct implementation
 /// builds `detail` zero times. The upper bound is the half that can regress.

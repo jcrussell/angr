@@ -76,7 +76,7 @@ impl SymContext {
     /// round-trip them or a restored deterministic state silently reverts to
     /// arbitrary-model witnesses (angr-ph300.46). A third, `constraint_count`,
     /// is pinned to the source's live count because the assume-class IR replay
-    /// re-asserts entries the source had ptr-deduped away and would otherwise
+    /// re-asserts entries the source had deduped away and would otherwise
     /// over-count (see bd memory `snapshot-constraint-count-pin`).
     ///
     /// The fourth is `next_id`: the ids the restored `RustBV` leaves carry were
@@ -123,7 +123,7 @@ impl SymContext {
             // an exact equality because the exact reconstructible-assume count
             // is hard to recover here: an `assumed` entry produces a distinct
             // solver assertion only when it is neither a concrete-true
-            // tautology nor a ptr-dedup hit (see `assume_true`/`assume_false`),
+            // tautology nor a dedup hit (see `assume_true`/`assume_false`),
             // and Z3 may also drop/merge structurally-identical asserts in
             // `get_assertions()`. The bounds catch the real failure mode this
             // guard targets — a future caller asserting on the solver without
@@ -168,9 +168,9 @@ impl SymContext {
             // restore can report the SAME `num_constraints` the source had.
             // The assume-class IR replay (Phase 1) rebuilds from the `assumed`
             // LOG, which preserves entries that were live-deduped away on the
-            // source solver (ptr-dedup in `check_z3_dedup_if_seeded`). Those
-            // entries re-assert on restore under fresh ptrs, so a naive replay
-            // over-counts. Pinning `constraint_count` to the source value keeps
+            // source (`check_dedup_if_seeded`, which only fires once something
+            // has seeded the set). Those entries re-assert on a restored
+            // context whose set is unseeded, so a naive replay over-counts. Pinning `constraint_count` to the source value keeps
             // the round-trip contract (`state_constraint_count` preserved) that
             // a full-solver dump would give for free.
             constraint_count: self.num_constraints(),
@@ -328,9 +328,9 @@ impl SymContext {
                 // (iii) pin `constraint_count` back to the source's
                 // authoritative value. The assume-class IR replay above can
                 // re-assert `assumed`-log entries that were live-deduped away on
-                // the source solver (ptr-dedup fires against a since-freed AST
-                // that is not reproduced under the fresh restore ptrs), which
-                // inflates the counter. The source count is the round-trip
+                // the source (its dedup set was seeded; the restored context's
+                // is not while the assume class replays), which inflates the
+                // counter. The source count is the round-trip
                 // contract `state_constraint_count` must preserve; the extra
                 // re-asserted Bool is a logically-redundant no-op on the solver.
                 // Legacy snapshots (pre-kenpr) carry 0 here → skip the pin and

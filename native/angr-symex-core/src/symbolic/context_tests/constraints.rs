@@ -404,7 +404,7 @@ fn test_add_constraint_lowered_dedup_repeat_skips_push() {
 ///
 /// Note: `assume_true` does NOT trigger seeding by itself (would impose
 /// an O(N) regression on branch-heavy benches without
-/// `add_constraint_lowered` traffic — see `check_z3_dedup_if_seeded`). The
+/// `add_constraint_lowered` traffic — see `check_dedup_if_seeded`). The
 /// `add_constraint_lowered` call below provides the seed.
 #[test]
 fn test_assume_true_dedup_repeat_skips_assert() {
@@ -477,7 +477,7 @@ fn test_assume_false_dedup_repeat_skips_assert() {
 /// angr-mwbp: with no prior `add_constraint_lowered` to seed the side-table,
 /// `assume_true` must NOT trigger seeding by itself — fresh contexts
 /// stay unseeded and fall through to the legacy push-only behavior.
-/// This is the bench-safety contract for `check_z3_dedup_if_seeded`.
+/// This is the bench-safety contract for `check_dedup_if_seeded`.
 #[test]
 fn test_assume_true_no_self_seeding_under_fresh_context() {
     let ctx = SymContext::new();
@@ -1612,4 +1612,64 @@ fn test_merge_condition_without_z3_form_leaves_its_arm_optional() {
         !restored.solution(&x, 200),
         "without flag b the stand-in holds, and with it arm a's constraint"
     );
+}
+
+/// angr-az6ru.2: the dedup set is keyed on the constraint's clarirs identity
+/// with its negations stripped, so one constraint is recognized whichever
+/// sink spells it: `assume_false(c)`, a lowered `Not(c)`, and a batch entry
+/// for either. The opposite polarity is a different constraint.
+#[test]
+fn test_dedup_recognizes_one_constraint_across_sinks() {
+    use clarirs_core::GLOBAL_CONTEXT;
+    use clarirs_core::prelude::*;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_dedup_sinks_x", 32);
+    let y = RustBV::symbol("test_dedup_sinks_y", 32);
+    // A lowered add seeds the set; `assume_*` only consults a seeded one.
+    ctx.add_constraint_lowered(raw_entry(&y.eq(&RustBV::concrete(10, 32))));
+    let c = x.ult(&RustBV::concrete(7, 32));
+    let not_c = GLOBAL_CONTEXT.not(raw_entry(&c).term().clone()).unwrap();
+    let lowered_not_c = || LoweredConstraint::lower(not_c.clone()).unwrap();
+
+    ctx.assume_false(&c);
+    assert_eq!(ctx.asserted_len(), 2);
+    let count = ctx.num_constraints();
+
+    ctx.add_constraint_lowered(lowered_not_c());
+    ctx.add_constraints_raw_batch(vec![(lowered_not_c(), c.not(), true)]);
+    ctx.assume_false(&c);
+    assert_eq!(ctx.asserted_len(), 2, "three respellings of one constraint");
+    assert_eq!(ctx.num_constraints(), count);
+
+    // After a fork the set is reseeded from the frozen log, keys included.
+    let child = ctx.fork();
+    child.add_constraint_lowered(lowered_not_c());
+    assert_eq!(child.asserted_len(), 2);
+
+    ctx.assume_true(&c);
+    assert_eq!(ctx.asserted_len(), 3, "the other polarity is not a duplicate");
+    assert!(!ctx.is_sat());
+}
+
+/// angr-ph300.41, angr-az6ru.2: closing a scope that added a constraint
+/// drops the dedup set with it, so asserting that constraint again after the
+/// pop is not mistaken for a duplicate.
+#[test]
+fn test_dedup_forgets_a_constraint_its_scope_dropped() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_dedup_pop_x", 32);
+    let c = x.eq(&RustBV::concrete(3, 32));
+    ctx.add_constraint_lowered(raw_entry(&x.ult(&RustBV::concrete(9, 32))));
+
+    ctx.push();
+    ctx.add_constraint_lowered(raw_entry(&c));
+    assert_eq!(ctx.asserted_len(), 2);
+    ctx.pop();
+    assert_eq!(ctx.asserted_len(), 1);
+    assert!(ctx.solution(&x, 4));
+
+    ctx.add_constraint_lowered(raw_entry(&c));
+    assert_eq!(ctx.asserted_len(), 2, "the re-add is not a duplicate");
+    assert!(!ctx.solution(&x, 4));
 }

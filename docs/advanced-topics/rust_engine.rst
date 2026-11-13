@@ -1313,9 +1313,12 @@ zero-cost when not read. They reset alongside the Z3 counters via
     sinks, the ones Python-origin constraints arrive through.
   * ``add_constraint_raw_dedup_scanned`` — calls that consulted the
     per-context HashSet side-table.
-  * ``add_constraint_raw_dedup_hit`` — subset where the constraint's
-    ``z3_ast`` pointer was already in the side-table (skipping the
-    solver re-assert and the ``z3_assertions.push``).
+  * ``add_constraint_raw_dedup_hit`` — subset where the constraint was
+    already in the side-table (skipping the solver re-assert and the
+    ``z3_assertions.push``). The table is keyed on the constraint's
+    clarirs term with its leading negations stripped, plus the polarity
+    it is asserted in (``Origin::dedup_key``), and holds the terms, so
+    ``assume_false(c)`` and a lowered ``Not(c)`` are one entry.
 
   The dedup hit-rate varies widely across benches; a high rate means
   the workload keeps re-adding constraints the solver already holds.

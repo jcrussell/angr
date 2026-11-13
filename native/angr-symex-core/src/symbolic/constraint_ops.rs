@@ -4,8 +4,8 @@
 //! Z3-backed constraint-addition paths: the public mutators
 //! (`add_constraint_lowered`, `add_constraint_lowered_assumed`,
 //! `add_constraints_raw_batch`, `add_constraint_tracked_lowered`,
-//! `add_bv_constraint`, `assume_true`, `assume_false`) plus their private helpers — the ptr-keyed dedup pair
-//! (`seed_and_check_z3_dedup` / `check_z3_dedup_if_seeded`) and the
+//! `add_bv_constraint`, `assume_true`, `assume_false`) plus their private helpers — the dedup pair
+//! (`seed_and_check_dedup` / `check_dedup_if_seeded`) and the
 //! model-cache invalidators (`invalidate_model_if_inconsistent` and its
 //! batch variant).
 //!
@@ -31,73 +31,61 @@ use std::sync::atomic::Ordering;
 
 impl SymContext {
     /// Lazily seed `local.dedup_set` from `shared + local z3_assertions`,
-    /// then check whether `constraint`'s Z3_ast ptr is already known.
+    /// then check whether a constraint with `origin`'s key is already known.
     ///
     /// Returns `true` if the constraint is a duplicate (caller should skip
-    /// the Z3 assert + lineage push); the ptr is left out of `dedup_set` and
-    /// `local.z3_assertions` is unchanged. Returns `false` otherwise, after
-    /// inserting the ptr into `dedup_set` and pushing `constraint.clone()`
-    /// onto `local.z3_assertions`.
+    /// the install); `local.z3_assertions` is unchanged. Returns `false`
+    /// otherwise, after inserting the key into `dedup_set` and pushing the
+    /// constraint onto `local.z3_assertions`.
     ///
     /// Caller holds `local` (the `local_constraints` lock guard inner) and
     /// is responsible for any SCANNED/HIT counter bookkeeping — this helper
     /// stays counter-agnostic so each call site (`add_constraint_lowered`,
     /// `assume_true`, `assume_false`) attributes hits to its own counter
     /// pair (angr-mwbp).
-    fn seed_and_check_z3_dedup(
+    pub(super) fn seed_and_check_dedup(
         &self,
         local: &mut LocalConstraints,
         constraint: &z3::ast::Bool,
         origin: Origin,
     ) -> bool {
-        use z3::ast::Ast;
         if !local.dedup_set_seeded {
             let shared = Arc::clone(&self.z3_assertions_shared.lock());
-            let local_len = local.z3_assertions.len();
-            local.dedup_set.reserve(shared.len() + local_len);
-            for c in shared.iter() {
-                local.dedup_set.insert(c.z3.get_z3_ast().as_ptr() as usize);
-            }
-            // Collect local ptrs into a separate Vec to avoid the
-            // simultaneous mut+ref borrow on `local`.
-            let local_ptrs: Vec<usize> = local
-                .z3_assertions
+            let keys = shared
                 .iter()
-                .map(|c| c.z3.get_z3_ast().as_ptr() as usize)
-                .collect();
-            local.dedup_set.extend(local_ptrs);
+                .chain(local.z3_assertions.iter())
+                .filter_map(|entry| entry.origin.dedup_key());
+            let keys: Vec<_> = keys.collect();
+            local.dedup_set.extend(keys);
             local.dedup_set_seeded = true;
         }
-        Self::contains_or_insert_ptr(local, constraint, origin)
+        Self::contains_or_insert(local, constraint, origin)
     }
 
-    /// Shared dedup tail: returns `true` if `constraint`'s Z3_ast ptr is
-    /// already in `local.dedup_set` (duplicate — leave state untouched);
-    /// otherwise inserts the ptr, pushes `constraint.clone()` onto
-    /// `local.z3_assertions`, and returns `false`. Counter bookkeeping stays
-    /// with the caller so each site attributes hits to its own counter.
-    fn contains_or_insert_ptr(
+    /// Shared dedup tail: returns `true` if `origin`'s key is already in
+    /// `local.dedup_set` (duplicate — leave state untouched); otherwise
+    /// inserts the key, pushes the constraint onto `local.z3_assertions`,
+    /// and returns `false`. An origin with no key is never a duplicate.
+    /// Counter bookkeeping stays with the caller so each site attributes
+    /// hits to its own counter.
+    fn contains_or_insert(
         local: &mut LocalConstraints,
         constraint: &z3::ast::Bool,
         origin: Origin,
     ) -> bool {
-        use z3::ast::Ast;
-        let new_ptr = constraint.get_z3_ast().as_ptr() as usize;
-        if local.dedup_set.contains(&new_ptr) {
-            true
-        } else {
-            local.dedup_set.insert(new_ptr);
-            local.log_asserted(constraint.clone(), origin);
-            false
+        if let Some(key) = origin.dedup_key()
+            && !local.dedup_set.insert(key)
+        {
+            return true;
         }
+        local.log_asserted(constraint.clone(), origin);
+        false
     }
 
-    /// Like [`Self::seed_and_check_z3_dedup`] but does NOT trigger seeding —
+    /// Like [`Self::seed_and_check_dedup`] but does NOT trigger seeding —
     /// only consults the dedup_set when already populated. If unseeded,
-    /// falls through to the legacy [`LocalConstraints::push_assertion`]
-    /// behavior (push to z3_assertions, conditionally track in dedup_set if
-    /// seeded) and returns `false` so callers fall through to
-    /// `install_constraint`.
+    /// falls through to a plain log push and returns `false` so callers
+    /// fall through to [`Self::install_constraint`].
     ///
     /// Used by `assume_true`/`assume_false` (angr-mwbp): seeding from these
     /// sites would walk `shared + local z3_assertions` on every fresh
@@ -105,78 +93,18 @@ impl SymContext {
     /// without `add_constraint_lowered` traffic. Piggy-backing on an existing
     /// seed (most commonly placed by `add_constraint_lowered` in the bridge)
     /// gets the dedup benefit when it's free and avoids cost otherwise.
-    fn check_z3_dedup_if_seeded(
+    fn check_dedup_if_seeded(
         &self,
         local: &mut LocalConstraints,
         constraint: &z3::ast::Bool,
         origin: Origin,
     ) -> bool {
         if !local.dedup_set_seeded {
-            // No seed yet — match the legacy push_assertion behavior and
-            // let the caller fall through to install_constraint.
             local.log_asserted(constraint.clone(), origin);
             return false;
         }
         Z3_ASSUME_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
-        let dup = Self::contains_or_insert_ptr(local, constraint, origin);
-        // angr-gmad2 diagnostic: a dedup HIT should always be backed by a
-        // live, structurally-equal Bool in shared+local z3_assertions —
-        // Z3 hash-consing returns an existing ptr only for a live equal AST.
-        // If a HIT ptr is NOT backed by any live assertion, it is a stale-ptr
-        // false positive (a freed AST's address reused) and we would have
-        // dropped an INTENDED constraint. Gated behind Debug so it is
-        // zero-cost in production; run with RUST_LOG=debug to audit.
-        if dup && log::log_enabled!(log::Level::Debug) {
-            self.debug_verify_dedup_backing(local, constraint);
-        }
-        dup
-    }
-
-    /// The backing lookup behind [`Self::debug_verify_dedup_backing`]: does
-    /// `ptr` name a live Bool in `local.z3_assertions` / `z3_assertions_shared`?
-    ///
-    /// Returns `(in_local, in_shared)`; `(false, false)` is the STALE-PTR
-    /// condition — a dedup HIT on a ptr no live assertion holds, i.e. an
-    /// intended constraint about to be dropped. Split out from the `log!`
-    /// wrapper so the detector's decision is testable without installing a
-    /// competing process-global `log` subscriber (`log::set_logger` is a
-    /// one-shot singleton already claimed elsewhere in this test binary — see
-    /// `constraint_ops_tests::test_dedup_backing_of_ptr_flags_stale_ptr_hit`).
-    fn dedup_backing_of_ptr(&self, local: &LocalConstraints, ptr: usize) -> (bool, bool) {
-        use z3::ast::Ast;
-        let in_local = local
-            .z3_assertions
-            .iter()
-            .any(|c| c.z3.get_z3_ast().as_ptr() as usize == ptr);
-        let in_shared = {
-            let shared = Arc::clone(&self.z3_assertions_shared.lock());
-            shared
-                .iter()
-                .any(|c| c.z3.get_z3_ast().as_ptr() as usize == ptr)
-        };
-        (in_local, in_shared)
-    }
-
-    /// angr-gmad2 diagnostic (Debug-gated): verify a dedup HIT's Z3_ast ptr is
-    /// backed by a live structurally-equal Bool in `z3_assertions_shared` or
-    /// `local.z3_assertions`. Emits `debug!` when backed (sound true-positive)
-    /// and `warn!` when unbacked (stale-ptr false positive — a dropped
-    /// constraint). O(N) scan, so only invoked under Debug logging.
-    fn debug_verify_dedup_backing(&self, local: &LocalConstraints, constraint: &z3::ast::Bool) {
-        use z3::ast::Ast;
-        let ptr = constraint.get_z3_ast().as_ptr() as usize;
-        let (in_local, in_shared) = self.dedup_backing_of_ptr(local, ptr);
-        if in_local || in_shared {
-            log::debug!(
-                target: "rustylib::symbolic",
-                "assume-dedup HIT ptr={ptr:#x} backed (local={in_local} shared={in_shared}) -- sound true-positive"
-            );
-        } else {
-            log::warn!(
-                target: "rustylib::symbolic",
-                "assume-dedup HIT ptr={ptr:#x} UNBACKED by any live z3_assertion -- STALE-PTR FALSE POSITIVE (intended constraint dropped)"
-            );
-        }
+        Self::contains_or_insert(local, constraint, origin)
     }
 
     /// Install one constraint via the active lineage mode, then run the
@@ -314,17 +242,16 @@ impl SymContext {
         self.close_branch_scope_before_permanent_add();
         ADD_CONSTRAINT_RAW_TOTAL_COUNT.fetch_add(1, Ordering::Relaxed);
         sample_simplify_skip(&constraint);
-        // angr-sfp9: ptr-keyed dedup against the side-table. Z3 hash-cons
-        // makes ptr-equality == structural-equality among live ASTs, so a
-        // hit means this exact Bool is already asserted on the solver via
-        // an earlier assert (in shared+local z3_assertions) — skipping the
-        // re-assert is correct (Z3 internally treats repeated asserts as a
-        // single fact) and avoids growing `z3_assertions` with a duplicate
-        // that would scale constraint-export work for nothing.
+        // angr-sfp9: dedup against the side-table, keyed on the constraint's
+        // clarirs identity (`Origin::dedup_key`). A hit means this
+        // constraint is already in shared+local z3_assertions — skipping the
+        // re-assert is correct (asserting a fact twice adds nothing) and
+        // avoids growing `z3_assertions` with a duplicate that would scale
+        // constraint-export work for nothing.
         ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint, origin.clone());
+            let dup = self.seed_and_check_dedup(&mut local, &constraint, origin.clone());
             if !dup && log_residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
                 // constraint (Python claripy-sync fallback / a constraint
@@ -332,7 +259,7 @@ impl SymContext {
                 // reconstruct it from,
                 // so record it in the residual log to round-trip via
                 // `residual_terms`. Only on the non-dup path — a dup is
-                // already counted on its first add. `seed_and_check_z3_dedup`
+                // already counted on its first add. `seed_and_check_dedup`
                 // pushed the same Bool to `z3_assertions` just above, so the
                 // residual log stays a subset of `z3_assertions`.
                 local.push_residual(constraint.clone(), origin);
@@ -363,10 +290,10 @@ impl SymContext {
     /// stands for it in the export log.
     ///
     /// Entries are deduped exactly as [`Self::add_constraint_lowered`] dedupes
-    /// its single constraint — via `seed_and_check_z3_dedup` (private, so no
+    /// its single constraint — via `seed_and_check_dedup` (private, so no
     /// intra-doc link from this public method), which
     /// also covers duplicates *within* one batch since each miss inserts its
-    /// ptr before the next entry is checked. A dup contributes nothing but
+    /// key before the next entry is checked. A dup contributes nothing but
     /// its `assumed` pair: no `z3_assertions` push, no solver assert, no
     /// `ScopeFrame`, no `constraint_count` bump. The three
     /// `ADD_CONSTRAINT_RAW_*` counters are bumped in bulk so batch traffic
@@ -408,7 +335,7 @@ impl SymContext {
             origins.push(Origin::Term(term));
             assumed.push((bv, is_true));
         }
-        // The ptr-keyed dedup on the batch path (angr-sfp9, angr-5mnx3.43):
+        // The dedup on the batch path (angr-sfp9, angr-5mnx3.43):
         // without it this API would push/assert/count every entry unconditionally, so a
         // constraint already asserted (a duplicate inside this very batch,
         // or one added by an earlier `add_constraint_lowered`) grew
@@ -427,12 +354,12 @@ impl SymContext {
             // Same contract as the assume_* dedup — see the
             // `Z3_ASSUME_DEDUP_*` group comment in `stats.rs`.
             local.assumed.extend(assumed);
-            // `seed_and_check_z3_dedup` pushes each non-dup onto
+            // `seed_and_check_dedup` pushes each non-dup onto
             // `local.z3_assertions` itself, so no separate bulk push.
             constraints
                 .into_iter()
                 .zip(origins)
-                .filter(|(c, origin)| !self.seed_and_check_z3_dedup(&mut local, c, origin.clone()))
+                .filter(|(c, origin)| !self.seed_and_check_dedup(&mut local, c, origin.clone()))
                 .map(|(c, _)| c)
                 .collect()
         };
@@ -557,7 +484,7 @@ impl SymContext {
         // `fork()` and the context's solver (`SymContext::sync_solver`) see
         // the constraint. This path used to skip that entirely. Push
         // unconditionally (no dedup-skip) rather than routing through
-        // `seed_and_check_z3_dedup`/`contains_or_insert_ptr`: those
+        // `seed_and_check_dedup`/`contains_or_insert`: those
         // conditionally omit the push on a dup, which would leave
         // `tracker_idx` out of sync with `unsat_core()`'s by-position match
         // against `constraint_trackers` (pinned by
@@ -576,14 +503,13 @@ impl SymContext {
             i
         };
         {
-            use z3::ast::Ast;
             let mut local = self.local_constraints.lock();
-            local.log_tracked(constraint.clone(), origin, track_bool);
-            if local.dedup_set_seeded {
-                local
-                    .dedup_set
-                    .insert(constraint.get_z3_ast().as_ptr() as usize);
+            if local.dedup_set_seeded
+                && let Some(key) = origin.dedup_key()
+            {
+                local.dedup_set.insert(key);
             }
+            local.log_tracked(constraint.clone(), origin, track_bool);
         }
         tracker_idx
     }
@@ -696,7 +622,7 @@ impl SymContext {
             let mut local = self.local_constraints.lock();
             local.assumed.push((cond.clone(), want_true));
             let origin = Origin::Assume(cond.clone(), want_true);
-            self.check_z3_dedup_if_seeded(&mut local, &constraint, origin)
+            self.check_dedup_if_seeded(&mut local, &constraint, origin)
         };
         if was_dup {
             Z3_ASSUME_DEDUP_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -705,8 +631,6 @@ impl SymContext {
         self.add_constraint_unscoped(constraint);
     }
 }
-
-test_submod!("constraint_ops_tests.rs" => constraint_ops_tests);
 
 /// Whether `model` shows `constraint` true.
 ///

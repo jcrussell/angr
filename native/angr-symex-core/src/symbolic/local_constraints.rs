@@ -86,6 +86,10 @@ pub(super) fn bool_term(bit: &RustBV) -> Result<AstRef<'static>, LowerError> {
     term.map_err(|err| LowerError::InvalidArgs(format!("no Bool view: {err}")))
 }
 
+/// What [`LocalConstraints::dedup_set`] holds for one asserted constraint; see
+/// [`Origin::dedup_key`].
+pub(super) type DedupKey = (AstRef<'static>, bool);
+
 /// Where an asserted constraint came from, which is also how its clarirs form
 /// is recovered.
 #[derive(Clone)]
@@ -183,6 +187,28 @@ impl Origin {
         }
     }
 
+    /// The constraint's identity for [`LocalConstraints::dedup_set`]: a Bool
+    /// with its leading negations stripped, and the polarity it is asserted
+    /// in. `assume_false(c)`, a lowered `Not(c)` and a batch entry standing
+    /// for either therefore share one key, as they share one Z3 node.
+    ///
+    /// `None` exactly when [`Self::term`] is; such an entry is never deduped.
+    pub(super) fn dedup_key(&self) -> Option<DedupKey> {
+        // SILENT(cat-a): no key means the constraint is asserted without
+        // being deduped, which costs a redundant assert and nothing else.
+        let (mut term, mut polarity) = match self {
+            Origin::Assume(cond, want_true) => (bool_term(cond).ok()?, *want_true), // SILENT(cat-a): as above
+            Origin::Term(term) => (term.clone(), true),
+            Origin::BvEq(..) => (self.term()?, true),
+        };
+        while let AstOp::Not(inner) = term.op() {
+            let inner = inner.clone();
+            term = inner;
+            polarity = !polarity;
+        }
+        Some((term, polarity))
+    }
+
     /// The constraint as its 1-bit encoding, the form a snapshot carries.
     /// `None` exactly when [`Self::term`] is.
     pub(super) fn bit(&self) -> Option<RustBV> {
@@ -216,13 +242,15 @@ pub(super) struct Residual {
 /// the hot path (`assume_true`/`assume_false`/`add_constraint_lowered`) only
 /// acquires one lock instead of two.
 ///
-/// Also carries a `dedup_set` side-table of Z3_ast ptrs (angr-sfp9) used
-/// by [`SymContext::add_constraint_lowered`] to skip the push+assert work when
-/// the incoming constraint is already asserted on the current solver. Z3's
-/// hash-cons gives `ptr-equality == structural-equality` for live ASTs, so
-/// the raw ptr is a valid identity key. The set is lazily seeded on first
-/// access from `z3_assertions_shared` + `z3_assertions`, then maintained
-/// incrementally by every path that pushes into `z3_assertions`.
+/// Also carries a `dedup_set` side-table (angr-sfp9) used by
+/// [`SymContext::add_constraint_lowered`] to skip the push+assert work when
+/// the incoming constraint is already in the log. It is keyed on the
+/// constraint's clarirs identity ([`Origin::dedup_key`]) and holds the terms
+/// themselves, so a key cannot outlive the node it names (angr-az6ru.2).
+/// clarirs hash-conses, so two spellings of one term are one key. The set is
+/// lazily seeded on first access from `z3_assertions_shared` +
+/// `z3_assertions`, then maintained incrementally by every path that pushes
+/// into `z3_assertions`.
 pub(super) struct LocalConstraints {
     /// Local assumed (RustBV, is_assumed_true) pairs added after fork.
     /// `pub(super)` for the constraint-mutation methods in `constraint_ops.rs`
@@ -239,12 +267,11 @@ pub(super) struct LocalConstraints {
     /// `residual_terms` by `to_snapshot`; the assume class is reconstructed
     /// from `assumed_constraints` IR instead.
     pub(super) non_bv_assertions: Vec<Residual>,
-    /// HashSet of Z3_ast ptrs for O(1) dedup in `add_constraint_lowered`.
-    /// Holds ptrs for every assertion known to be currently asserted on the
-    /// solver (i.e. everything in `z3_assertions_shared` + `z3_assertions`).
+    /// Keys of every assertion in the log (`z3_assertions_shared` +
+    /// `z3_assertions`), for O(1) dedup in `add_constraint_lowered`.
     /// Lazily seeded — `dedup_set_seeded == false` means the set is stale
     /// and must be rebuilt from the shared+local vecs before consultation.
-    pub(super) dedup_set: HashSet<usize>,
+    pub(super) dedup_set: HashSet<DedupKey>,
     /// True once `dedup_set` has been populated from shared+local for this
     /// context. Reset to false by `fork()`, `merge()` (via `new()`), and a
     /// bare `pop()` that closes a scope which added assertions
@@ -264,20 +291,21 @@ impl LocalConstraints {
         }
     }
 
-    /// Insert a Z3 Bool into `z3_assertions` and, when the dedup set is
-    /// already seeded, record its ptr too.
+    /// Insert a constraint into `z3_assertions` and, when the dedup set is
+    /// already seeded, record its key too.
     ///
-    /// Callers must already know `b` is not present: this records the ptr
-    /// but never *consults* the set. There is deliberately no bulk sibling —
-    /// a bulk `extend_assertions` let `add_constraints_raw_batch` re-push and
-    /// re-assert already-asserted constraints (angr-5mnx3.43). A bulk caller wanting dedup
-    /// should loop over [`SymContext::seed_and_check_z3_dedup`], which
-    /// pushes on a miss, exactly as `add_constraints_raw_batch` now does.
+    /// Callers must already know the constraint is not present: this records
+    /// the key but never *consults* the set. There is deliberately no bulk
+    /// sibling — a bulk `extend_assertions` let `add_constraints_raw_batch`
+    /// re-push and re-assert already-asserted constraints (angr-5mnx3.43). A
+    /// bulk caller wanting dedup should loop over
+    /// [`SymContext::seed_and_check_dedup`], which pushes on a miss, exactly
+    /// as `add_constraints_raw_batch` now does.
     pub(super) fn push_assertion(&mut self, b: z3::ast::Bool, origin: Origin) {
-        if self.dedup_set_seeded {
-            use z3::ast::Ast;
-            let ptr = b.get_z3_ast().as_ptr() as usize;
-            self.dedup_set.insert(ptr);
+        if self.dedup_set_seeded
+            && let Some(key) = origin.dedup_key()
+        {
+            self.dedup_set.insert(key);
         }
         self.log_asserted(b, origin);
     }

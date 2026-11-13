@@ -199,17 +199,18 @@ pub(crate) const SIMPLIFY_SAMPLE_STRIDE_DEFAULT: u64 = 64;
 /// third, redundant denominator that a `bench_diff` capture would rank as a large
 /// mover on every run. It IS reset below so a sampling window starts at phase 0.
 pub(crate) static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
-// (c) full-list assertion-dedup: how often the incoming Z3_ast ptr ALREADY
+// (c) full-list assertion-dedup: how often the incoming constraint ALREADY
 // appears in shared+local `z3_assertions` (angr-sfp9). Always-on via the
-// `dedup_set` HashSet side-table inside `LocalConstraints` — O(1) ptr lookup
-// per call after a one-time lazy seed from shared+local.
-// SCANNED bumps once per `add_constraint_lowered` call. HIT bumps when the ptr
-// was already present, in which case the push+assert are skipped.
+// `dedup_set` HashSet side-table inside `LocalConstraints` — O(1) lookup of
+// the constraint's clarirs key per call after a one-time lazy seed from
+// shared+local. SCANNED bumps once per `add_constraint_lowered` call. HIT
+// bumps when the key was already present, in which case the push+assert are
+// skipped.
 pub(crate) static ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64::new(0);
 // angr-mwbp: dedup hit/scanned for the assume_true/assume_false hot path,
 // surfaced separately from the add_constraint_lowered counters so the impact of
-// extending dedup to the symbolic-branch sites is attributable. Same Z3 ptr
+// extending dedup to the symbolic-branch sites is attributable. Same
 // keying as `dedup_set`; the `assumed` vec is still grown on every call
 // (preserves Python-visible duplicate constraints) — the dedup only skips
 // the redundant push into `z3_assertions` + `add_constraint` round-trip.

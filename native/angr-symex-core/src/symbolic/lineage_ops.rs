@@ -253,7 +253,7 @@ impl SymContext {
                 local.z3_assertions.truncate(z3_len);
                 local.assumed.truncate(assumed_len);
                 local.non_bv_assertions.truncate(non_bv_len);
-                // Stale dedup ptrs from the truncated assertions would falsely
+                // Stale dedup keys from the truncated assertions would falsely
                 // dedup a re-assert (angr-ph300.41); drop the side-table and
                 // let the next add_constraint_lowered rebuild it from shared+local.
                 local.dedup_set.clear();
