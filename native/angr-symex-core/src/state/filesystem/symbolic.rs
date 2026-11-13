@@ -42,7 +42,6 @@ impl FileSystem {
     /// their pre-registration semantics), so a later native write through
     /// such an fd still demotes the registry entry rather than leaving a
     /// fresh `open` to serve stale content.
-    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     #[allow(
         clippy::expect_used,
         reason = "`stamp` is collected from `self.fds` two statements above and `Arc::make_mut` only deep-clones the map (never re-keys it), so the re-lookup under the mutable borrow cannot miss — see the module Panic policy header"
@@ -62,7 +61,7 @@ impl FileSystem {
                 fds.get_mut(&k).expect("fd existed above").registry_key = Some(norm.clone());
             }
         }
-        Arc::make_mut(&mut self.file_contents).insert(norm, crate::arc_shared(bytes));
+        Arc::make_mut(&mut self.file_contents).insert(norm, Arc::new(bytes));
     }
 
     /// Attach bounded symbolic content directly to an already-open fd,
@@ -76,7 +75,6 @@ impl FileSystem {
     /// evaluable on an exported found state (angr-mb09c).
     ///
     /// Position is left as-is (0 on a seed state). No-op on an unknown fd.
-    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn set_fd_content_sym(&mut self, fd: u32, bytes: Vec<RustBV>) {
         let fd = self.desc_key(fd);
         // The `contains_key` peek keeps the unknown-fd no-op from forcing a
@@ -87,7 +85,7 @@ impl FileSystem {
             return;
         }
         if let Some(desc) = Arc::make_mut(&mut self.fds).get_mut(&fd) {
-            desc.content_sym = Some(crate::arc_shared(bytes));
+            desc.content_sym = Some(Arc::new(bytes));
         }
     }
 
@@ -309,7 +307,6 @@ impl FileSystem {
     /// Returns `true` when anything was dropped. O(1) empty-registry check
     /// plus a flag scan over the handful of open fds when nothing is
     /// attached (all production states today), no allocation.
-    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     pub fn demote_all_symbolic_content(&mut self) -> bool {
         let any_fd = self
             .fds
@@ -324,7 +321,7 @@ impl FileSystem {
             let keys: Vec<String> = self.file_contents.keys().cloned().collect();
             let demoted = Arc::make_mut(&mut self.demoted_paths);
             demoted.extend(keys);
-            self.file_contents = crate::arc_shared(HashMap::new());
+            self.file_contents = Arc::new(HashMap::new());
         }
         if any_fd {
             let fds = Arc::make_mut(&mut self.fds);

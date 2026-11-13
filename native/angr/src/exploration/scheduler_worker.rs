@@ -173,7 +173,7 @@ pub(super) fn worker_loop(
 /// receiver after finalize (session teardown), and a worker must park cleanly
 /// through that race rather than panic.
 ///
-/// The loop returns with `local` empty in EVERY case, so no `!Send` state is
+/// The loop returns with `local` empty in EVERY case, so no state is
 /// parked inside the worker across a coordinator boundary — the resident
 /// frontier lives only in BUSY workers.
 pub(super) fn worker_session_loop(

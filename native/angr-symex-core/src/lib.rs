@@ -7,8 +7,7 @@
 //! snapshots and migration payload; [`interpreter`], the VEX IRSB
 //! interpreter, which reaches the shell only through
 //! `interpreter::EngineHost` and a `dyn VEXLifter`; and the crate-root
-//! helpers every engine module shares ([`arc_shared`], [`duration_ns`],
-//! [`elapsed_ns`]).
+//! helpers every engine module shares ([`duration_ns`], [`elapsed_ns`]).
 //!
 //! **Dependencies.** `angr-bv`, `angr-vex`, `angr-symex-macros`,
 //! `clarirs-core`, `z3` and the plain-data crates: no `pyo3` (check with
@@ -68,36 +67,6 @@ pub fn duration_ns(d: std::time::Duration) -> u64 {
 /// with a bare `as u64`.
 pub fn elapsed_ns(start: std::time::Instant) -> u64 {
     duration_ns(start.elapsed())
-}
-
-/// Wrap a value in an `Arc` whose inner type is deliberately not `Send`/`Sync`.
-///
-/// The engine's core shared types (`RustBV`, Z3 AST handles, `FileDescriptor`)
-/// are `!Send` by design, and that is what makes the suppression sound — NOT
-/// single-threadedness. The engine does step states on real OS worker threads
-/// (`exploration::scheduler_pool::worker_thread` in the engine shell, spawned
-/// as `angr-worker-N`); what keeps these `Arc`s confined to one thread is that
-/// the only cross-thread transport for a state is `StateMigrationPayload`
-/// (`state/migration.rs`), which is `Send`-by-construction and guarded at
-/// compile time by an `assert_send::<..>()` check. There is no
-/// `unsafe impl Send`/`Sync` in production code, so an `arc_shared` `Arc`
-/// cannot escape its worker except by round-tripping through
-/// `detach_for_migration`/`reattach`, which rebuilds the shared state on the
-/// destination thread. Contributors adding a new cross-thread share must go
-/// through that payload — do not widen this suppression to cover an `Arc` that
-/// is genuinely handed between threads.
-///
-/// The `Arc`s over them are load-bearing: they give O(1) copy-on-write
-/// sharing across `fork()`/snapshot siblings, which `Rc` could not without
-/// leaking `!Send` through the public fork/snapshot API surface. Clippy's
-/// `arc_with_non_send_sync` flags every such `Arc::new` as a design smell;
-/// routing them through this generic helper documents the decision in ONE place
-/// instead of a per-call-site `#[allow]`. The lone `#[allow]` below is that
-/// single, deliberate suppression (angr-inieg.1).
-#[allow(clippy::arc_with_non_send_sync)]
-#[inline]
-pub fn arc_shared<T>(value: T) -> std::sync::Arc<T> {
-    std::sync::Arc::new(value)
 }
 
 pub mod arch;

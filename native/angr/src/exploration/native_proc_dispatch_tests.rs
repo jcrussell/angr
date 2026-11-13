@@ -16,8 +16,7 @@ use crate::symbolic::RustBV;
 /// Stub proc whose `call_ex` replays a canned outcome, so the dispatcher's
 /// classification + counter bookkeeping can be tested without a real
 /// procedure. The outcome is described by plain data (not a prebuilt
-/// `ProcOutcome`) because `NativeSimProcedure` is `Send + Sync` and `RustBV`
-/// is neither.
+/// `ProcOutcome`) so the stub stays `Copy`.
 #[derive(Clone, Copy)]
 enum StubOutcome {
     Ret(Option<u64>),

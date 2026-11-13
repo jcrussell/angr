@@ -28,20 +28,20 @@ fn test_solver_close_on_owner_empties_payload() {
 ///
 /// The sibling test above only proves the on-owner drop; the negative
 /// direction (a `close()` whose current thread != recorded owner must NOT
-/// drop the non-Send payload) was previously "covered by construction" with
+/// drop the payload) was previously "covered by construction" with
 /// no assertion. It cannot be tested with a real cross-thread call — the
 /// pyclass is `unsendable` and the crate builds `panic = "abort"`, so pyo3's
 /// thread checker hard-aborts on any cross-thread borrow (the Python
 /// `test_solver_ctx_close.py` header comment records this). Instead spoof the
 /// `owner` field to a foreign `ThreadId` while the context stays on this
 /// thread, so `close()` takes its non-owner branch. If someone drops the
-/// `current().id() == owner` guard (reintroducing the unsound cross-thread
+/// `current().id() == owner` guard (reintroducing the cross-thread
 /// drop), the first assertion below flips to true and this test fails.
 #[test]
 fn test_solver_close_off_owner_is_noop() {
     let mut ctx = RustSolverContext::new();
     // The constructor records the constructing (this) thread as owner — the
-    // sole gate `close()` checks before dropping the non-Send payload.
+    // sole gate `close()` checks before dropping the payload.
     assert_eq!(ctx.owner, std::thread::current().id());
     // A ThreadId that is provably not this thread's.
     let foreign = std::thread::spawn(|| std::thread::current().id())

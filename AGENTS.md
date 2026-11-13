@@ -208,7 +208,7 @@ module root instead (`solver.rs`, `fuzzer.rs`), and `fuzzer.rs` has no
   `arch/` (the `Arch` trait, register files, calling conventions),
   `state/` (`RustSimState`, its filesystem, snapshots and migration payload),
   `interpreter/` (`VEXInterpreter`, behind the `EngineHost` seam)
-  and the crate-root `arc_shared` / `duration_ns` / `elapsed_ns`;
+  and the crate-root `duration_ns` / `elapsed_ns`;
   `src/lib.rs` indexes its files.
 - **Native procedures and syscalls** (`native/angr-symex-native/`):
   `procedures/` and `syscalls/`, on the core with no PyO3 dependency;

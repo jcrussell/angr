@@ -424,8 +424,8 @@ pub(super) fn worker_thread(
     // thread-local context is created here, used by this thread alone, and
     // deleted at thread exit. Every reattach mints ASTs into it. The `local`
     // live queue is created below and threaded into `worker_loop` by `&mut`,
-    // so the irreducibly `!Send` `RustSimState`s in it can never escape this
-    // thread.
+    // so the `RustSimState`s in it leave this thread only as a detached
+    // payload.
     let z3ctx = Context::thread_local();
     // Warm per-worker block cache (angr-vh834 Work Item 3), created ONCE and
     // reused across every dispatch AND every wave for this worker. `Arc<IRSB>`
@@ -435,8 +435,8 @@ pub(super) fn worker_thread(
     let mut block_cache: LruCache<u64, Arc<IRSB>> = LruCache::new(BLOCK_CACHE_CAPACITY_NZ);
     // Persistent worker-local live frontier (angr-nkoct increment 1). Owned for
     // the worker's WHOLE life alongside the Z3 context and warm block cache, NOT
-    // recreated per wave. The `!Send` `RustSimState`s it holds stay stack-local to
-    // this OS thread and never escape. Any states a wave did not drain to
+    // recreated per wave. The `RustSimState`s it holds stay stack-local to
+    // this OS thread unless detached. Any states a wave did not drain to
     // quiescence are RETAINED here for the next wave and dispatched WITHOUT a
     // detach/reattach round trip — the mechanism that stops the coordinator from
     // re-migrating an already-resident frontier. Today every wave runs its subtree
@@ -459,13 +459,13 @@ pub(super) fn worker_thread(
             Ok(WorkerCtl::Run(session)) => {
                 // Session entry or wake ping. The loop returns with `local`
                 // EMPTY in every case (quiesced, drained, or a stale ping on a
-                // finalized session), so no `!Send` state is ever parked inside
+                // finalized session), so no state is ever parked inside
                 // this thread across the coordinator boundary.
                 worker_session_loop(&session, worker_id, &z3ctx, &mut block_cache, &mut local);
                 // Always-on, NOT `debug_assert!` (angr-9ke6b.68): the release
                 // profile leaves `debug-assertions = false`, so a `debug_assert!`
                 // here would give the shipped `.so` zero protection for the one
-                // invariant that keeps `!Send` states from crossing the
+                // invariant that keeps live states from crossing the
                 // coordinator boundary — a violation would silently re-park a
                 // worker holding stale states and mis-route them with no
                 // diagnostic trail. Under `panic = "abort"` this fails the way

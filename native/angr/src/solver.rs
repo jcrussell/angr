@@ -127,11 +127,12 @@ pub struct RustSolverContext {
     // nothing.
     inner: Option<Box<SolverInner>>,
 
-    // Thread that constructed this context (and therefore the only thread
-    // on which its non-Send payload may be dropped). `close()` compares
-    // against this and refuses to drop off-owner, so a `close()` routed
-    // from a scheduler worker (via the Python graveyard drain) is a safe
-    // no-op rather than a cross-thread drop of the SymContext/Rc internals.
+    // Thread that constructed this context, whose solver and model tables
+    // hold what the context built. `close()` compares against this and
+    // refuses to drop off-owner, so a `close()` routed from a scheduler
+    // worker (via the Python graveyard drain) is a safe no-op: the class is
+    // `unsendable`, and a context dropped elsewhere would leave its cached
+    // solver behind on this thread until eviction.
     owner: std::thread::ThreadId,
 }
 
@@ -567,8 +568,9 @@ impl RustSolverContext {
     pub fn close(&mut self) {
         // Only drop on the owning thread. A `close()` routed here from a
         // scheduler worker (Python graveyard drain) must NOT move the
-        // non-Send SymContext/Rc drop off-owner — that is the exact
-        // unsoundness `unsendable` guards. Off-owner we leave `inner`
+        // drop off-owner: pyo3 treats the class as bound to its thread
+        // (`unsendable`), and the context's cached solver and models are in
+        // that thread's tables. Off-owner we leave `inner`
         // intact; the later tp_dealloc (also off-owner) is refused by
         // pyo3, preserving today's leak-safe behavior. On-owner we drop
         // here, so a subsequent off-owner tp_dealloc finds `None`.

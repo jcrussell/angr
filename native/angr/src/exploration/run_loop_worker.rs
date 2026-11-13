@@ -139,8 +139,8 @@ impl ParallelShared {
 ///   `Errored` become summaries; `Unconstrained` materializes its main state and
 ///   keeps its loop-exit forks local; `NeedsPython` materializes the bounce
 ///   state for the coordinator's `dispatch_bounce` and keeps its deferred forks
-///   local (re-materialized in-thread so no path is lost across the `!Send`
-///   loose-condition boundary).
+///   local (re-materialized in-thread so no path is lost across the bounce
+///   boundary, which carries states and not loose conditions).
 #[allow(
     clippy::expect_used,
     reason = "poison-guard invariants: the ParallelShared root_map/kind_map/counters locks only poison after an earlier panic while one was held, which already failed that step — see the module Panic policy header"
@@ -362,7 +362,7 @@ pub(crate) fn parallel_process_state(
                 fork_snapshots,
             } = bounce;
             // Materialize the bounce's deferred forks in-thread so no unexplored
-            // branch is lost across the (!Send loose-condition) bounce boundary.
+            // branch is lost across the bounce boundary, which carries no loose condition.
             // Done BEFORE the pc stamp below so the forks are derived from the
             // exact same base state the single-threaded path forks from.
             let (forks, pruned2, _ids) = materialize_bounce_forks(

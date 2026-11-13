@@ -110,7 +110,6 @@ pub struct FileSystem {
 }
 
 impl Default for FileSystem {
-    // !Send Arcs go through `crate::arc_shared` (see its doc comment).
     fn default() -> Self {
         let mut fds = HashMap::new();
         // Pre-register standard file descriptors
@@ -127,13 +126,13 @@ impl Default for FileSystem {
             FileDescriptor::new_std_placeholder("/dev/stderr".to_string(), FdFlags::WriteOnly),
         );
         FileSystem {
-            fds: crate::arc_shared(fds),
+            fds: Arc::new(fds),
             aliases: Arc::new(HashMap::new()),
             next_fd: 3,
             cwd: b"/".to_vec(),
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(HashMap::new()),
-            file_contents: crate::arc_shared(HashMap::new()),
+            file_contents: Arc::new(HashMap::new()),
             demoted_paths: Arc::new(HashSet::new()),
             closed_contents: Arc::new(HashMap::new()),
         }

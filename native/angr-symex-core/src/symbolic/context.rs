@@ -342,14 +342,6 @@ impl SymContext {
     }
 
     /// Create a new solver context with Z3 and a custom timeout.
-    // Arc<Vec<RustBV/z3::ast::Bool>> for assumed_constraints_shared / z3_assertions_shared:
-    // the inner types are not Send/Sync (z3 AST handles, Python-backed RustBV), but the Arc
-    // is correct — fork() shares the constraint prefix across sibling SymContexts via
-    // Arc::clone for O(1) copy. The missing Send/Sync is not a real constraint because these
-    // Arcs never cross a thread: SymContext is !Send by design and the only cross-thread
-    // transport is StateMigrationPayload (state/migration.rs), which is Send-by-construction
-    // and compile-time asserted. Switching to Rc would propagate non-Send through the
-    // SymContext API surface. See `arc_shared` in lib.rs for the full rationale.
     pub fn with_timeout(timeout_ms: u32) -> Self {
         check_tactic_spec_once();
         SymContext {
@@ -357,9 +349,9 @@ impl SymContext {
             branch_scope_depth: SyncOptUsize::new(None),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
-            assumed_constraints_shared: Mutex::new(crate::arc_shared(Vec::new())),
-            z3_assertions_shared: Mutex::new(crate::arc_shared(Vec::new())),
-            non_bv_assertions_shared: Mutex::new(crate::arc_shared(Vec::new())),
+            assumed_constraints_shared: Mutex::new(Arc::new(Vec::new())),
+            z3_assertions_shared: Mutex::new(Arc::new(Vec::new())),
+            non_bv_assertions_shared: Mutex::new(Arc::new(Vec::new())),
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver_slot: super::solver_cache::SolverSlot::new(),

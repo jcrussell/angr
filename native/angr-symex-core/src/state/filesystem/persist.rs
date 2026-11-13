@@ -84,10 +84,6 @@ impl From<FileSystem> for FileSystemData {
 }
 
 impl From<FileSystemData> for FileSystem {
-    // RustBV's Z3 AST makes FileDescriptor !Send; the Arcs here are
-    // per-state CoW handles that never cross threads (states migrate
-    // between workers via the serde snapshot, not by moving Arcs) — hence
-    // the !Send Arcs go through `crate::arc_shared` (see its doc comment).
     fn from(d: FileSystemData) -> Self {
         let fds: HashMap<u32, FileDescriptor> = d.fds.into_iter().collect();
         let symlinks: HashMap<String, Vec<u8>> = d.symlinks.into_iter().collect();
@@ -97,13 +93,13 @@ impl From<FileSystemData> for FileSystem {
         // re-normalization pass is needed (unlike known_paths below).
         let demoted_paths: HashSet<String> = d.demoted_paths.into_iter().collect();
         let mut fs = FileSystem {
-            fds: crate::arc_shared(fds),
+            fds: Arc::new(fds),
             aliases: Arc::new(d.aliases.into_iter().collect()),
             next_fd: d.next_fd,
             cwd: d.cwd,
             known_paths: Arc::new(HashSet::new()),
             symlinks: Arc::new(symlinks),
-            file_contents: crate::arc_shared(file_contents),
+            file_contents: Arc::new(file_contents),
             demoted_paths: Arc::new(demoted_paths),
             closed_contents: Arc::new(d.closed_contents.into_iter().collect()),
         };

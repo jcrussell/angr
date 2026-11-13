@@ -263,8 +263,8 @@ pub(crate) fn fork_base_for_forks(
 /// Worker-side helper (angr-vh834 Phase 5): turn the deferred forks that ride
 /// into a `NeedsPython` bounce into real, migratable fork states so the parallel
 /// wave loop can keep exploring them locally instead of losing them across the
-/// bounce boundary (the loose `RustBV` conditions are `!Send` and cannot cross
-/// a thread, but the materialized fork *states* can).
+/// bounce boundary (the bounce transport carries states, not loose
+/// conditions, so the forks cross as materialized *states*).
 ///
 /// Uses `base` (the bounce state, PC parked at the bounce point, before the
 /// Python handler runs) as the fork base — the same logical base the

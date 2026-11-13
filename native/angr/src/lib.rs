@@ -280,9 +280,10 @@ fn import_submodule(
 }
 
 // `gil_used = true`: pyo3 0.28 flipped the default to "safe on free-threaded
-// Python". This extension is not: every `SymContext` captures a thread-local
-// Z3 context, `RustSolverContext` is `#[pyclass(unsendable)]`, and the
-// scheduler serializes state across threads by design
+// Python". This extension is not: every solver, model and lowered term lives
+// in a thread-local Z3 context, `RustSolverContext` is
+// `#[pyclass(unsendable)]`, and the scheduler hands states between threads
+// by design
 // (docs/advanced-topics/rust_parallel_design.rst). On a free-threaded
 // interpreter this makes CPython re-enable the GIL for the process instead of
 // letting two Python threads race into one Z3 context.
