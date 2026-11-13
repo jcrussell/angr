@@ -137,7 +137,9 @@ savepoints; a solver is a cache of that list, kept per thread in
   brings it up to date: it pops the frames of scopes the context has
   closed, asserts the log entries the solver has not seen, and pushes a
   frame for each savepoint opened since. A tracked constraint is
-  asserted under the tracker its log entry carries.
+  asserted under the tracker its log entry carries: the entry holds the
+  tracking literal's name, and the solver mints the literal from it, so
+  every solver built from the log tracks the entry under the same one.
 * **``push()`` / ``pop()``** record and remove a savepoint and truncate
   the logs. The solver's frames follow at the next query, so a scope
   closed before any query never reaches Z3.

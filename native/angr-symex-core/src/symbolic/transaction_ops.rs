@@ -196,20 +196,17 @@ impl SymContext {
                 .collect()
         });
 
-        let trackers = self.constraint_trackers.lock();
-        let mut result = Vec::new();
-
-        // Match core tracking booleans to stored tracker indices by string representation
-        for core_str in &core_strs {
-            for (i, (tracker, _)) in trackers.iter().enumerate() {
-                if format!("{tracker}") == *core_str {
-                    result.push(i);
-                    break;
-                }
-            }
-        }
-
-        result
+        // Z3 prints a core literal as its name, so match on the names.
+        let names: Vec<String> = self
+            .constraint_trackers
+            .lock()
+            .iter()
+            .map(|tracker| tracker.name())
+            .collect();
+        core_strs
+            .iter()
+            .filter_map(|core_str| names.iter().position(|name| name == core_str))
+            .collect()
     }
 
     /// Compute an unsat core over the *assumed-constraint* list, on demand.

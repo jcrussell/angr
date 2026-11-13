@@ -115,13 +115,32 @@ pub(super) struct Asserted {
     pub(super) origin: Origin,
     /// The tracking literal a solver asserts this entry under, for
     /// `unsat_core`; `None` for a plain assert.
-    pub(super) tracker: Option<z3::ast::Bool>,
+    pub(super) tracker: Option<Tracker>,
 }
 
 impl Asserted {
     /// The constraint as a clarirs Bool; see [`Origin::term`].
     pub(super) fn term(&self) -> Option<AstRef<'static>> {
         self.origin.term()
+    }
+}
+
+/// The name of an unsat-core tracking literal. A solver asserting a tracked
+/// entry mints the Bool constant of that name ([`Self::literal`]), so two
+/// solvers built from one log track the entry under the same literal and the
+/// log holds no Z3 term for it (angr-az6ru.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Tracker(pub(super) u64);
+
+impl Tracker {
+    /// The literal's name, which is also how Z3 prints it in a core.
+    pub(super) fn name(self) -> String {
+        format!("__track_{}", self.0)
+    }
+
+    /// The literal, in the thread's Z3 context.
+    pub(super) fn literal(self) -> z3::ast::Bool {
+        z3::ast::Bool::new_const(self.name().as_str())
     }
 }
 
@@ -320,12 +339,7 @@ impl LocalConstraints {
     }
 
     /// [`Self::log_asserted`] for a constraint asserted under `tracker`.
-    pub(super) fn log_tracked(
-        &mut self,
-        z3: z3::ast::Bool,
-        origin: Origin,
-        tracker: z3::ast::Bool,
-    ) {
+    pub(super) fn log_tracked(&mut self, z3: z3::ast::Bool, origin: Origin, tracker: Tracker) {
         self.z3_assertions.push(Asserted {
             z3,
             origin,

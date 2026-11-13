@@ -22,7 +22,7 @@ use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
 
-use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin};
+use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin, Tracker};
 use super::model_cache::ModelRef;
 use super::solver_build::*;
 use super::stats::*;
@@ -475,9 +475,9 @@ impl SymContext {
 
     fn add_constraint_tracked_inner(&self, constraint: z3::ast::Bool, origin: Origin) -> usize {
         self.close_branch_scope_before_permanent_add();
-        let idx = self.constraint_count.load(Ordering::SeqCst);
-        let track_name = format!("__track_{idx}");
-        let track_bool = z3::ast::Bool::new_const(track_name.as_str());
+        // Named by the constraint count, not the tracker position: a fork
+        // inherits both, so a name is never reused along a lineage.
+        let tracker = Tracker(self.constraint_count.load(Ordering::SeqCst) as u64);
 
         // angr-sqfj8.101: every other adder (`add_constraint_raw_inner`,
         // `add_constraints_raw_batch`) logs into `local.z3_assertions`, so
@@ -499,7 +499,7 @@ impl SymContext {
         let tracker_idx = {
             let mut trackers = self.constraint_trackers.lock();
             let i = trackers.len();
-            trackers.push((track_bool.clone(), constraint.clone()));
+            trackers.push(tracker);
             i
         };
         {
@@ -509,7 +509,7 @@ impl SymContext {
             {
                 local.dedup_set.insert(key);
             }
-            local.log_tracked(constraint.clone(), origin, track_bool);
+            local.log_tracked(constraint.clone(), origin, tracker);
         }
         tracker_idx
     }

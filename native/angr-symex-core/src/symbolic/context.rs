@@ -209,14 +209,14 @@ pub struct SymContext {
     /// check (angr-vmi2l.318). Same invariant and invalidation as
     /// `model_cache`, which it is promoted into when that one goes stale.
     pub(super) alt_model_cache: RefCell<Option<ModelRef>>,
-    /// `(track_bool, constraint)` pairs for unsat core mapping; a tracker's
-    /// position is the index `unsat_core` reports. Each constraint is also
+    /// The tracking literals minted for unsat core mapping, by name; a
+    /// tracker's position is the index `unsat_core` reports. Each constraint is also
     /// in the z3 assertion log once, in an entry that carries the tracker,
     /// so any solver built from the log tracks it, and `fork` clones the list so a child
     /// keeps the parent's index space (angr-vmi2l.91).
     /// `pub(super)` for `add_constraint_tracked_lowered` in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
-    pub(super) constraint_trackers: Mutex<Vec<(z3::ast::Bool, z3::ast::Bool)>>,
+    pub(super) constraint_trackers: Mutex<Vec<super::local_constraints::Tracker>>,
     /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
     /// `pub(super)` for `set_timeout`/`timeout_ms` in `transaction_ops.rs`
     /// (slice 10, angr-a2br.2.8).
@@ -477,7 +477,7 @@ impl SymContext {
                 };
                 let Some(entry) = entry else { break };
                 match &entry.tracker {
-                    Some(tracker) => built.solver.assert_and_track(&entry.z3, tracker),
+                    Some(tracker) => built.solver.assert_and_track(&entry.z3, &tracker.literal()),
                     None => built.solver.assert(&entry.z3),
                 }
             }
