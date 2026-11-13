@@ -147,14 +147,16 @@ pub struct SymContext {
     /// Wrapped in Mutex so fork() can freeze local into shared in-place when safe.
     pub(super) assumed_constraints_shared: Mutex<Arc<Vec<(RustBV, bool)>>>,
 
-    /// Shared (frozen) Z3 Bool assertions from parent — O(1) clone via Arc.
-    /// Wrapped in Mutex so fork() can freeze local into shared in-place when safe
-    /// (avoids cloning every Bool — each Bool::clone would call Z3_inc_ref).
+    /// Shared (frozen) assertion-log entries from parent — O(1) clone via
+    /// Arc. Each entry is the form its constraint is rebuilt from, with no
+    /// Z3 term; the field's name predates that (angr-az6ru.2).
+    /// Wrapped in Mutex so fork() can freeze local into shared in-place when
+    /// safe (which avoids cloning every entry).
     /// `pub(super)` for the dedup-seed path in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
     pub(super) z3_assertions_shared: Mutex<Arc<Vec<super::local_constraints::Asserted>>>,
 
-    /// Shared (frozen) residual (no-[`RustBV`]) Z3 Bool assertions from
+    /// Shared (frozen) residual (no-[`RustBV`]) assertions from
     /// parent (angr-t3l5o Phase 1) — mirrors `z3_assertions_shared` exactly so
     /// `fork`'s `freeze_into_shared` carries it with no new logic. Holds only
     /// the residual subset (lowered / bv-eq / merge-guard); the assume class
@@ -173,7 +175,7 @@ pub struct SymContext {
     /// or the full solver (merge fallback).
     pub(super) assume_class_reconstructible: AtomicBool,
 
-    /// Local additions (assumed pairs + Z3 Bool cache) added after fork.
+    /// Local additions (assumed pairs + assertion-log entries) added after fork.
     /// Combined under one Mutex so the assume_*/add_constraint_lowered hot path
     /// only acquires a single lock instead of two.
     /// `pub(super)` for the constraint-mutation methods in `constraint_ops.rs`
@@ -476,9 +478,20 @@ impl SymContext {
                     Some(local_at) => local.z3_assertions.get(local_at),
                 };
                 let Some(entry) = entry else { break };
-                match &entry.tracker {
-                    Some(tracker) => built.solver.assert_and_track(&entry.z3, &tracker.literal()),
-                    None => built.solver.assert(&entry.z3),
+                // An entry with no Z3 form cannot be asserted. The solver
+                // goes without it, with a warn: the state is
+                // under-constrained, never pruned, the side a Z3 Unknown
+                // errs on (`invariant-z3-unknown-not-unsat`,
+                // angr-mx00p.116.2).
+                let Some(constraint) = super::lowered_or_warn(entry.origin.lower(), "assert")
+                else {
+                    continue;
+                };
+                match entry.tracker {
+                    Some(tracker) => built
+                        .solver
+                        .assert_and_track(&constraint, &tracker.literal()),
+                    None => built.solver.assert(&constraint),
                 }
             }
             let grew = end > built.asserted;
@@ -556,7 +569,8 @@ impl SymContext {
     }
 
     /// Every asserted constraint as a clarirs Bool, shared prefix first, in
-    /// assertion order. `None` marks an entry logged with a Z3 term only.
+    /// assertion order. `None` only where clarirs refuses to build the node
+    /// (`Origin::term`).
     pub fn asserted_terms(&self) -> Vec<Option<clarirs_core::prelude::AstRef<'static>>> {
         let shared = Arc::clone(&self.z3_assertions_shared.lock());
         let local = self.local_constraints.lock();

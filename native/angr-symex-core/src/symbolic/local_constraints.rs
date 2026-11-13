@@ -26,23 +26,24 @@ use super::ToZ3;
 use super::stats::RESIDUAL_LOGGED_COUNT;
 use super::z3_lower::{LowerError, lower_bool};
 
-/// A clarirs Bool together with its Z3 lowering.
+/// A clarirs Bool that is known to have a Z3 form.
 ///
-/// The only constructors lower the term themselves, so the two halves cannot
-/// disagree: a residual sink handed one of these records a constraint that can
-/// be rebuilt from clarirs alone (angr-az6ru.2).
+/// The only constructors lower the term, so a sink handed one of these logs a
+/// constraint its solver will be able to assert. The Z3 form is not kept:
+/// the log holds the term, and a solver lowers it again when it takes the
+/// entry, which the per-thread lowering cache answers while the term is
+/// alive (angr-az6ru.2).
 #[derive(Clone)]
 pub struct LoweredConstraint {
     term: AstRef<'static>,
-    z3: z3::ast::Bool,
 }
 
 impl LoweredConstraint {
-    /// Lower a Bool-sorted clarirs term. A term of any other sort is `Err`,
-    /// as it is for `z3_lower::expect_bool`.
+    /// Check that a Bool-sorted clarirs term lowers. A term of any other
+    /// sort is `Err`, as it is for `z3_lower::expect_bool`.
     pub fn lower(term: AstRef<'static>) -> Result<Self, LowerError> {
-        let z3 = lower_bool(&term)?;
-        Ok(Self { term, z3 })
+        lower_bool(&term)?;
+        Ok(Self { term })
     }
 
     /// The constraint a 1-bit value stands for: the Bool inside its
@@ -56,24 +57,18 @@ impl LoweredConstraint {
         Self::lower(bool_term(bit)?)
     }
 
-    /// The Z3 form.
-    pub fn z3(&self) -> &z3::ast::Bool {
-        &self.z3
-    }
-
     /// The clarirs form.
     pub fn term(&self) -> &AstRef<'static> {
         &self.term
     }
 
-    /// The Z3 form alone, for a caller that records the constraint in the
-    /// `assumed` log instead of the residual one.
-    pub fn into_z3(self) -> z3::ast::Bool {
-        self.z3
+    /// The Z3 form, lowered again.
+    pub fn z3(&self) -> Result<z3::ast::Bool, LowerError> {
+        lower_bool(&self.term)
     }
 
-    pub(super) fn into_parts(self) -> (AstRef<'static>, z3::ast::Bool) {
-        (self.term, self.z3)
+    pub(super) fn into_term(self) -> AstRef<'static> {
+        self.term
     }
 }
 
@@ -106,12 +101,11 @@ pub(super) enum Origin {
     BvEq(RustBV, u128),
 }
 
-/// One entry of the assertion log: a constraint asserted on the solver, with
-/// what is needed to rebuild it from clarirs alone (angr-az6ru.2). Every
-/// entry has such a form: no sink takes a Z3 term on its own.
+/// One entry of the assertion log: a constraint of the context, as the form
+/// it is rebuilt from. It holds no Z3 term (angr-az6ru.2): a solver lowers
+/// the origin when it takes the entry ([`SymContext::sync_solver`]).
 #[derive(Clone)]
 pub(super) struct Asserted {
-    pub(super) z3: z3::ast::Bool,
     pub(super) origin: Origin,
     /// The tracking literal a solver asserts this entry under, for
     /// `unsat_core`; `None` for a plain assert.
@@ -145,9 +139,9 @@ impl Tracker {
 }
 
 /// A copy of one context's assertion log, for asserting the same constraints
-/// on another context on the same thread ([`SymContext::export_constraint_log`],
+/// on another context ([`SymContext::export_constraint_log`],
 /// [`SymContext::import_constraint_log`]). Opaque: it can only come from a
-/// context, so every entry is a constraint some solver already holds.
+/// context, so every entry is a constraint some context already holds.
 pub struct ConstraintLog(pub(super) Vec<Asserted>);
 
 impl ConstraintLog {
@@ -250,14 +244,22 @@ impl Origin {
 /// the origin its assertion-log entry has.
 #[derive(Clone)]
 pub(super) struct Residual {
-    pub(super) z3: z3::ast::Bool,
     pub(super) origin: Origin,
 }
+
+// The log is plain data: nothing in it is tied to a thread's Z3 context.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Asserted>();
+    assert_send_sync::<Residual>();
+    assert_send_sync::<LocalConstraints>();
+    assert_send_sync::<ConstraintLog>();
+};
 
 /// Local-only constraint state added after fork.
 ///
 /// Combines `assumed` (RustBV pairs for Python export) and `z3_assertions`
-/// (cached Z3 Bool nodes for fast fork replay) under a single Mutex so that
+/// (the assertion log a solver is filled from) under a single Mutex so that
 /// the hot path (`assume_true`/`assume_false`/`add_constraint_lowered`) only
 /// acquires one lock instead of two.
 ///
@@ -275,9 +277,10 @@ pub(super) struct LocalConstraints {
     /// `pub(super)` for the constraint-mutation methods in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
     pub(super) assumed: Vec<(RustBV, bool)>,
-    /// Local Z3 Bool assertions added after fork — only these are cloned on fork.
+    /// Local assertion-log entries added after fork — only these are cloned
+    /// on fork. The name predates the entries losing their Z3 term.
     pub(super) z3_assertions: Vec<Asserted>,
-    /// Local residual (no-[`RustBV`]) Z3 Bool assertions added after fork
+    /// Local residual (no-[`RustBV`]) assertions added after fork
     /// (angr-t3l5o Phase 1). A strict subset of `z3_assertions`: the entries
     /// pushed by the three residual sinks — `add_constraint_lowered`
     /// (non-dup), `add_bv_constraint`, and the `merge` guard/`Or` asserts.
@@ -320,28 +323,26 @@ impl LocalConstraints {
     /// bulk caller wanting dedup should loop over
     /// [`SymContext::seed_and_check_dedup`], which pushes on a miss, exactly
     /// as `add_constraints_raw_batch` now does.
-    pub(super) fn push_assertion(&mut self, b: z3::ast::Bool, origin: Origin) {
+    pub(super) fn push_assertion(&mut self, origin: Origin) {
         if self.dedup_set_seeded
             && let Some(key) = origin.dedup_key()
         {
             self.dedup_set.insert(key);
         }
-        self.log_asserted(b, origin);
+        self.log_asserted(origin);
     }
 
     /// Append to `z3_assertions` without touching the dedup set.
-    pub(super) fn log_asserted(&mut self, z3: z3::ast::Bool, origin: Origin) {
+    pub(super) fn log_asserted(&mut self, origin: Origin) {
         self.z3_assertions.push(Asserted {
-            z3,
             origin,
             tracker: None,
         });
     }
 
     /// [`Self::log_asserted`] for a constraint asserted under `tracker`.
-    pub(super) fn log_tracked(&mut self, z3: z3::ast::Bool, origin: Origin, tracker: Tracker) {
+    pub(super) fn log_tracked(&mut self, origin: Origin, tracker: Tracker) {
         self.z3_assertions.push(Asserted {
-            z3,
             origin,
             tracker: Some(tracker),
         });
@@ -349,8 +350,8 @@ impl LocalConstraints {
 
     /// Record a constraint in the residual log. Every residual sink goes
     /// through here, so `residual_logged` sees each one.
-    pub(super) fn push_residual(&mut self, z3: z3::ast::Bool, origin: Origin) {
+    pub(super) fn push_residual(&mut self, origin: Origin) {
         RESIDUAL_LOGGED_COUNT.fetch_add(1, Ordering::Relaxed);
-        self.non_bv_assertions.push(Residual { z3, origin });
+        self.non_bv_assertions.push(Residual { origin });
     }
 }

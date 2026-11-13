@@ -277,17 +277,15 @@ impl SymContext {
         // hash-conses ASTs, so an `Eq`/`Hash` hit against the guarded set is
         // exact structural identity, not a heuristic.
         let shared_non_bv = self.non_bv_assertions_shared.lock().clone();
-        for c in shared_non_bv.iter() {
-            if !guarded.contains(&c.z3) {
-                solver.assert(&c.z3);
-            }
-        }
-        {
-            let local = self.local_constraints.lock();
-            for c in local.non_bv_assertions.iter() {
-                if !guarded.contains(&c.z3) {
-                    solver.assert(&c.z3);
-                }
+        let local_non_bv = self.local_constraints.lock().non_bv_assertions.clone();
+        for c in shared_non_bv.iter().chain(local_non_bv.iter()) {
+            // One with no Z3 form is on no solver, so the core goes
+            // without it too.
+            let Some(c) = super::lowered_or_warn(c.origin.lower(), "unsat_core") else {
+                continue;
+            };
+            if !guarded.contains(&c) {
+                solver.assert(&c);
             }
         }
         for c in extra {

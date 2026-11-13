@@ -101,7 +101,7 @@ fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (Z3Scratch, u
     // point, so the prefix holds on every path reaching the merge.
     let prefix = Arc::clone(&arms[0].z3_assertions_shared.lock());
     for assertion in prefix.iter() {
-        merged.add_constraint(assertion.z3.clone());
+        merged.add_constraint(assertion.origin.lower().unwrap());
     }
 
     // Guard ONLY the divergent local suffixes.
@@ -112,7 +112,7 @@ fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (Z3Scratch, u
         flags.push(cond_bool);
         let local = arm.local_constraints.lock();
         for assertion in local.z3_assertions.iter() {
-            let g = z3::ast::Bool::or(&[&not_cond, &assertion.z3]);
+            let g = z3::ast::Bool::or(&[&not_cond, &assertion.origin.lower().unwrap()]);
             merged.add_constraint(g);
             guarded += 1;
         }
@@ -212,10 +212,17 @@ fn test_local_never_shadows_shared() {
 
     let shared = Arc::clone(&arm_a.z3_assertions_shared.lock());
     let shared_forms: std::collections::HashSet<String> =
-        shared.iter().map(|b| b.z3.to_string()).collect();
+        shared
+        .iter()
+        .map(|b| b.origin.lower().unwrap().to_string())
+        .collect();
 
     let local = arm_a.local_constraints.lock();
-    for assertion in local.z3_assertions.iter().map(|a| &a.z3) {
+    for assertion in local
+        .z3_assertions
+        .iter()
+        .map(|a| a.origin.lower().unwrap())
+    {
         assert!(
             !shared_forms.contains(&assertion.to_string()),
             "local constraint {assertion} shadows a shared-prefix constraint"

@@ -1337,9 +1337,8 @@ fn test_add_in_a_nested_scope_leaves_the_branch_scope_open() {
     assert!(ctx.solution(&x, 6));
 }
 
-/// angr-az6ru.2: a residual sink keeps the clarirs term beside the Z3 one,
-/// the term lowers back to the very Bool that was asserted, and `fork`
-/// carries it.
+/// angr-az6ru.2: a residual sink keeps the clarirs term, the term lowers
+/// back to the very Bool the caller lowered, and `fork` carries it.
 #[test]
 fn test_residual_keeps_clarirs_term() {
     use crate::symbolic::LoweredConstraint;
@@ -1348,18 +1347,18 @@ fn test_residual_keeps_clarirs_term() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_residual_term_x", 8);
     let constraint = LoweredConstraint::of_bit(&x.eq(&RustBV::concrete(5, 8))).unwrap();
-    let asserted = constraint.z3().clone();
+    let asserted = constraint.z3().unwrap();
     ctx.add_constraint_lowered(constraint);
     assert_eq!(ctx.residual_len(), 1);
     {
         let local = ctx.local_constraints.lock();
         let entry = &local.non_bv_assertions[0];
-        assert_eq!(entry.z3, asserted);
+        assert_eq!(entry.origin.lower().unwrap(), asserted);
         let term = entry.origin.term().expect("the lowered sink keeps its term");
         assert_eq!(
             lower_bool(&term).unwrap(),
-            entry.z3,
-            "the kept term must lower to the Bool on the solver"
+            asserted,
+            "the kept term must lower to the Bool the caller lowered"
         );
     }
     assert!(ctx.solution(&x, 5));
@@ -1389,7 +1388,7 @@ fn test_add_bv_constraint_records_equivalent_term() {
         let local = ctx.local_constraints.lock();
         let entry = &local.non_bv_assertions[0];
         let term = entry.origin.term().expect("bv == value has a clarirs form");
-        (entry.z3.clone(), lower_bool(&term).unwrap())
+        (entry.origin.lower().unwrap(), lower_bool(&term).unwrap())
     };
     {
         use z3::ast::Ast;
@@ -1413,43 +1412,54 @@ fn test_add_bv_constraint_records_equivalent_term() {
     assert_eq!(assert_log_rebuilds_from_origins(&ctx), 1);
 }
 
-/// Every entry of `ctx`'s assertion log can be rebuilt without the Z3 term
-/// it stores: its origin lowers to the very node on the solver, and its
-/// clarirs term lowers to a Bool equivalent to that node. Returns the number
-/// of entries.
+/// The assertion log is all a solver needs: every entry's origin lowers,
+/// its clarirs term lowers to a Bool equivalent to that, and the context's
+/// solver holds exactly the origins' lowerings, in log order (checked when
+/// no entry is tracked, since Z3 reports a tracked assertion as an
+/// implication from its literal). Returns the number of entries.
 fn assert_log_rebuilds_from_origins(ctx: &SymContext) -> usize {
     use crate::symbolic::z3_lower::lower_bool;
     use z3::ast::Ast;
 
-    let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
-    let local = ctx.local_constraints.lock();
-    let mut total = 0;
-    for entry in shared.iter().chain(local.z3_assertions.iter()) {
-        total += 1;
+    let entries: Vec<_> = {
+        let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
+        let local = ctx.local_constraints.lock();
+        shared
+            .iter()
+            .chain(local.z3_assertions.iter())
+            .cloned()
+            .collect()
+    };
+    let mut lowered = Vec::new();
+    for entry in &entries {
         let rebuilt = entry.origin.lower().unwrap();
-        assert_eq!(
-            rebuilt.get_z3_ast(),
-            entry.z3.get_z3_ast(),
-            "origin of {} lowers to another node, {rebuilt}",
-            entry.z3
-        );
         let term = entry
             .term()
-            .unwrap_or_else(|| panic!("entry {} has no clarirs term", entry.z3));
+            .unwrap_or_else(|| panic!("entry {rebuilt} has no clarirs term"));
         let relowered = lower_bool(&term).unwrap();
-        if relowered == entry.z3 {
-            continue;
+        if relowered != rebuilt {
+            let differ = z3::Solver::new();
+            differ.assert(rebuilt.iff(&relowered).not());
+            assert_eq!(
+                differ.check(),
+                z3::SatResult::Unsat,
+                "term {relowered} is not equivalent to origin {rebuilt}"
+            );
         }
-        let differ = z3::Solver::new();
-        differ.assert(entry.z3.iff(&relowered).not());
-        assert_eq!(
-            differ.check(),
-            z3::SatResult::Unsat,
-            "term {relowered} is not equivalent to asserted {}",
-            entry.z3
-        );
+        lowered.push(rebuilt);
     }
-    total
+    if entries.iter().all(|entry| entry.tracker.is_none()) {
+        let on_solver = ctx.with_z3_solver(|solver| solver.get_assertions());
+        assert_eq!(on_solver.len(), lowered.len());
+        for (held, rebuilt) in on_solver.iter().zip(&lowered) {
+            assert_eq!(
+                held.get_z3_ast(),
+                rebuilt.get_z3_ast(),
+                "the solver holds {held} where the log lowers to {rebuilt}"
+            );
+        }
+    }
+    entries.len()
 }
 
 /// angr-az6ru.2: the assume class is rebuilt from its `(cond, polarity)`
@@ -1672,4 +1682,91 @@ fn test_dedup_forgets_a_constraint_its_scope_dropped() {
     ctx.add_constraint_lowered(raw_entry(&c));
     assert_eq!(ctx.asserted_len(), 2, "the re-add is not a duplicate");
     assert!(!ctx.solution(&x, 4));
+}
+
+/// angr-az6ru.2: an add builds no Z3 term. The constraint is logged as its
+/// origin, and the first query lowers the log once; a fork that is never
+/// queried lowers nothing at all.
+#[test]
+fn test_adds_lower_nothing_until_a_query() {
+    use crate::symbolic::z3_lower::NODES_BUILT;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_lazy_lower_x", 32);
+    let c = |v: u128| x.ult(&RustBV::concrete(v, 32));
+    let before = NODES_BUILT.get();
+    ctx.assume_true(&c(900));
+    ctx.assume_false(&c(100));
+    ctx.add_bv_constraint(&x.extract(0, 0), 1);
+    let child = ctx.fork();
+    child.assume_true(&c(500));
+    assert_eq!(NODES_BUILT.get(), before, "an add or a fork lowered a term");
+    assert_eq!(child.asserted_len(), 4);
+    assert_eq!(child.num_constraints(), 4);
+
+    assert!(ctx.solution(&x, 899));
+    assert!(!ctx.solution(&x, 99));
+    assert!(NODES_BUILT.get() > before, "the query lowers the log");
+    assert!(child.solution(&x, 499));
+    assert!(!child.solution(&x, 501));
+}
+
+/// angr-az6ru.2: with a witness live, an add does lower its constraint, to
+/// check the witness against it: a witness the constraint rules out is
+/// dropped and one it admits is kept.
+#[test]
+fn test_add_checks_a_live_witness() {
+    use crate::symbolic::z3_lower::NODES_BUILT;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_lazy_witness_x", 32);
+    ctx.assume_true(&x.ult(&RustBV::concrete(1000, 32)));
+    let witness = ctx.eval(&x).expect("sat");
+    assert_eq!(ctx.cached_models_for_test(), (true, false));
+
+    // Admitted by the witness: lowered, checked, kept.
+    let before = NODES_BUILT.get();
+    ctx.assume_false(&x.eq(&RustBV::concrete(witness ^ 1, 32)));
+    assert!(NODES_BUILT.get() > before, "the witness check lowers the add");
+    assert_eq!(ctx.cached_models_for_test(), (true, false));
+
+    // Ruled out: dropped, and the next add has no witness to lower for.
+    ctx.assume_false(&x.eq(&RustBV::concrete(witness, 32)));
+    assert_eq!(ctx.cached_models_for_test(), (false, false));
+    let before = NODES_BUILT.get();
+    ctx.assume_true(&x.ugt(&RustBV::concrete(3, 32)));
+    assert_eq!(NODES_BUILT.get(), before);
+    assert_ne!(ctx.eval(&x), Some(witness));
+}
+
+/// angr-mx00p.116.2, angr-az6ru.2: a constraint with no Z3 form is logged
+/// like any other, since an add no longer lowers, and the solver goes
+/// without it: the state is under-constrained, never pruned. A snapshot
+/// still carries it, and a witness is not dropped for it.
+#[test]
+fn test_solver_skips_a_logged_constraint_without_z3_form() {
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("test_skip_unlowerable_x", 32);
+    ctx.assume_true(&x.ult(&RustBV::concrete(10, 32)));
+    assert_eq!(ctx.eval(&x).map(|v| v < 10), Some(true));
+    assert_eq!(ctx.cached_models_for_test(), (true, false));
+
+    let no_z3_form = bit_without_z3_form("test_skip_unlowerable_vsa");
+    ctx.assume_true(&no_z3_form);
+    ctx.assume_false(&no_z3_form);
+    assert_eq!(ctx.asserted_len(), 3, "both polarities are logged");
+    assert_eq!(
+        ctx.cached_models_for_test(),
+        (true, false),
+        "a constraint no solver asserts cannot rule a witness out"
+    );
+    assert!(ctx.is_sat(), "the contradictory pair never reaches Z3");
+    assert_eq!(ctx.with_z3_solver(|solver| solver.get_assertions().len()), 1);
+    assert!(ctx.solution(&x, 9));
+    assert!(!ctx.solution(&x, 10), "the lowerable constraint is in force");
+
+    // A fork's solver, built from the frozen log, skips them too.
+    let child = ctx.fork();
+    assert!(child.is_sat());
+    assert_eq!(child.to_snapshot().assumed_constraints.len(), 3);
 }

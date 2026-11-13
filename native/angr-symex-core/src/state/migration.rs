@@ -2,10 +2,10 @@
 //!
 //! A work-stealing scheduler (angr-1ilq.3) moves a [`RustSimState`] from the
 //! worker that owns it to a stealing worker on another thread. `RustSimState`
-//! is irreducibly `!Send`: its register/memory/solver graph is built from
-//! [`RustBV`], which carries thread-local-context-bound
-//! Z3 ASTs (`z3::ast::BV`), and the solver context's constraint log holds Z3
-//! terms. None of those may cross a thread.
+//! is `!Send`: it shares its solver context through an `Rc<RefCell<..>>`,
+//! and a context under the opt-in shared lineage holds a Z3 solver and Z3
+//! terms bound to its thread's Z3 context. Its values ([`RustBV`]) and its
+//! constraint log are clarirs terms and hold no Z3 object (angr-az6ru.2).
 //!
 //! Rather than asserting `unsafe impl Send for RustSimState` — which is
 //! **unsound** (it would let the stealing thread read the owner's *live* Z3
@@ -14,11 +14,12 @@
 //! construction*:
 //!
 //! * `state_bytes` — the versioned serde envelope
-//!   ([`RustSimState::to_serialized`]). Every Z3 AST is serialized to a
+//!   ([`RustSimState::to_serialized`]). Every value is serialized to a
 //!   context-free `RustBVData` shadow, so the bytes carry no Z3 handles. The
-//!   stealing worker rebuilds the ASTs in *its own* Z3 context via
-//!   [`RustSimState::from_serialized`] — the source context is never read off
-//!   the owning thread.
+//!   stealing worker rebuilds the state via
+//!   [`RustSimState::from_serialized`] and lowers its constraints in *its
+//!   own* Z3 context when it first queries them — the source context is
+//!   never read off the owning thread.
 //! * the `Py<PyAny>` overlay maps — Python claripy ASTs are GIL-managed,
 //!   not Z3-context-bound, so they cross threads as live handles
 //!   (`Py<T>: Send`). `to_serialized` drops these (Bucket D), so migration

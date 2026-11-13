@@ -974,7 +974,9 @@ The returned dict includes:
   ``z3_branch_model_miss`` — branch-evaluation outcomes.
 * ``z3_ast_build`` — top-level ``to_z3_ast()`` / ``to_z3_bool()``
   call count (entry calls, not Z3 nodes built; see
-  :doc:`rust_z3_sharing`).
+  :doc:`rust_z3_sharing`). A solver lowers each constraint-list entry
+  as it takes it, and a repeat is a lowering-cache hit that still
+  counts, so the figure tracks solver builds times list length.
 * ``z3_site_<name>_count`` / ``z3_site_<name>_time_ns`` — per-call-site
   breakdown. Sites include ``satisfiable``, ``branch_true``,
   ``branch_false``, ``eval``, ``eval_upto``, ``min_init``,
@@ -3465,7 +3467,8 @@ successor its source's constraints.
 
 The log is opaque (``exploration/constraint_log.rs``): Python can hold
 it and take its ``len()``, but cannot build one, so an import only ever
-sees constraints a solver on this thread already holds. Passing
+sees constraints some state already holds. Its entries are clarirs-level
+data with no Z3 pointer in them. Passing
 anything else is a ``TypeError`` raised before the state is touched.
 No raw pointer crosses the boundary. Each copied constraint keeps the
 origin it had, so one that could be rebuilt from clarirs on the source

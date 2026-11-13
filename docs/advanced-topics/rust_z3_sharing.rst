@@ -77,15 +77,12 @@ translation) and a constraint:
 * **``Send``/``Sync`` audit.** ``RustSolverContext`` is
   ``#[pyclass(unsendable)]`` precisely so PyO3 refuses to ship it to
   another thread.
-* **Pointer-equality after fork.** ``SymContext::fork()`` returns a
-  child with no solver of its own yet but the same context, so AST handles
-  created on the parent remain valid on the child without translation.
-
-The fork side of this is what makes :ref:`rust-z3-sharing-fork-lazy`
-correct: the child can copy the parent's ``z3_assertions_shared``
-(a ``Mutex<Arc<Vec<Asserted>>>``) by ``Arc::clone`` and replay assertions lazily
-without ever asking Z3 to translate them, because both contexts ARE
-the same context.
+* **No Z3 handle in the constraint list.** ``SymContext::fork()``
+  returns a child with no solver of its own yet. The child copies the
+  parent's ``z3_assertions_shared`` (a ``Mutex<Arc<Vec<Asserted>>>``) by
+  ``Arc::clone``; the entries are clarirs-level data, so nothing in them
+  is tied to a Z3 context, and whichever thread's solver takes an entry
+  lowers it there (:ref:`rust-z3-sharing-fork-lazy`).
 
 Lifecycle of a ``SymContext``
 -----------------------------
@@ -104,10 +101,17 @@ states travel through three phases:
    (``z3_assertions_shared``) and a per-fork ``Vec<Asserted>``
    (``LocalConstraints::z3_assertions``). The split exists so a fork
    with no new constraints is an ``Arc::clone`` instead of a deep
-   copy. An entry holds the constraint's Z3 term and its origin, the
-   form it can be rebuilt from without Z3: an ``assume`` pair, a clarirs
-   term, or the value and constant of an address concretization. No
-   sink takes a Z3 term alone.
+   copy. An entry holds the constraint's origin and no Z3 term: an
+   ``assume`` pair, a clarirs term, or the value and constant of an
+   address concretization (``symbolic/local_constraints.rs::Origin``).
+   An add therefore makes no Z3 call and builds no Z3 term, with one
+   exception: while a cached witness is live on the thread, the new
+   constraint is lowered to check the witness against it. Otherwise
+   ``Origin::lower`` runs when a solver takes the entry
+   (``SymContext::sync_solver``), where the per-thread lowering cache
+   answers for a term already lowered. A constraint with no Z3 form is
+   logged like any other; the solver skips it with a warning, which
+   leaves the state under-constrained and never pruned.
 3. **Fork.** ``SymContext::fork()`` "freezes self": when not inside
    a ``push()`` transaction, ``local_constraints.z3_assertions`` is
    drained into ``z3_assertions_shared`` (under ``Arc::get_mut``
@@ -312,7 +316,7 @@ exploration and need a mental model:
 
 * **``z3_assertions_shared`` (``Mutex<Arc<Vec<Asserted>>>``)** holds every
   constraint ever asserted on the lineage of forks leading to this
-  state. Each entry is a refcounted Z3 AST handle (``Z3_inc_ref``).
+  state. Each entry is a clarirs term or a value, with no Z3 handle.
   Memory growth is linear in constraint count and shared across
   forks via ``Arc::clone``, so a 1000-state BFS sees one ``Vec``
   per distinct lineage, not 1000 copies. Drop happens on the last

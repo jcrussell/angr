@@ -524,8 +524,9 @@ impl Lowerer<'_> {
 
 #[cfg(test)]
 thread_local! {
-    /// Nodes built (cache misses) on this thread, for the reuse tests.
-    static NODES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Nodes built (cache misses) on this thread, for the reuse tests here
+    /// and the tests that an add lowers nothing.
+    pub(super) static NODES_BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 test_submod!("z3_lower_tests.rs" => tests);

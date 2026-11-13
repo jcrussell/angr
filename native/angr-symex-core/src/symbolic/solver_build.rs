@@ -40,8 +40,9 @@ fn simplify_sample_stride() -> u64 {
     })
 }
 
-/// angr-1joc: sampled Z3 simplify() check on a freshly-added Bool. Every
-/// Nth call (N = `simplify_sample_stride()`) runs `simplify()` and records
+/// angr-1joc: sampled Z3 simplify() check on a freshly-added constraint. Every
+/// Nth call (N = `simplify_sample_stride()`) lowers the constraint (the
+/// closure; an add builds no Z3 term otherwise), runs `simplify()` and records
 /// whether the resulting Z3 AST ptr differs from the input. The ticker is
 /// shared across `assume_true`, `assume_false`, and `add_constraint_lowered`.
 ///
@@ -53,12 +54,17 @@ fn simplify_sample_stride() -> u64 {
 /// interpreter on the unwrap). This is a diagnostic counter — a NULL just
 /// means "no sample", never a crash.
 #[inline]
-pub(crate) fn sample_simplify_skip(constraint: &z3::ast::Bool) {
+pub(crate) fn sample_simplify_skip<E>(constraint: impl FnOnce() -> Result<z3::ast::Bool, E>) {
     use z3::ast::Ast;
     let tick = SIMPLIFY_SAMPLE_TICKER.fetch_add(1, Ordering::Relaxed);
     if !tick.is_multiple_of(simplify_sample_stride()) {
         return;
     }
+    // SILENT(cat-a): a constraint with no Z3 form is no sample; the solver
+    // warns about it when it skips the entry.
+    let Ok(constraint) = constraint() else {
+        return;
+    };
     BRANCH_COND_SIMPLIFY_SAMPLED_COUNT.fetch_add(1, Ordering::Relaxed);
     let raw_ast = constraint.get_z3_ast();
     // SAFETY: `constraint` owns a live ref on `raw_ast`, and the raw context

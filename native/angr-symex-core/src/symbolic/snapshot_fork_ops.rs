@@ -116,41 +116,34 @@ impl SymContext {
             let reassert_assumed = self
                 .assume_class_reconstructible
                 .load(std::sync::atomic::Ordering::Relaxed);
-            // angr-t3l5o Phase 1: self-checking invariant. `z3_assertions`
-            // (and thus `z3_assertion_count`) is the disjoint union of the
-            // assume-class asserts (reconstructible from `assumed_constraints`)
-            // and the residual log. We use the WEAKER bounded form rather than
-            // an exact equality because the exact reconstructible-assume count
-            // is hard to recover here: an `assumed` entry produces a distinct
-            // solver assertion only when it is neither a concrete-true
-            // tautology nor a dedup hit (see `assume_true`/`assume_false`),
-            // and Z3 may also drop/merge structurally-identical asserts in
-            // `get_assertions()`. The bounds catch the real failure mode this
-            // guard targets — a future caller asserting on the solver without
-            // recording into a log — while tolerating those benign sub-counts.
-            // Kept debug-only (angr-9ke6b.220): unlike the other promoted
-            // sites this one is NOT free — computing the bounds takes two
-            // mutex locks plus a `z3_assertion_count()` (a Z3 `get_assertions`
-            // query) on every snapshot, which is squarely on the fork path.
+            // angr-t3l5o Phase 1: self-checking invariant. The assertion log
+            // is the disjoint union of the assume-class entries
+            // (reconstructible from `assumed_constraints`) and the residual
+            // log. The bounded form is checked rather than an equality: an
+            // `assumed` entry has a log entry only when it is neither a
+            // concrete-true tautology nor a dedup hit (see
+            // `assume_true`/`assume_false`). The bounds catch the failure
+            // this guard targets, a sink that writes the assertion log and
+            // neither of the two logs a snapshot is built from. Both sides
+            // are log lengths, so no solver is built or consulted.
             #[cfg(debug_assertions)]
             {
-                let non_bv_count = self.non_bv_assertions_shared.lock().len()
-                    + self.local_constraints.lock().non_bv_assertions.len();
-                let z3_count = self.z3_assertion_count();
+                let non_bv_count = self.residual_len();
+                let asserted = self.asserted_len();
                 let assumed_len = assumed_constraints.len();
                 debug_assert!(
-                    z3_count >= non_bv_count,
-                    "residual log ({non_bv_count}) exceeds solver assertion \
-                     count ({z3_count}) — a residual sink recorded a Bool that \
-                     never reached the solver"
+                    asserted >= non_bv_count,
+                    "residual log ({non_bv_count}) exceeds the assertion log \
+                     ({asserted}): a residual sink recorded a constraint it \
+                     did not assert"
                 );
                 debug_assert!(
-                    // overflow-ok: both operands are live in-memory assertion
-                    // counts (`Vec::len`); their sum cannot near `usize::MAX`.
-                    z3_count <= assumed_len + non_bv_count,
-                    "solver assertion count ({z3_count}) exceeds assume \
-                     ({assumed_len}) + residual ({non_bv_count}) — a caller \
-                     asserted on the solver without recording into a log"
+                    // overflow-ok: both operands are live in-memory log
+                    // lengths (`Vec::len`); their sum cannot near `usize::MAX`.
+                    asserted <= assumed_len + non_bv_count,
+                    "assertion log ({asserted}) exceeds assume \
+                     ({assumed_len}) + residual ({non_bv_count}): a sink \
+                     asserted without recording into either log"
                 );
             }
             let terms = if reassert_assumed {
@@ -200,14 +193,13 @@ impl SymContext {
         let temp = z3::Solver::new();
         let mut any = false;
         let shared = Arc::clone(&self.z3_assertions_shared.lock());
-        for c in shared.iter() {
-            temp.assert(&c.z3);
-            any = true;
-        }
         let local = self.local_constraints.lock();
-        for c in local.z3_assertions.iter() {
-            temp.assert(&c.z3);
-            any = true;
+        for c in shared.iter().chain(local.z3_assertions.iter()) {
+            // One with no Z3 form is on no solver, so the dump omits it.
+            if let Some(c) = super::lowered_or_warn(c.origin.lower(), "dump") {
+                temp.assert(&c);
+                any = true;
+            }
         }
         if any {
             format!("{temp}")
@@ -409,8 +401,7 @@ impl SymContext {
     /// When local additions exist and no bare push scope is open, fork
     /// "freezes self": the local additions are drained into self's shared
     /// Arc so subsequent forks of self with empty local become O(1) Arc::clone.
-    /// When self.shared is uniquely owned, this avoids cloning every Bool
-    /// (each Bool::clone is a Z3_inc_ref FFI call).
+    /// When self.shared is uniquely owned, this avoids cloning every entry.
     ///
     /// **Cross-cutting invariants enforced here.** This rustdoc is the home
     /// of the two invariants below; the `context.rs` module doc and
@@ -556,7 +547,10 @@ impl SymContext {
                 self.timeout_ms.load(Ordering::SeqCst),
             ));
             for constraint in frozen_shared.iter() {
-                lineage_solver.assert_base(&constraint.z3);
+                let lowered = super::lowered_or_warn(constraint.origin.lower(), "lineage base");
+                if let Some(lowered) = lowered {
+                    lineage_solver.assert_base(&lowered);
+                }
             }
             Some(crate::arc_shared(Mutex::new(lineage_solver)))
         } else {
@@ -852,12 +846,12 @@ impl SymContext {
             {
                 let mut ml = merged.local_constraints.lock();
                 for assertion in common_prefix.iter() {
-                    ml.push_assertion(assertion.z3.clone(), assertion.origin.clone());
-                    ml.push_residual(assertion.z3.clone(), assertion.origin.clone());
+                    ml.push_assertion(assertion.origin.clone());
+                    ml.push_residual(assertion.origin.clone());
                 }
             }
             for assertion in common_prefix.iter() {
-                merged.install_constraint(&assertion.z3);
+                merged.install_constraint(&assertion.origin);
             }
         }
 
@@ -927,10 +921,7 @@ impl SymContext {
                     let held = assertion.term().ok_or_else(|| {
                         LowerError::InvalidArgs("an arm's constraint has no clarirs form".into())
                     })?;
-                    let term = GLOBAL_CONTEXT
-                        .or2(not_cond, held)
-                        .map_err(clarirs_refusal)?;
-                    LoweredConstraint::lower(term)
+                    GLOBAL_CONTEXT.or2(not_cond, held).map_err(clarirs_refusal)
                 });
                 // A guard that cannot be built is left out, with a warn: the
                 // merged state then lacks one of this arm's constraints, the
@@ -982,8 +973,7 @@ impl SymContext {
         let any_arm = all_cond_terms
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
-            .and_then(|terms| GLOBAL_CONTEXT.or(terms).map_err(clarirs_refusal))
-            .and_then(LoweredConstraint::lower);
+            .and_then(|terms| GLOBAL_CONTEXT.or(terms).map_err(clarirs_refusal));
         if let Some(any_arm) = super::lowered_or_warn(any_arm, "merge disjunction") {
             merged.log_merged(any_arm);
             #[cfg(test)]
@@ -1102,14 +1092,14 @@ impl SymContext {
     /// [`Self::merge`] on the freshly built merged context. It has no RustBV
     /// form and is not reconstructible from `assumed`, so it goes in the
     /// residual log as well as the assertion log.
-    fn log_merged(&self, constraint: LoweredConstraint) {
-        let (term, z3) = constraint.into_parts();
+    fn log_merged(&self, term: AstRef<'static>) {
+        let origin = Origin::Term(term);
         {
             let mut local = self.local_constraints.lock();
-            local.push_assertion(z3.clone(), Origin::Term(term.clone()));
-            local.push_residual(z3.clone(), Origin::Term(term));
+            local.push_assertion(origin.clone());
+            local.push_residual(origin.clone());
         }
-        self.install_constraint(&z3);
+        self.install_constraint(&origin);
     }
 }
 
@@ -1132,8 +1122,7 @@ fn snapshot_bits<'a>(origins: impl Iterator<Item = &'a Origin>) -> Vec<RustBV> {
 ///
 /// Outside an open push/pop scope (when `scope_open` is false) this drains
 /// `local` into `shared` in place — when shared has unique ownership the move
-/// avoids the per-element clones (e.g. each `z3::ast::Bool::clone` is a
-/// `Z3_inc_ref` FFI call). When `scope_open` is true we must preserve
+/// avoids the per-element clones. When `scope_open` is true we must preserve
 /// `local` so a later `pop()` can truncate it; in that case we fall back to
 /// allocating a fresh Vec by cloning shared and copying local's elements.
 ///
