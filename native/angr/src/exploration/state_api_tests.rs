@@ -16,7 +16,7 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
     state.map_memory(0x1000, 0x4000, Permission::RWX);
 
     let (addr_var, val_bv) = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let addr_var = RustBV::symbol("export_multi_addr", 64);
         ctx.assume_true(
             &addr_var
@@ -34,7 +34,6 @@ fn state_with_multi_cell_store(value: u32) -> RustSimState {
         ..AddressConcretizer::new()
     };
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     state
         .memory_mut()
         .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
@@ -300,7 +299,7 @@ fn state_symbolic_info_uses_both_page_and_offset() {
 fn undecided_state_in(mgr: &mut RustExplorationManager, name: &str) -> u64 {
     let state = RustSimState::new("amd64").expect("amd64 state");
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let x = RustBV::symbol(name, 32);
         ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
         ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
@@ -317,7 +316,6 @@ fn unpin_rlimit(mgr: &RustExplorationManager, state_id: u64) {
     mgr.find_state(state_id)
         .expect("state found")
         .solver()
-        .borrow()
         .pin_rlimit_for_test(0);
 }
 
@@ -369,7 +367,7 @@ fn add_constraints_to_state_checked_still_reports_a_proven_unsat() {
         let mut mgr = RustExplorationManager::new("amd64", None).expect("amd64 mgr");
         let state = RustSimState::new("amd64").expect("amd64 state");
         {
-            let ctx = state.solver().borrow();
+            let ctx = state.solver();
             let x = RustBV::symbol("add_constraints_unsat_x", 32);
             let five = RustBV::concrete(5, 32);
             ctx.assume_true(&x.eq(&five));
@@ -401,7 +399,7 @@ fn import_constraint_log_separates_undecided_from_unsat() {
 
         let donor = RustSimState::new("amd64").expect("amd64 state");
         {
-            let ctx = donor.solver().borrow();
+            let ctx = donor.solver();
             let y = RustBV::symbol("import_log_donor_y", 32);
             ctx.assume_true(&y.ugt(&RustBV::concrete(3, 32)));
         }
@@ -724,7 +722,7 @@ fn eval_stdin_symbol_reconstructs_the_symbol_at_the_recorded_width() {
     let mut state = RustSimState::new("amd64").expect("amd64 state");
     state.record_stdin_symbol("stdin_scanf_0".to_string(), 32);
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let sym = RustBV::symbol("stdin_scanf_0", 32);
         ctx.assume_true(&sym.eq(&RustBV::concrete(0x4142_4344, 32)));
     }
@@ -913,7 +911,6 @@ fn install_over_lanes_replaces_all_bytes() {
     let new = sym("ccp2w_install_new", 32);
     state.memory_mut().install_symbolic_value(0x1000u64, new.clone()).unwrap();
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     let loaded = state.memory_mut().load_concrete_lazy(0x1000, 4).unwrap();
     let probe = ctx.fork();
     probe.assume_true(&loaded.eq(&new).not());

@@ -321,7 +321,7 @@ impl RustExplorationManager {
     /// Interactive-debugging tool like [`Self::debug_solver_info`].
     pub fn debug_solver_smtlib2(&self, state_id: u64) -> PyResult<String> {
         self.with_state(state_id, |state| {
-            Ok(state.solver().borrow().bench_dump_solver_smtlib2())
+            Ok(state.solver().bench_dump_solver_smtlib2())
         })
     }
 

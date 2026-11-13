@@ -24,9 +24,7 @@ fn test_scan_concrete_empty() {
 fn test_scan_concrete_symbolic_byte() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"ab\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("b", 8);
-    drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     let res = scan_concrete_until_null(&mut state, 0x1000, 4096, "s");
     assert!(matches!(res, Err(ProcedureError::SymbolicArgument(_))));
@@ -92,9 +90,7 @@ fn test_scan_for_null_symbolic_all_concrete() {
 fn test_scan_for_null_symbolic_with_sym_byte() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"a_c\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("b1", 8);
-    drop(ctx);
     state.memory_store(0x1001, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x1000, 4096).unwrap() {
         ScanOutcome::Symbolic { bytes, budget_spent } => {
@@ -117,11 +113,9 @@ fn test_scan_for_null_symbolic_caps_symbolic_bytes() {
     // disjunction Python-sized instead of thousands of terms wide.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x2000, &vec![b'a'; 512], Permission::RWX);
-    let ctx = state.solver().borrow();
     let syms: Vec<RustBV> = (0..512)
         .map(|i| RustBV::symbol(format!("c{i}"), 8))
         .collect();
-    drop(ctx);
     for (i, sym) in syms.into_iter().enumerate() {
         state.memory_store(0x2000 + i as u64, sym).unwrap();
     }
@@ -144,9 +138,7 @@ fn test_scan_for_null_symbolic_concrete_bytes_do_not_draw_down_budget() {
     let mut data = vec![b'a'; 200];
     data.push(0);
     state.map_memory_data(0x3000, &data, Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("head", 8);
-    drop(ctx);
     state.memory_store(0x3000, sym).unwrap();
     match scan_for_null_symbolic(&mut state, 0x3000, 4096).unwrap() {
         ScanOutcome::Symbolic { bytes, budget_spent } => {
@@ -191,7 +183,7 @@ fn test_null_exists_constraint_none_when_all_concrete_nonnull() {
 #[test]
 fn test_null_exists_constraint_prunes_unterminated_symbolic_window() {
     let state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let b0 = RustBV::symbol("s0", 8);
     let b1 = RustBV::symbol("s1", 8);
     let bytes = vec![(0u64, b0.clone()), (1u64, b1.clone())];

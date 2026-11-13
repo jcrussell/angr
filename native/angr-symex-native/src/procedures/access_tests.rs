@@ -30,7 +30,7 @@ fn test_access_constrained_to_zero_or_minus_one() {
         .call(&mut state, &[path, mode])
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let is_zero = result.eq(&RustBV::concrete(0, 32));
     let is_minus_one = result.eq(&RustBV::concrete(0xFFFF_FFFF, 32));
     let is_five = result.eq(&RustBV::concrete(5, 32));

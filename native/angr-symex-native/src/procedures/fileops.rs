@@ -62,7 +62,7 @@ fn read_pathname(state: &mut RustSimState, addr: u64) -> Result<Vec<u8>, Procedu
         state.add_constraint(c);
     }
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (_, byte) in &bytes {
         match ctx.eval(byte) {
             Some(0) => break,

@@ -300,7 +300,6 @@ fn readv_stdin_records_and_binds_the_seed() {
     let he = state.memory_load(0x3000, 2).expect("loaded");
     let llo = state.memory_load(0x3010, 3).expect("loaded");
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     for (got, want) in [(he, b"he".as_slice()), (llo, b"llo".as_slice())] {
         let want = want.iter().rev().fold(0u128, |acc, b| (acc << 8) | u128::from(*b));
         let probe = ctx.fork();

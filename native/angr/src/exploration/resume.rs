@@ -582,7 +582,7 @@ impl RustExplorationManager {
         if let Some(ref cond) = branch_condition {
             // Add assume_true: guard is true → exit taken
             let solver_ref = true_state.solver();
-            solver_ref.borrow().assume_true(cond);
+            solver_ref.assume_true(cond);
         }
 
         // Create the false state (use original) and add constraint
@@ -591,7 +591,7 @@ impl RustExplorationManager {
         if let Some(ref cond) = branch_condition {
             // Add assume_false: guard is false → fallthrough
             let solver_ref = false_state.solver();
-            solver_ref.borrow().assume_false(cond);
+            solver_ref.assume_false(cond);
         }
 
         // Process deferred forks that were accumulated before this symbolic branch.

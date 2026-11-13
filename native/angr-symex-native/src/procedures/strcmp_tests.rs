@@ -257,9 +257,7 @@ fn test_strncasecmp_registered() {
 /// Insert a fully-symbolic byte at `addr`. The page must already be
 /// mapped; this overwrites the byte without disturbing the rest.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol(name, 8);
-    drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
 }
@@ -291,10 +289,8 @@ fn test_strcmp_symbolic_byte_solver_evaluation_equal() {
     state.map_memory_data(0x1000, b"a\x00\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
     // Constrain symbolic byte to 'b' so strings are equal -> 0.
-    let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'b' as u128, 8);
     let eq = sym.eq(&target);
-    drop(ctx);
 
     let proc = NativeStrcmp;
     let result = proc
@@ -305,7 +301,7 @@ fn test_strcmp_symbolic_byte_solver_evaluation_equal() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(0));
 }
@@ -317,10 +313,8 @@ fn test_strcmp_symbolic_byte_solver_evaluation_mismatch() {
     state.map_memory_data(0x1000, b"a\x00\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
     // Constrain symbolic byte to 'c' so 'c' - 'b' = 1.
-    let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'c' as u128, 8);
     let eq = sym.eq(&target);
-    drop(ctx);
 
     let proc = NativeStrcmp;
     let result = proc
@@ -331,7 +325,7 @@ fn test_strcmp_symbolic_byte_solver_evaluation_mismatch() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // The 32-bit result equals 1 (signed).
     assert_eq!(ctx.min(&result, false), Some(1));
     assert_eq!(ctx.max(&result, false), Some(1));
@@ -345,10 +339,8 @@ fn test_strncmp_symbolic_byte_within_limit_equal() {
     let sym = place_symbolic_byte(&mut state, 0x1001, "s1_1");
 
     // Force sym == 'b'; with n=3, expecting 0 (since byte 2 is 'x' both).
-    let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'b' as u128, 8);
     let eq = sym.eq(&target);
-    drop(ctx);
 
     let proc = NativeStrncmp;
     let result = proc
@@ -363,7 +355,7 @@ fn test_strncmp_symbolic_byte_within_limit_equal() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(0));
 }
@@ -384,15 +376,13 @@ fn symbolic_pinned_result<P: NativeSimProcedure>(
     state.map_memory_data(0x2000, s2, Permission::RWX);
     state.map_memory_data(0x1000, s1, Permission::RWX);
     let sym = place_symbolic_byte(&mut state, sym_addr, "s1_sym");
-    let ctx = state.solver().borrow();
     let eq = sym.eq(&RustBV::concrete(pinned as u128, 8));
-    drop(ctx);
 
     let mut args = vec![RustBV::concrete(0x1000, 64), RustBV::concrete(0x2000, 64)];
     args.extend_from_slice(extra_args);
     let result = proc.call(&mut state, &args).unwrap().unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let lo = ctx.min(&result, false);
     let hi = ctx.max(&result, false);
     assert_eq!(lo, hi, "result is not uniquely determined under the pin");
@@ -573,7 +563,7 @@ fn test_compare_bytes_null_requirement_follows_the_unbounded_flag() {
             a0.ne(&zero).and(&a1.ne(&zero))
         };
         state.add_constraint(nonnull);
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         assert_eq!(
             ctx.is_sat(),
             expect_sat,

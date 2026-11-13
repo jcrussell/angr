@@ -51,9 +51,8 @@ impl RustExplorationManager {
 
         use super::constraints::{ConstraintImport, ConstraintTier, import_one_constraint};
 
-        let solver_ref = state.solver();
-        let sym_ctx = solver_ref.borrow();
-        let ctx_ref: &SymContext = &sym_ctx;
+        let sym_ctx = state.solver();
+        let ctx_ref: &SymContext = sym_ctx;
 
         let mut success_count = 0usize;
         let mut z3_ptr_fallback_count = 0usize;

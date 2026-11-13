@@ -106,14 +106,18 @@ merge semantics expressible per field.
 Parallelism
 -----------
 
-**Snapshots migrate, states do not** (``angr-8fo6``, Option A in
-:doc:`rust_parallel_design`). Making ``RustExplorationManager``
-``Send`` by converting ``Rc<RefCell<SymContext>>`` to
-``Arc<Mutex<..>>`` does not unlock parallelism: z3-rs binds ASTs to the
-thread-local context that created them, so a state's assertions cannot
-cross threads anyway, and the constraint hot path would take a heavily
-contended lock. Workers instead exchange ``ExplorationStateSnapshot``
-values and rebuild thread-local solvers.
+**A state has one owner; workers never share one** (``angr-8fo6``,
+Option A in :doc:`rust_parallel_design`). Putting a state or its
+``SymContext`` behind an ``Arc<Mutex<..>>`` so that several workers
+step it does not unlock parallelism: z3-rs binds solvers and ASTs to
+the thread-local context that created them, so every worker would
+still build its own, and the constraint hot path would take a heavily
+contended lock. What crosses threads is a whole state, handed from one
+owner to the next. The state is ``Send`` for that (``angr-az6ru.2``):
+it holds clarirs terms and cache keys, no Z3 object, and its
+``Arc<SymContext>`` is an alias for one owner, not a channel between
+workers. The scheduler's transport is still the serialized
+``StateMigrationPayload``, which predates that.
 
 **Distributed (cross-machine) migration was killed**
 (``angr-op0dn.13.7``; :doc:`rust_parallel_design`, "Distributed

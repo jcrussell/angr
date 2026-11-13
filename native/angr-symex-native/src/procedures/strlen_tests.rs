@@ -95,9 +95,7 @@ fn test_strnlen_empty_string() {
 #[test]
 fn test_strlen_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym_addr = RustBV::symbol("addr", 64);
-    drop(ctx);
     let proc = NativeStrlen;
     let result = proc.call(&mut state, &[sym_addr]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -105,9 +103,7 @@ fn test_strlen_symbolic_addr() {
 
 /// Insert a fully-symbolic byte at `addr` (page must be pre-mapped).
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol(name, 8);
-    drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
 }
@@ -135,10 +131,8 @@ fn test_strlen_symbolic_byte_zero_solution() {
     state.map_memory_data(0x1000, b"a_c\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "b1");
 
-    let ctx = state.solver().borrow();
     let zero = RustBV::concrete(0u128, 8);
     let eq = sym.eq(&zero);
-    drop(ctx);
 
     let proc = NativeStrlen;
     let result = proc
@@ -146,7 +140,7 @@ fn test_strlen_symbolic_byte_zero_solution() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(1));
     assert_eq!(ctx.max(&result, false), Some(1));
 }
@@ -158,10 +152,8 @@ fn test_strlen_symbolic_byte_nonzero_solution() {
     state.map_memory_data(0x1000, b"a_c\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "b1");
 
-    let ctx = state.solver().borrow();
     let b = RustBV::concrete(b'b' as u128, 8);
     let eq = sym.eq(&b);
-    drop(ctx);
 
     let proc = NativeStrlen;
     let result = proc
@@ -169,7 +161,7 @@ fn test_strlen_symbolic_byte_nonzero_solution() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(3));
     assert_eq!(ctx.max(&result, false), Some(3));
 }
@@ -190,7 +182,7 @@ fn test_strnlen_symbolic_byte_capped_at_maxlen() {
         )
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // result must be in [0, 2].
     let min = ctx.min(&result, false).unwrap();
     let max = ctx.max(&result, false).unwrap();

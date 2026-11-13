@@ -199,8 +199,7 @@ pub(crate) fn run_interpreter_step_core(
     setup_start: Option<std::time::Instant>,
     block_cache: &mut LruCache<u64, Arc<IRSB>>,
 ) -> InterpreterStepResult {
-    let solver_rc = state.solver().clone();
-    let solver_ref = solver_rc.borrow();
+    let solver_ref = state.solver().clone();
 
     // Create interpreter with the state's solver.
     //

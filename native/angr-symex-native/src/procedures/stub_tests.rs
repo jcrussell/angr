@@ -58,7 +58,7 @@ fn test_stub_is_unconstrained_not_zero() {
     let mut state = RustSimState::new("amd64").unwrap();
     let proc = NativeReturnUnconstrained::new("mystery", 64);
     let ret = proc.call(&mut state, &[]).unwrap().unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for v in [0u128, 1, 0xdead_beef] {
         let eq = ret.eq(&RustBV::concrete(v, 64));
         assert!(ctx.can_be_true(&eq), "ret=={v} must stay feasible");
@@ -71,7 +71,7 @@ fn test_stub_mints_a_fresh_symbol_per_call() {
     let proc = NativeReturnUnconstrained::new("fresh", 64);
     let a = proc.call(&mut state, &[]).unwrap().unwrap();
     let b = proc.call(&mut state, &[]).unwrap().unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let differ = a.eq(&b).not();
     assert!(
         ctx.can_be_true(&differ),

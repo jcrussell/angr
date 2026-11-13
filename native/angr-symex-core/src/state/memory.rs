@@ -85,9 +85,9 @@ impl RustSimState {
 
     /// Load from a symbolic address.
     pub fn memory_load_symbolic(&mut self, addr: RustBV, size: u32) -> Result<RustBV, MemoryError> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         self.memory
-            .load_symbolic_unified(addr, size, &ctx, &self.concretizer)
+            .load_symbolic_unified(addr, size, ctx, &self.concretizer)
     }
 
     /// Store to a symbolic address.
@@ -96,9 +96,9 @@ impl RustSimState {
         addr: RustBV,
         value: RustBV,
     ) -> Result<(), MemoryError> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         self.memory
-            .store_symbolic_unified(addr, value, &ctx, &self.concretizer)
+            .store_symbolic_unified(addr, value, ctx, &self.concretizer)
             .map(|_| ())
     }
 
@@ -113,9 +113,9 @@ impl RustSimState {
         addr: RustBV,
         value: RustBV,
     ) -> Result<(), MemoryError> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         self.memory
-            .store_symbolic_unified_multi(addr, value, &ctx, &self.concretizer)
+            .store_symbolic_unified_multi(addr, value, ctx, &self.concretizer)
             .map(|_| ())
     }
 

@@ -37,9 +37,7 @@ fn test_system_symbolic_cmd_no_fallback() {
     // Python never inspects the command pointer; a symbolic pointer must NOT
     // force concretization / Python fallback (the `bv` arg kind keeps it raw).
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym_cmd = RustBV::symbol("cmd_ptr", 64);
-    drop(ctx);
     let result = NativeSystem
         .call(&mut state, std::slice::from_ref(&sym_cmd))
         .unwrap()

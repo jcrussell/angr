@@ -298,7 +298,7 @@ impl RustSimState {
         }
 
         // Get constraint count
-        let constraint_count = self.solver.borrow().num_constraints();
+        let constraint_count = self.solver.num_constraints();
 
         // Export call stack
         let call_stack: Vec<(u64, u64, u64, u64)> = self

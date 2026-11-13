@@ -502,7 +502,6 @@ fn read_stdin_binds_seeded_bytes() {
     assert!(matches!(outcome, SyscallOutcome::Continue { ret: 2 }));
     let loaded = state.memory_load(0x2000, 2).expect("loaded");
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     let probe = ctx.fork();
     probe.assume_true(&loaded.eq(&RustBV::concrete(u128::from(u16::from_le_bytes(*b"ab")), 16)).not());
     assert!(!probe.is_sat(), "the read bytes are not bound to the seeded \"ab\"");

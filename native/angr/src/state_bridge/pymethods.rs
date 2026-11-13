@@ -478,7 +478,7 @@ impl PyRustSimState {
             .ok_or_else(|| PyValueError::new_err(format!("unknown register: {name}")))?;
         let solver = self.inner.solver().clone();
         let bv = {
-            let ctx = solver.borrow();
+            let ctx = solver;
             crate::claripy_bridge::claripy_to_rustbv(py, ast, &ctx).map_err(|e| {
                 crate::claripy_bridge::ast_import_err(&format!("register {name}"), e)
             })?
@@ -640,7 +640,7 @@ impl PyRustSimState {
         size: u32,
     ) -> PyResult<(u128, u128)> {
         let sym_addr = {
-            let ctx = self.inner.solver().borrow();
+            let ctx = self.inner.solver();
             let a = RustBV::symbol("avoid_mv_probe_addr", 64);
             let eq = a.eq(&RustBV::concrete(addr as u128, 64));
             ctx.assume_true(&eq);

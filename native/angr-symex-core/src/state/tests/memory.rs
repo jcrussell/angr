@@ -67,7 +67,7 @@ fn test_memory_load_sees_unflushed_multi_cells() {
     state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
 
     let addr_var = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let addr_var = RustBV::symbol("state_multi_addr", 64);
         ctx.assume_true(
             &addr_var
@@ -93,7 +93,7 @@ fn test_memory_load_sees_unflushed_multi_cells() {
         loaded.as_u64().is_none(),
         "a Multi-covered load must be symbolic, not the placeholder concrete byte"
     );
-    let probe = state.solver().borrow().fork();
+    let probe = state.solver().fork();
     probe.assume_true(&addr_var.eq(&RustBV::concrete(0x1000, 64)));
     assert_eq!(
         probe.eval(&loaded),

@@ -30,8 +30,7 @@ use pyo3::exceptions::{PyRecursionError, PyRuntimeError, PyTypeError, PyValueErr
 use pyo3::prelude::*;
 use pyo3::types::PyList;
 
-use std::cell::{Ref, RefCell};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, clarirs_node, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
@@ -85,35 +84,18 @@ fn bool_constraint_bv<'a>(bv: &'a RustBV) -> std::borrow::Cow<'a, RustBV> {
     }
 }
 
-/// Storage for SymContext: either owned or shared via Rc.
+/// Storage for SymContext: either owned or shared via `Arc`.
 /// Shared mode allows Python callbacks to use the pending state's solver
 /// directly (O(1)) instead of forking it (a full Z3 solver clone per callback).
 ///
 /// `Owned` holds `SymContext` inline (the common path); `Shared` is a
-/// thin `Rc<RefCell<…>>` pointer. Boxing `Owned` to equalize variants
+/// thin `Arc` pointer. Boxing `Owned` to equalize variants
 /// would add a heap allocation per solver fork — the whole point of
 /// `Owned` is to avoid that. Variant size disparity is intentional.
 #[allow(clippy::large_enum_variant)]
 enum SolverCtxStorage {
     Owned(SymContext),
-    Shared(Rc<RefCell<SymContext>>),
-}
-
-/// Guard for borrowing SymContext from either storage variant.
-/// Implements Deref<Target=SymContext> for transparent access.
-enum SolverCtxGuard<'a> {
-    Ref(&'a SymContext),
-    Borrowed(Ref<'a, SymContext>),
-}
-
-impl<'a> std::ops::Deref for SolverCtxGuard<'a> {
-    type Target = SymContext;
-    fn deref(&self) -> &SymContext {
-        match self {
-            SolverCtxGuard::Ref(r) => r,
-            SolverCtxGuard::Borrowed(b) => b,
-        }
-    }
+    Shared(Arc<SymContext>),
 }
 
 /// Python-accessible Rust solver context.
@@ -123,7 +105,7 @@ impl<'a> std::ops::Deref for SolverCtxGuard<'a> {
 ///
 /// Supports two modes:
 /// - Owned: holds its own SymContext (normal case, forked contexts)
-/// - Shared: borrows a state's solver via Rc (zero-cost callback solver)
+/// - Shared: holds a state's solver by `Arc` (zero-cost callback solver)
 ///
 /// With z3-rs 0.19+, we don't need to manage a separate Z3 context -
 /// it's automatically handled via thread-local storage.
@@ -158,11 +140,11 @@ struct SolverInner {
 }
 
 impl SolverInner {
-    /// Get a guard for the SymContext, works for both owned and shared.
-    fn ctx(&self) -> SolverCtxGuard<'_> {
+    /// The SymContext, whichever way it is held.
+    fn ctx(&self) -> &SymContext {
         match &self.sym_ctx {
-            SolverCtxStorage::Owned(ctx) => SolverCtxGuard::Ref(ctx),
-            SolverCtxStorage::Shared(rc) => SolverCtxGuard::Borrowed(rc.borrow()),
+            SolverCtxStorage::Owned(ctx) => ctx,
+            SolverCtxStorage::Shared(shared) => shared,
         }
     }
 }
@@ -211,7 +193,7 @@ impl RustSolverContext {
                 // (`exploration/constraints.rs`): try the RustBV conversion
                 // first and branch on it, instead of unconditionally calling
                 // both.
-                if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
+                if let Ok(bv) = claripy_to_rustbv(py, ast, ctx) {
                     ctx.add_constraint_lowered_assumed(lowered);
                     ctx.assumed_constraints_push(bv, true);
                 } else {
@@ -222,7 +204,7 @@ impl RustSolverContext {
         }
 
         // Slow path: import to a RustBV and assert its truthiness test.
-        let bv = claripy_to_rustbv(py, ast, &ctx)?;
+        let bv = claripy_to_rustbv(py, ast, ctx)?;
 
         {
             ctx.assume_true(&bool_constraint_bv(&bv));
@@ -262,7 +244,7 @@ impl RustSolverContext {
                 let Ok(ptr) = lower_claripy_constraint(&ast) else {
                     break;
                 };
-                let bv = match claripy_to_rustbv(py, &ast, &ctx) {
+                let bv = match claripy_to_rustbv(py, &ast, ctx) {
                     Ok(b) => b,
                     Err(_) => break,
                 };
@@ -327,7 +309,7 @@ impl RustSolverContext {
                 // comparison, say) was enforced in-process but vanished from
                 // `state.solver.constraints`, from `unsat_core()`, and from any
                 // snapshot/restore of the state.
-                if let Ok(bv) = claripy_to_rustbv(py, ast, &ctx) {
+                if let Ok(bv) = claripy_to_rustbv(py, ast, ctx) {
                     ctx.assumed_constraints_push(bv, true);
                 } else {
                     ctx.push_residual_assertion(constraint);
@@ -338,7 +320,7 @@ impl RustSolverContext {
             // Slow path: build the Z3 Bool from a RustBV. Mirrors
             // assume_true's symbolic path (BV width 1 → bool via to_z3_bool;
             // wider BV → ne(0) bool) — see `bool_constraint_bv`.
-            let bv = claripy_to_rustbv(py, ast, &ctx)?;
+            let bv = claripy_to_rustbv(py, ast, ctx)?;
             // A constraint with no Z3 form raises (a RecursionError when too
             // deep), rather than being tracked as something it is not.
             let constraint = crate::symbolic::LoweredConstraint::of_bit(&bool_constraint_bv(&bv))
@@ -393,7 +375,7 @@ impl RustSolverContext {
         // answer (unsat, or Unknown at the timeout), and re-evaluating the
         // node would only rerun the same check (angr-vmi2l.220). The node
         // path is the fallback for an AST `claripy_to_rustbv` refuses.
-        match claripy_to_rustbv(py, ast, &ctx) {
+        match claripy_to_rustbv(py, ast, ctx) {
             Ok(bv) if bv.width() <= 128 => Ok(match ctx.eval(&bv) {
                 Some(v) => Some(v.into_pyobject(py)?.into()),
                 None => None,
@@ -441,7 +423,7 @@ impl RustSolverContext {
                 bvs.push(RustBV::concrete(value, width));
                 continue;
             }
-            match self.ast_to_bv_for_eval(py, ast, &ctx) {
+            match self.ast_to_bv_for_eval(py, ast, ctx) {
                 Some(bv) => bvs.push(bv),
                 None => return Ok(None),
             }
@@ -503,7 +485,7 @@ impl RustSolverContext {
             return Ok(Some(value));
         }
         let ctx = self.i().ctx();
-        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, ctx)?;
         Ok(ctx.min(&bv, signed))
     }
 
@@ -520,7 +502,7 @@ impl RustSolverContext {
             return Ok(Some(value));
         }
         let ctx = self.i().ctx();
-        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, ctx)?;
         Ok(ctx.max(&bv, signed))
     }
 
@@ -528,7 +510,7 @@ impl RustSolverContext {
     /// [`min`](Self::min).
     pub fn solution(&self, py: Python<'_>, ast: &Bound<'_, PyAny>, value: u128) -> PyResult<bool> {
         let ctx = self.i().ctx();
-        let bv = self.ast_to_bv_strict(py, ast, &ctx)?;
+        let bv = self.ast_to_bv_strict(py, ast, ctx)?;
         Ok(ctx.solution(&bv, value))
     }
 
@@ -690,7 +672,7 @@ impl RustSolverContext {
         }
 
         let ctx = self.i().ctx();
-        let bv = match claripy_to_rustbv(py, ast, &ctx) {
+        let bv = match claripy_to_rustbv(py, ast, ctx) {
             Ok(bv) => bv,
             Err(_) => {
                 // Z3 fast path for complex expressions
@@ -748,14 +730,14 @@ impl RustSolverContext {
         }
     }
 
-    /// Create a RustSolverContext that shares the solver from a state's `Rc<RefCell<SymContext>>`.
+    /// Create a RustSolverContext that shares the solver from a state's `Arc<SymContext>`.
     ///
-    /// This is O(1) — just an Rc clone (reference count increment) instead of
+    /// This is O(1) — just an `Arc` clone (reference count increment) instead of
     /// a full Z3 solver clone. The shared solver writes constraints directly
     /// to the pending state, eliminating the need for post-callback constraint sync.
     ///
     /// Safety: Only use when Rust exploration is suspended (during Python callbacks).
-    pub(crate) fn from_shared_sym_context(shared: Rc<RefCell<SymContext>>) -> Self {
+    pub(crate) fn from_shared_sym_context(shared: Arc<SymContext>) -> Self {
         RustSolverContext {
             owner: std::thread::current().id(),
             inner: Some(Box::new(SolverInner {

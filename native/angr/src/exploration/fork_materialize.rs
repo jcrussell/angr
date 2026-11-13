@@ -45,9 +45,9 @@ fn add_fork_guard_constraint(
         log::debug!("constraints inspect dispatch raised (state {state_id}, before): {e}");
     }
     if is_true {
-        state.solver().borrow().assume_true(guard);
+        state.solver().assume_true(guard);
     } else {
-        state.solver().borrow().assume_false(guard);
+        state.solver().assume_false(guard);
     }
     if let Some(c) = cb
         && let Err(e) = c.call_inspect_constraints(state_id, "after", guard, is_true)
@@ -97,9 +97,9 @@ fn build_unexplored_fork(
         // how well-guarded `base` is. Replay them here (angr-62ar5).
         priors.replay_onto(&f);
         if fork.path_taken {
-            f.solver().borrow().assume_false(condition);
+            f.solver().assume_false(condition);
         } else {
-            f.solver().borrow().assume_true(condition);
+            f.solver().assume_true(condition);
         }
         f
     } else {
@@ -190,7 +190,6 @@ impl PriorGuards {
     fn replay_onto(&self, state: &RustSimState) {
         for (cond, taken) in &self.guards {
             let solver = state.solver();
-            let solver = solver.borrow();
             if *taken {
                 solver.assume_true(cond);
             } else {
@@ -310,9 +309,9 @@ pub(crate) fn materialize_deferred_forks(
         if let Some(cond) = stored_conditions.get(&fork.condition_id) {
             if let Some(sink) = guard_sink {
                 if fork.path_taken {
-                    sink.solver().borrow().assume_true(cond);
+                    sink.solver().assume_true(cond);
                 } else {
-                    sink.solver().borrow().assume_false(cond);
+                    sink.solver().assume_false(cond);
                 }
             }
             let fork_start = stats.is_some().then(std::time::Instant::now);

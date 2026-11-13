@@ -190,9 +190,7 @@ fn test_guest_optind_reset_full() {
 fn test_symbolic_argc_defers() {
     let mut state = setup();
     load_argv(&mut state, b"a", &[b"prog", b"-a"]);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("argc", 64);
-    drop(ctx);
     let res = NativeGetopt.call(
         &mut state,
         &[

@@ -337,9 +337,7 @@ fn build_migration_state(
     }
     // Shallow per-leaf assume-class constraint (original bench shape).
     for (i, leaf) in leaves.iter().enumerate() {
-        let s = state.solver().borrow();
         let c = leaf.eq(&RustBV::concrete(0xC0DE_0000u128 + i as u128, 64));
-        drop(s);
         state.add_constraint(c);
     }
     // Deep nested op-tree constraints; `floor(r*D)` via the raw/residual path.
@@ -355,10 +353,7 @@ fn build_migration_state(
             acc.eq(&RustBV::concrete(0xABCD_0000u128 + d as u128, 64))
         };
         if d < n_raw {
-            state
-                .solver()
-                .borrow()
-                .bench_add_constraint_raw_from_bool(&pred);
+            state.solver().bench_add_constraint_raw_from_bool(&pred);
         } else {
             state.add_constraint(pred);
         }
@@ -444,7 +439,7 @@ fn bench_migration_phases(c: &mut Criterion) {
             });
             // (3) SMT-LIB2 emit
             group.bench_function(format!("smtlib2_emit/{tag}"), |b| {
-                b.iter(|| black_box(state.solver().borrow().bench_dump_solver_smtlib2()))
+                b.iter(|| black_box(state.solver().bench_dump_solver_smtlib2()))
             });
             // (4) leaf rebuild (no-constraint state from_serialized)
             group.bench_function(format!("leaf_rebuild/{tag}"), |b| {

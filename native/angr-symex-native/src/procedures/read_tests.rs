@@ -391,7 +391,7 @@ fn test_read_stdin_short_reads_returns_symbolic_size() {
         result.as_u64().is_none(),
         "short-read stdin read returns symbolic real_size, not the concrete count"
     );
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert!(
         ctx.solution(&result, 0),
         "a zero-length short read must be reachable"

@@ -102,9 +102,7 @@ fn test_strchr_symbolic_target_returns_symbolic() {
     // Symbolic target should produce a symbolic result, not a fallback error.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
-    drop(ctx);
     let p = NativeStrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
@@ -118,19 +116,17 @@ fn test_strchr_symbolic_target_returns_symbolic() {
 fn test_strchr_symbolic_target_solver_evaluation() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     // Constrain c == 'b' so the only match is at 0x1001.
     let target = RustBV::concrete(b'b' as u128, 64);
     let eq = sym.eq(&target);
-    drop(ctx);
     let p = NativeStrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0x1001));
     assert_eq!(ctx.max(&result, false), Some(0x1001));
 }
@@ -140,18 +136,16 @@ fn test_strchr_symbolic_target_null_match() {
     // Constraining target to 0 should yield the address of the null byte.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let zero = RustBV::concrete(0u128, 64);
     let eq = sym.eq(&zero);
-    drop(ctx);
     let p = NativeStrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0x1003));
     assert_eq!(ctx.max(&result, false), Some(0x1003));
 }
@@ -160,19 +154,17 @@ fn test_strchr_symbolic_target_null_match() {
 fn test_strchr_symbolic_target_no_match_returns_null() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     // Constrain c == 'z' (not in the string and not null) -> NULL result.
     let target = RustBV::concrete(b'z' as u128, 64);
     let eq = sym.eq(&target);
-    drop(ctx);
     let p = NativeStrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(0));
 }
@@ -254,9 +246,7 @@ fn test_strrchr_single_match() {
 fn test_strrchr_symbolic_target_returns_symbolic() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"abc\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
-    drop(ctx);
     let p = NativeStrrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
@@ -271,18 +261,16 @@ fn test_strrchr_symbolic_target_picks_last() {
     // Constrain symbolic c to 'l' → last 'l' is at 0x1003 in "hello".
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"hello\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let l_byte = RustBV::concrete(b'l' as u128, 64);
     let eq = sym.eq(&l_byte);
-    drop(ctx);
     let p = NativeStrrchr;
     let result = p
         .call(&mut state, &[RustBV::concrete(0x1000, 64), sym])
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0x1003));
     assert_eq!(ctx.max(&result, false), Some(0x1003));
 }
@@ -291,11 +279,9 @@ fn test_strrchr_symbolic_target_picks_last() {
 fn test_memchr_symbolic_target_solver_evaluation() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"\x01\x02\x03\x04", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let target = RustBV::concrete(3u128, 64);
     let eq = sym.eq(&target);
-    drop(ctx);
     let p = NativeMemchr;
     let result = p
         .call(
@@ -305,7 +291,7 @@ fn test_memchr_symbolic_target_solver_evaluation() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0x1002));
     assert_eq!(ctx.max(&result, false), Some(0x1002));
 }
@@ -557,7 +543,7 @@ fn search_long_concrete_table_for_symbolic_target(
     args.extend(n.map(|n| RustBV::concrete(u128::from(n), 64)));
     let result = p.call(&mut state, &args).unwrap().unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     (ctx.min(&result, false), ctx.max(&result, false))
 }
 

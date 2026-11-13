@@ -119,7 +119,7 @@ fn test_scheduler_distributes_and_reproves() {
         // foreign-context constraint would yield None / panic in eval).
         let rax = state.get_register("rax").expect("rax present on worker");
         assert!(
-            state.solver().borrow().eval(&rax).is_some(),
+            state.solver().eval(&rax).is_some(),
             "worker: reattached rax must be concretizable",
         );
         TaskOutcome::terminal(vec![state])
@@ -132,7 +132,6 @@ fn test_scheduler_distributes_and_reproves() {
         let rax = state.get_register("rax").expect("rax present in main");
         let got = state
             .solver()
-            .borrow()
             .eval(&rax)
             .expect("rax concretizable in main");
         assert!(
@@ -194,7 +193,7 @@ fn test_scheduler_fork_tree_quiesces() {
             .expect("reattach leaf in main ctx");
         let rax = state.get_register("rax").expect("rax on leaf");
         assert_eq!(
-            state.solver().borrow().eval(&rax),
+            state.solver().eval(&rax),
             Some(WITNESS as u128),
             "every leaf must re-prove the root's path constraint",
         );
@@ -698,7 +697,7 @@ fn test_steal_from_injector_path() {
         let state = payload.reattach(&main_ctx).expect("reattach leaf");
         let rax = state.get_register("rax").expect("rax on leaf");
         assert_eq!(
-            state.solver().borrow().eval(&rax),
+            state.solver().eval(&rax),
             Some(WITNESS as u128),
             "stolen leaf must re-prove the root constraint",
         );
@@ -771,7 +770,7 @@ fn test_determinism_result_set() {
             .map(|p| {
                 let s = p.reattach(&main_ctx).expect("reattach");
                 let rax = s.get_register("rax").expect("rax");
-                s.solver().borrow().eval(&rax).expect("concretizable")
+                s.solver().eval(&rax).expect("concretizable")
             })
             .collect();
         runs.push(witnesses);
@@ -945,7 +944,7 @@ fn test_session_fork_tree_streams_and_quiesces() {
         let state = payload.reattach(&main_ctx).expect("reattach leaf");
         let rax = state.get_register("rax").expect("rax on leaf");
         assert_eq!(
-            state.solver().borrow().eval(&rax),
+            state.solver().eval(&rax),
             Some(WITNESS as u128),
             "every streamed leaf must re-prove the root constraint",
         );
@@ -1003,7 +1002,7 @@ fn test_session_reinject_across_callback_gap() {
         .map(|p| {
             let s = p.reattach(&main_ctx).expect("reattach");
             let rax = s.get_register("rax").expect("rax");
-            s.solver().borrow().eval(&rax).expect("concretizable")
+            s.solver().eval(&rax).expect("concretizable")
         })
         .collect();
     assert_eq!(
@@ -1075,7 +1074,7 @@ fn test_wake_worker_out_of_range_id_is_noop() {
         .map(|p| {
             let s = p.reattach(&main_ctx).expect("reattach");
             let rax = s.get_register("rax").expect("rax");
-            s.solver().borrow().eval(&rax).expect("concretizable")
+            s.solver().eval(&rax).expect("concretizable")
         })
         .collect();
     assert_eq!(witnesses, BTreeSet::from([WITNESS_B as u128]));
@@ -1160,7 +1159,7 @@ fn test_session_cancel_drains_residual_frontier() {
         let state = payload.reattach(&main_ctx).expect("reattach residual");
         let rax = state.get_register("rax").expect("rax");
         assert_eq!(
-            state.solver().borrow().eval(&rax),
+            state.solver().eval(&rax),
             Some(WITNESS as u128),
             "residual states keep their constraints through the drain",
         );
@@ -1237,7 +1236,7 @@ fn test_wave_cancel_drains_residual_frontier() {
         let state = payload.reattach(&main_ctx).expect("reattach residual");
         let rax = state.get_register("rax").expect("rax");
         assert_eq!(
-            state.solver().borrow().eval(&rax),
+            state.solver().eval(&rax),
             Some(WITNESS as u128),
             "residual states keep their constraints through the drain",
         );
@@ -1277,7 +1276,7 @@ fn test_session_determinism_result_set() {
             .map(|p| {
                 let s = p.reattach(&main_ctx).expect("reattach");
                 let rax = s.get_register("rax").expect("rax");
-                s.solver().borrow().eval(&rax).expect("concretizable")
+                s.solver().eval(&rax).expect("concretizable")
             })
             .collect();
         runs.push(witnesses);

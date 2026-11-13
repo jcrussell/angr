@@ -115,7 +115,7 @@ fn test_memset_symbolic_size_pinned() {
         .unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(0x1000));
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // Bytes [0,3) are 0x41 (only feasible value under n == 3).
     for i in 0..3u64 {
         let b = state.memory_load(0x1000 + i, 1).unwrap();
@@ -157,7 +157,7 @@ fn test_memset_symbolic_size_conditional() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // Each byte in [0,4) is ITE(i < n, 0x41, 0xFF): both branches feasible
     // because n ranges over [0, 4].
     for i in 0..4u64 {
@@ -194,7 +194,7 @@ fn test_memset_symbolic_addr_pinned() {
         .unwrap();
     // Returns the (symbolic) dest pointer, which evals to 0x1000.
     let ret = result.unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.eval(&ret), Some(0x1000));
 
     // Bytes [0,4) are pinned to 0x41 (only feasible address is 0x1000).
@@ -233,7 +233,7 @@ fn test_memset_symbolic_addr_two_candidates() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // Each region's bytes can be fill (when dest selects it) or the original
     // zero (when dest selects the other region).
     for base in [0x1000u64, 0x1008u64] {

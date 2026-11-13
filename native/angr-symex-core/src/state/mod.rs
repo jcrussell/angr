@@ -77,9 +77,7 @@
 //!   `RustSimState::merge` builds the merged solver before any other
 //!   handle is taken.
 
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
 use std::sync::Arc;
 
 use rustc_hash::FxHashMap;
@@ -361,14 +359,15 @@ pub struct TrackedVariable {
 /// Rust-native simulation state.
 ///
 /// This struct owns all state components and provides O(1) forking
-/// through copy-on-write semantics. The solver context is shared
-/// via Rc<RefCell<>> to allow constraint accumulation across forks.
+/// through copy-on-write semantics. The solver context sits behind an
+/// `Arc`; a fork gets its own. The state holds no Z3 object and is `Send`
+/// (asserted in `migration.rs`).
 ///
 /// # Design
 ///
 /// - **Registers**: Stored in `RegisterFile` with concrete bytes and symbolic overlays
 /// - **Memory**: `SymbolicMemory` with O(1) CoW via `im::OrdMap`
-/// - **Solver**: Shared `Rc<RefCell<SymContext>>` for constraint accumulation
+/// - **Solver**: `Arc<SymContext>`, the constraint log and the keys of its per-thread solver caches
 /// - **History**: Basic block trace for debugging/analysis
 ///
 /// # Fork Semantics
@@ -392,12 +391,14 @@ pub struct RustSimState {
     /// Symbolic memory with O(1) CoW forking.
     #[merge_policy = "delegate"]
     memory: SymbolicMemory,
-    /// Solver context for constraints, behind `Rc<RefCell<>>` so stepping
-    /// can mutate it. A fork gets its own context (`SymContext::fork`), and
-    /// a merge builds a fresh one (`SymContext::merge`); only a same-id copy
-    /// shares the `Rc`.
+    /// Solver context for constraints, behind an `Arc`; every `SymContext`
+    /// method takes `&self`. A fork gets its own context
+    /// (`SymContext::fork`), and a merge builds a fresh one
+    /// (`SymContext::merge`); only a same-id copy
+    /// (`fork_base_before_mutation`) and a Python-side solver handle onto a
+    /// parked state share the `Arc`.
     #[merge_policy = "delegate"]
-    solver: Rc<RefCell<SymContext>>,
+    solver: Arc<SymContext>,
     /// Program counter.
     #[merge_policy = "self_wins"]
     pc: u64,

@@ -139,9 +139,7 @@ fn test_putenv_no_equals() {
 #[test]
 fn test_getenv_symbolic_name() {
     let mut state = setup_state();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("name", 64);
-    drop(ctx);
 
     let result = NativeGetenv.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
@@ -210,9 +208,7 @@ fn test_unsetenv_missing_key_returns_zero() {
 #[test]
 fn test_unsetenv_symbolic_name() {
     let mut state = setup_state();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("name", 64);
-    drop(ctx);
 
     let result = NativeUnsetenv.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));

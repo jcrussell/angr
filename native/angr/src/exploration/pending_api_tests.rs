@@ -184,7 +184,7 @@ fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
     state.map_memory(0x1000, 0x4000, Permission::RWX);
 
     let (addr_var, val_bv) = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let addr_var = RustBV::symbol("pending_multi_addr", 64);
         ctx.assume_true(
             &addr_var
@@ -198,7 +198,6 @@ fn pending_state_with_multi_cell_store(value: u32) -> RustSimState {
         ..AddressConcretizer::new()
     };
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     state
         .memory_mut()
         .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
@@ -330,7 +329,7 @@ fn active_states_map_memory_reaches_parked_pending_callback_states() {
     fork_snapshots.insert(
         7u64,
         crate::interpreter::BranchSnapshot {
-            solver: state.solver().borrow().fork(),
+            solver: state.solver().fork(),
             registers: state.registers().fork(),
             memory: Some(state.memory().fork()),
             call_stack: Vec::new(),

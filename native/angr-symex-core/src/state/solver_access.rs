@@ -1,6 +1,6 @@
 //! Solver/constraint-access cluster for `RustSimState`.
 //!
-//! The thin accessors that forward to the shared `Rc<RefCell<SymContext>>`:
+//! The thin accessors that forward to the shared `Arc<SymContext>`:
 //! the `solver()` handle itself, constraint accumulation (`add_constraint`),
 //! satisfiability (`satisfiable` / `set_sat_cache`), and the concrete-value
 //! queries (`eval` / `min` / `max`). Split out of `mod.rs` per the god-object
@@ -21,13 +21,13 @@ static UNDECIDED_SAT_PRUNE_GATES: AtomicU64 = AtomicU64::new(0);
 
 impl RustSimState {
     /// Get a reference to the solver context.
-    pub fn solver(&self) -> &Rc<RefCell<SymContext>> {
+    pub fn solver(&self) -> &Arc<SymContext> {
         &self.solver
     }
 
     /// Add a constraint.
     pub fn add_constraint(&self, constraint: RustBV) {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.assume_true(&constraint);
     }
 
@@ -37,7 +37,7 @@ impl RustSimState {
     /// that *drops* the state on `false` must use `satisfiable_checked` or
     /// `survives_sat_prune` instead (`invariant-z3-unknown-not-unsat`).
     pub fn satisfiable(&self) -> bool {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.is_sat()
     }
 
@@ -45,7 +45,7 @@ impl RustSimState {
     /// (Z3 Unknown / timeout) query as `None` instead of collapsing it into
     /// `false` — see `SymContext::is_sat_checked`.
     pub fn satisfiable_checked(&self) -> Option<bool> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.is_sat_checked()
     }
 
@@ -84,24 +84,24 @@ impl RustSimState {
 
     /// Prime the SAT cache (avoids redundant Z3 checks after branch forking).
     pub fn set_sat_cache(&self, value: bool) {
-        self.solver.borrow().set_sat_cache(value);
+        self.solver.set_sat_cache(value);
     }
 
     /// Evaluate an expression to a concrete value.
     pub fn eval(&self, expr: &RustBV) -> Option<u128> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.eval(expr)
     }
 
     /// Get minimum value of an expression.
     pub fn min(&self, expr: &RustBV, signed: bool) -> Option<u128> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.min(expr, signed)
     }
 
     /// Get maximum value of an expression.
     pub fn max(&self, expr: &RustBV, signed: bool) -> Option<u128> {
-        let ctx = self.solver.borrow();
+        let ctx = &self.solver;
         ctx.max(expr, signed)
     }
 }

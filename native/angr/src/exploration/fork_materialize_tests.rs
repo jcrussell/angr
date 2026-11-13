@@ -59,7 +59,7 @@ fn materialize_deferred_forks_sat_fork_and_guard_sink() {
     // path_taken == false -> assume_false(x == 0) on the sink, so a probe that
     // re-asserts x == 0 must come back UNSAT.
     let probe = sink.fork();
-    probe.solver().borrow().assume_true(&cond);
+    probe.solver().assume_true(&cond);
     assert!(!probe.satisfiable(), "guard_sink did not receive the guard");
 }
 
@@ -70,7 +70,7 @@ fn materialize_deferred_forks_sat_fork_and_guard_sink() {
 fn materialize_deferred_forks_unsat_split_and_lazy_solves() {
     Python::initialize();
     let (base, cond) = state_with_x_eq_zero();
-    base.solver().borrow().assume_true(&cond); // base pins x == 0
+    base.solver().assume_true(&cond); // base pins x == 0
     let mut stored = FxHashMap::default();
     stored.insert(7u64, cond);
     let mut snapshots = FxHashMap::default();
@@ -266,20 +266,20 @@ fn materialize_deferred_forks_replays_earlier_guards_onto_later_forks() {
 
     // Fork 0 is the unexplored side of branch 1 — no priors, so x != 0 only.
     let probe = out.sat[0].fork();
-    probe.solver().borrow().assume_true(&c1);
+    probe.solver().assume_true(&c1);
     assert!(!probe.satisfiable(), "fork 0 lost its own inverted guard");
 
     // Fork 1 is the unexplored side of branch 2. Its path went THROUGH branch
     // 1's true side, so x == 0 must still hold on it.
     let probe = out.sat[1].fork();
-    probe.solver().borrow().assume_false(&c1);
+    probe.solver().assume_false(&c1);
     assert!(
         !probe.satisfiable(),
         "fork 1 did not inherit branch 1's taken-path guard (x == 0)"
     );
     // ...and it carries the inverted guard of its own branch (y == 0).
     let probe = out.sat[1].fork();
-    probe.solver().borrow().assume_false(&c2);
+    probe.solver().assume_false(&c2);
     assert!(!probe.satisfiable(), "fork 1 lost its own inverted guard");
 }
 
@@ -298,7 +298,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
     snapshots.insert(
         2u64,
         crate::interpreter::BranchSnapshot {
-            solver: base.solver().borrow().fork(),
+            solver: base.solver().fork(),
             registers: base.registers().fork(),
             memory: None,
             call_stack: Vec::new(),
@@ -320,7 +320,7 @@ fn snapshot_built_fork_replays_earlier_guards() {
 
     assert_eq!(out.sat.len(), 2);
     let probe = out.sat[1].fork();
-    probe.solver().borrow().assume_false(&c1);
+    probe.solver().assume_false(&c1);
     assert!(
         !probe.satisfiable(),
         "snapshot-built fork did not inherit branch 1's taken-path guard"
@@ -366,7 +366,7 @@ fn materialize_deferred_forks_trap_side() {
             "{side:?}"
         );
         let probe = sink.fork();
-        probe.solver().borrow().assume_true(&cond);
+        probe.solver().assume_true(&cond);
         assert!(!probe.satisfiable(), "{side:?}: guard_sink lost the guard");
     }
 }

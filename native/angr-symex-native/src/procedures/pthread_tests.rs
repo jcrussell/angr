@@ -29,9 +29,7 @@ fn test_symbolic_mutex_ptr_no_fallback() {
     // A symbolic mutex pointer must NOT trigger a Python fallback — the
     // pointer is ignored, so the proc still succeeds with 0.
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("mutex_ptr", 64);
-    drop(ctx);
     let result = NativePthreadMutexLock.call(&mut state, &[sym]).unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(0));
 }
@@ -148,9 +146,7 @@ fn test_once_symbolic_sp_falls_back_without_mutation() {
     // Symbolic SP must abort BEFORE the guard write, so Python (the fallback)
     // re-runs pthread_once and still invokes func — no silently-skipped init.
     let mut state = once_state(0x00);
-    let ctx = state.solver().borrow();
     let sym_sp = RustBV::symbol("sp", 64);
-    drop(ctx);
     state.set_sp(sym_sp);
     assert!(matches!(
         NativePthreadOnce.call_ex(&mut state, &once_args()),
@@ -166,9 +162,7 @@ fn test_once_symbolic_sp_falls_back_without_mutation() {
 #[test]
 fn test_once_symbolic_control_ptr_falls_back() {
     let mut state = once_state(0x00);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("control", 64);
-    drop(ctx);
     let args = vec![sym, RustBV::concrete(ONCE_FUNC as u128, 64)];
     assert!(matches!(
         NativePthreadOnce.call_ex(&mut state, &args),
@@ -181,9 +175,7 @@ fn test_once_symbolic_guard_byte_falls_back() {
     // A symbolic once-guard in memory must defer to Python (matches the Python
     // proc raising on a symbolic control word).
     let mut state = once_state(0x00);
-    let ctx = state.solver().borrow();
     let sym_byte = RustBV::symbol("guard", 8);
-    drop(ctx);
     state
         .memory_mut()
         .store_concrete(ONCE_CONTROL, sym_byte)

@@ -111,7 +111,7 @@ fn shadow_probe_migrate_does_not_mutate_the_live_state() {
         let mut state = RustSimState::new("amd64").expect("amd64 state");
         state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
         let (addr_var, val_bv) = {
-            let ctx = state.solver().borrow();
+            let ctx = state.solver();
             let addr_var = RustBV::symbol("shadow_probe_multi_addr", 64);
             ctx.assume_true(
                 &addr_var
@@ -125,7 +125,6 @@ fn shadow_probe_migrate_does_not_mutate_the_live_state() {
             ..crate::symbolic::concretize::AddressConcretizer::new()
         };
         let ctx = state.solver().clone();
-        let ctx = ctx.borrow();
         state
             .memory_mut()
             .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)

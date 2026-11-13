@@ -324,7 +324,7 @@ fn set_deterministic_reaches_parked_pending_callback_states() {
     fork_snapshots.insert(
         7u64,
         crate::interpreter::BranchSnapshot {
-            solver: state.solver().borrow().fork(),
+            solver: state.solver().fork(),
             registers: state.registers().fork(),
             memory: None,
             call_stack: Vec::new(),

@@ -250,7 +250,7 @@ impl RustSimState {
             vex_arch: self.vex_arch,
             registers: self.registers.clone(),
             memory: self.memory.to_snapshot(&mem_proof),
-            solver: self.solver.borrow().to_snapshot(),
+            solver: self.solver.to_snapshot(),
             pc: self.pc,
             state_id: self.state_id,
             parent_id: self.parent_id,
@@ -313,8 +313,8 @@ impl RustSimState {
         // The restored ID was minted by another process/epoch; teach the local
         // counter about it so later forks cannot re-mint it (`state-id-never-reused`).
         crate::state::reserve_state_id(snap.state_id);
-        let solver = Rc::new(RefCell::new(SymContext::new()));
-        solver.borrow().restore_from_snapshot(&snap.solver)?;
+        let solver = Arc::new(SymContext::new());
+        solver.restore_from_snapshot(&snap.solver)?;
         let memory = SymbolicMemory::from_snapshot(snap.memory);
         let mut environment: HashMap<Vec<u8>, EnvVar> = snap
             .environment

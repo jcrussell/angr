@@ -51,24 +51,20 @@ impl RustSimState {
     /// (angr-0mqkc.7). A new field is then impossible to add to one constructor
     /// but not the other.
     pub fn new_with_endian(arch_name: &str, little_endian: Option<bool>) -> Result<Self, String> {
-        Self::with_solver_endian(
-            arch_name,
-            Rc::new(RefCell::new(SymContext::new())),
-            little_endian,
-        )
+        Self::with_solver_endian(arch_name, Arc::new(SymContext::new()), little_endian)
     }
 
     /// Create a state with a shared solver context.
     ///
     /// This is used when forking to share constraints across states.
-    pub fn with_solver(arch_name: &str, solver: Rc<RefCell<SymContext>>) -> Result<Self, String> {
+    pub fn with_solver(arch_name: &str, solver: Arc<SymContext>) -> Result<Self, String> {
         Self::with_solver_endian(arch_name, solver, None)
     }
 
     /// Create a state with a shared solver context and explicit endianness.
     pub fn with_solver_endian(
         arch_name: &str,
-        solver: Rc<RefCell<SymContext>>,
+        solver: Arc<SymContext>,
         little_endian: Option<bool>,
     ) -> Result<Self, String> {
         let arch = arch_from_name(arch_name)

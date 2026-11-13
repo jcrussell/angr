@@ -230,10 +230,9 @@ fn assert_state_round_trip(orig: &RustSimState, restored: &RustSimState) {
     // Solver replayed: the restored context is SAT with `rbx > 10` honored.
     let restored_rbx = restored.get_register("rbx").expect("rbx present");
     assert_eq!(restored_rbx.width(), 64);
-    assert!(restored.solver().borrow().is_sat());
+    assert!(restored.solver().is_sat());
     let restored_rbx_val = restored
         .solver()
-        .borrow()
         .eval(&restored_rbx)
         .expect("rbx evaluable");
     assert!(
@@ -347,7 +346,7 @@ fn test_fork_from_snapshot_takes_branch_point_fields() {
     let branch_history: Vec<HistoryEntry> = base.detailed_history.iter().cloned().collect();
     let branch_calls = base.call_stack.len();
     let snapshot = |base: &RustSimState, with_memory: bool| BranchSnapshot {
-        solver: base.solver.borrow().fork(),
+        solver: base.solver.fork(),
         registers: base.registers.fork(),
         memory: with_memory.then(|| base.memory.fork()),
         call_stack: base.call_stack.clone(),
@@ -363,8 +362,8 @@ fn test_fork_from_snapshot_takes_branch_point_fields() {
     base.memory_mut()
         .store_concrete(0x10_0000u64, RustBV::concrete(9, 8))
         .expect("mapped page");
-    base.solver().borrow().assume_true(&rbx.ult(&RustBV::concrete(5, 64)));
-    assert!(!base.solver().borrow().is_sat(), "rbx > 10 && rbx < 5");
+    base.solver().assume_true(&rbx.ult(&RustBV::concrete(5, 64)));
+    assert!(!base.solver().is_sat(), "rbx > 10 && rbx < 5");
     // ...and so does a field that comes from `self`.
     let fd = base.fs.open_fds().into_iter().max().expect("an fd is open");
     assert_eq!(base.fs.seek(fd, 4, 0), Some(4));
@@ -379,7 +378,7 @@ fn test_fork_from_snapshot_takes_branch_point_fields() {
         );
         assert_eq!(sib.call_stack.len(), branch_calls);
         assert_eq!(json(&sib.detailed_history), json(&branch_history));
-        assert!(sib.solver().borrow().is_sat(), "branch-point solver");
+        assert!(sib.solver().is_sat(), "branch-point solver");
         // Memory comes from the snapshot when it carries one, else from `self`.
         let byte = sib
             .memory()

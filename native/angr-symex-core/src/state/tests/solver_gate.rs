@@ -13,7 +13,7 @@ use super::super::*;
 /// — see `test_pin_rlimit_reaches_the_solver` there for why an rlimit beats a
 /// wall-clock timeout in a test.
 fn pin_rlimit(state: &RustSimState, rlimit: u32) {
-    state.solver().borrow().pin_rlimit_for_test(rlimit);
+    state.solver().pin_rlimit_for_test(rlimit);
 }
 
 /// A *proven* Unsat still prunes — the gate must not be a blanket "keep".
@@ -21,7 +21,7 @@ fn pin_rlimit(state: &RustSimState, rlimit: u32) {
 fn test_survives_sat_prune_drops_a_proven_unsat_state() {
     let state = RustSimState::new("amd64").unwrap();
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let x = RustBV::symbol("prune_gate_unsat_x", 32);
         let five = RustBV::concrete(5, 32);
         ctx.assume_true(&x.eq(&five));
@@ -41,7 +41,7 @@ fn test_survives_sat_prune_drops_a_proven_unsat_state() {
 fn test_survives_sat_prune_keeps_an_undecided_state() {
     let state = RustSimState::new("amd64").unwrap();
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let x = RustBV::symbol("prune_gate_undecided_x", 32);
         ctx.assume_true(&x.ugt(&RustBV::concrete(10, 32)));
         ctx.assume_true(&x.ult(&RustBV::concrete(20, 32)));
@@ -76,7 +76,7 @@ fn test_survives_sat_prune_keeps_an_undecided_state() {
 fn test_survives_sat_prune_short_circuits_under_lazy_solves() {
     let state = RustSimState::new("amd64").unwrap();
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let x = RustBV::symbol("prune_gate_lazy_x", 32);
         let five = RustBV::concrete(5, 32);
         ctx.assume_true(&x.eq(&five));

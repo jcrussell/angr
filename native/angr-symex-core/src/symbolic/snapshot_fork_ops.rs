@@ -27,7 +27,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use parking_lot::Mutex;
 
 use super::solver_build::*;
-use std::cell::{Cell, RefCell};
+use super::sync_cell::{SyncFlag, SyncOptBool, SyncOptUsize};
 use std::sync::atomic::AtomicU32;
 
 impl SymContext {
@@ -575,7 +575,7 @@ impl SymContext {
             constraint_count: AtomicUsize::new(self.num_constraints()),
             symbol_table: Arc::clone(&self.symbol_table),
             bare_local_savepoints: Mutex::new(Vec::new()),
-            branch_scope_depth: Cell::new(None),
+            branch_scope_depth: SyncOptUsize::new(None),
             assumed_constraints_shared: Mutex::new(frozen_assumed),
             z3_assertions_shared: Mutex::new(frozen_shared),
             non_bv_assertions_shared: Mutex::new(frozen_non_bv),
@@ -586,7 +586,7 @@ impl SymContext {
             ),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver_slot: super::solver_cache::SolverSlot::new(),
-            solver_incremental: Cell::new(false),
+            solver_incremental: SyncFlag::new(false),
             // angr-gorvf.16: carry the parent's SAT/model witness into the
             // child. The child's frozen constraint set is exactly the parent's
             // full set at fork time (freeze_into_shared moved every local
@@ -601,9 +601,9 @@ impl SymContext {
             // deterministic mode `eval` ignores the cache (uses `min`), so this
             // only changes the non-deterministic witness — from an arbitrary
             // fresh model to the parent's equally-valid one.
-            sat_cache: Cell::new(self.sat_cache.get()),
-            model_cache: RefCell::new(self.model_cache.borrow().clone()),
-            alt_model_cache: RefCell::new(self.alt_model_cache.borrow().clone()),
+            sat_cache: SyncOptBool::new(self.sat_cache.get()),
+            model_cache: Mutex::new(self.model_cache.lock().clone()),
+            alt_model_cache: Mutex::new(self.alt_model_cache.lock().clone()),
             // angr-vmi2l.91: the child replays the parent's tracked
             // constraints tracked and continues its index space.
             constraint_trackers: Mutex::new(self.constraint_trackers.lock().clone()),

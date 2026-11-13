@@ -389,13 +389,13 @@ impl SymContext {
     /// (angr-az6ru.2). A constraint with no Z3 form is skipped: no solver
     /// will assert it, so it cannot invalidate a witness.
     fn invalidate_model_if_inconsistent(&self, added: &[Origin]) {
-        let live = |slot: &std::cell::RefCell<Option<ModelRef>>| {
-            slot.borrow().as_ref().is_some_and(|t| t.get().is_some())
+        let live = |slot: &parking_lot::Mutex<Option<ModelRef>>| {
+            slot.lock().as_ref().is_some_and(|t| t.get().is_some())
         };
         if !live(&self.model_cache) && !live(&self.alt_model_cache) {
             // Tokens with no model here are stale either way.
-            self.model_cache.borrow_mut().take();
-            self.alt_model_cache.borrow_mut().take();
+            self.model_cache.lock().take();
+            self.alt_model_cache.lock().take();
             return;
         }
         // SILENT(cat-a): `sync_solver` warns about an entry with no Z3 form
@@ -413,8 +413,8 @@ impl SymContext {
     /// primary fails, so the taken side of a branch keeps the witness
     /// `check_branch_feasibility` found for it.
     fn retain_models_satisfying(&self, satisfies: impl Fn(&z3::Model) -> bool) {
-        let mut cache = self.model_cache.borrow_mut();
-        let mut alt = self.alt_model_cache.borrow_mut();
+        let mut cache = self.model_cache.lock();
+        let mut alt = self.alt_model_cache.lock();
         if cache.is_none() && alt.is_none() {
             return;
         }

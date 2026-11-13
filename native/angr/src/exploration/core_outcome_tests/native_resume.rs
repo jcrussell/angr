@@ -105,7 +105,7 @@ fn dispatch_native_resume_seeded(
             fork_snapshots.insert(
                 FORK_COND_ID,
                 crate::interpreter::BranchSnapshot {
-                    solver: state.solver().borrow().fork(),
+                    solver: state.solver().fork(),
                     registers: state.registers().fork(),
                     memory: None,
                     call_stack: Vec::new(),

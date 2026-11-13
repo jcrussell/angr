@@ -73,9 +73,8 @@ fn test_mint_stdin_bytes_partial_seed_records_only_the_tail() {
     assert_eq!(state.eval(&bytes[0]), Some(0x41));
     assert_eq!(state.eval(&bytes[1]), Some(0x42));
     // The unseeded tail is unconstrained: two distinct values are feasible.
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_ne!(ctx.min(&bytes[2], false), ctx.max(&bytes[2], false));
-    drop(ctx);
     // Only the tail is recorded, in read order.
     let recorded: Vec<&str> = state
         .stdin_symbols()

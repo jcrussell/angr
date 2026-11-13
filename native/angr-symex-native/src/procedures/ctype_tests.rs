@@ -71,9 +71,7 @@ fn test_toupper() {
 fn test_symbolic_isdigit_returns_constrained_bv() {
     // Symbolic input should now produce a symbolic result, not a fallback error.
     let mut s = make_state();
-    let ctx = s.solver().borrow();
     let sym = RustBV::symbol("c", 64);
-    drop(ctx);
     let p = NativeIsDigit;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
     // Result should be a 64-bit BV (arch.bits()) and *not* concrete.
@@ -85,15 +83,13 @@ fn test_symbolic_isdigit_returns_constrained_bv() {
 fn test_symbolic_isdigit_solver_evaluation() {
     // Constrain the symbolic byte to '5' and check the result solves to 1.
     let mut s = make_state();
-    let ctx = s.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let target = RustBV::concrete(b'5' as u128, 64);
     let eq = sym.eq(&target);
-    drop(ctx);
     let p = NativeIsDigit;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
     s.add_constraint(eq);
-    let ctx = s.solver().borrow();
+    let ctx = s.solver();
     assert_eq!(ctx.min(&result, false), Some(1));
     assert_eq!(ctx.max(&result, false), Some(1));
 }
@@ -101,18 +97,16 @@ fn test_symbolic_isdigit_solver_evaluation() {
 #[test]
 fn test_symbolic_tolower_returns_symbolic() {
     let mut s = make_state();
-    let ctx = s.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let target = RustBV::concrete(b'A' as u128, 64);
     let eq = sym.eq(&target);
-    drop(ctx);
     let p = NativeToLower;
     let result = p.call(&mut s, std::slice::from_ref(&sym)).unwrap().unwrap();
     assert_eq!(result.width(), 32);
     assert!(result.as_u64().is_none());
 
     s.add_constraint(eq);
-    let ctx = s.solver().borrow();
+    let ctx = s.solver();
     assert_eq!(ctx.min(&result, false), Some(b'a' as u128));
     assert_eq!(ctx.max(&result, false), Some(b'a' as u128));
 }
@@ -283,16 +277,14 @@ fn test_case_shift_preserves_out_of_range_argument() {
 #[test]
 fn test_symbolic_predicate_rejects_high_byte_alias() {
     let mut s = make_state();
-    let ctx = s.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let eq = sym.eq(&RustBV::concrete(0x100 + b'0' as u128, 64));
-    drop(ctx);
     let result = NativeIsDigit
         .call(&mut s, std::slice::from_ref(&sym))
         .unwrap()
         .unwrap();
     s.add_constraint(eq);
-    let ctx = s.solver().borrow();
+    let ctx = s.solver();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(0));
 }
@@ -301,16 +293,14 @@ fn test_symbolic_predicate_rejects_high_byte_alias() {
 #[test]
 fn test_symbolic_tolower_preserves_eof() {
     let mut s = make_state();
-    let ctx = s.solver().borrow();
     let sym = RustBV::symbol("c", 64);
     let eq = sym.eq(&RustBV::concrete(u64::MAX as u128, 64));
-    drop(ctx);
     let result = NativeToLower
         .call(&mut s, std::slice::from_ref(&sym))
         .unwrap()
         .unwrap();
     s.add_constraint(eq);
-    let ctx = s.solver().borrow();
+    let ctx = s.solver();
     assert_eq!(result.width(), 32);
     assert_eq!(ctx.min(&result, false), Some(0xffff_ffff));
 }
@@ -337,6 +327,6 @@ fn test_dirty_upper_half_is_ignored() {
         .unwrap()
         .unwrap();
     s.add_constraint(eq);
-    let ctx = s.solver().borrow();
+    let ctx = s.solver();
     assert_eq!(ctx.min(&result, false), Some(1));
 }

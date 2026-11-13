@@ -236,7 +236,7 @@ pub(crate) fn mode_ladder_check(
     solver: &z3::Solver,
     site: CheckSite,
     timeout_ms: u32,
-    incremental: &std::cell::Cell<bool>,
+    incremental: &super::sync_cell::SyncFlag,
 ) -> z3::SatResult {
     if incremental.get() || timeout_ms <= SOLVER1_BUDGET_MS {
         return timed_check(solver, site);
@@ -633,7 +633,6 @@ mod extra_params_tests {
 mod mode_ladder_tests {
     use super::{CheckSite, SOLVER1_BUDGET_MS, SatOutcome, build_solver, mode_ladder_check};
     use crate::symbolic::SymContext;
-    use std::cell::Cell;
     use z3::ast::BV;
 
     /// Factor a 64-bit product into two non-trivial 32-bit halves: past any
@@ -660,7 +659,7 @@ mod mode_ladder_tests {
         let timeout_ms = SOLVER1_BUDGET_MS + 500;
         let solver = build_solver(timeout_ms);
         assert_semiprime(&solver, "ladder_switch");
-        let incremental = Cell::new(false);
+        let incremental = crate::symbolic::sync_cell::SyncFlag::new(false);
         let start = std::time::Instant::now();
         let result = mode_ladder_check(&solver, CheckSite::Satisfiable, timeout_ms, &incremental);
         let elapsed = start.elapsed().as_millis();
@@ -679,7 +678,7 @@ mod mode_ladder_tests {
         let solver = build_solver(30_000);
         let x = BV::new_const("ladder_easy_x", 8);
         solver.assert(x.eq(BV::from_u64(7, 8)));
-        let incremental = Cell::new(false);
+        let incremental = crate::symbolic::sync_cell::SyncFlag::new(false);
         let easy = mode_ladder_check(&solver, CheckSite::Satisfiable, 30_000, &incremental);
         assert_eq!(easy.decided(), Some(true));
         assert!(!incremental.get());

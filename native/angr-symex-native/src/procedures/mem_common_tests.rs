@@ -205,13 +205,12 @@ fn test_symbolic_size_conditional_store_symbolic_length() {
     let values: Vec<RustBV> = (0..max_size).map(|_| RustBV::concrete(0x41, 8)).collect();
     symbolic_size_conditional_store(&mut state, 0x1000, &sym, max_size, &values).unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for i in 0..max_size {
         let b = state.memory_load(0x1000 + i, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(0x41), "byte {i} store branch");
         assert_eq!(ctx.max(&b, false), Some(0xFF), "byte {i} preserve branch");
     }
-    drop(ctx);
     let b = state.memory_load(0x1003, 1).unwrap();
     assert_eq!(b.as_u64(), Some(0xFF), "byte past the bound untouched");
 }
@@ -238,7 +237,7 @@ fn test_symbolic_size_conditional_store_writes_per_index_values() {
         .collect();
     symbolic_size_conditional_store(&mut state, 0x1000, &sym, 3, &values).unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, want) in [0x11u128, 0x22, 0x33].iter().enumerate() {
         let b = state.memory_load(0x1000 + i as u64, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(*want), "byte {i}");

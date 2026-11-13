@@ -56,8 +56,8 @@ fn sync_constraints_typed_convert_binds_constraint() {
         );
 
         let solver = state.solver();
-        let ctx = solver.borrow();
-        let rust_x = claripy_to_rustbv(py, &x, &ctx).expect("import symbol");
+        let ctx = solver;
+        let rust_x = claripy_to_rustbv(py, &x, ctx).expect("import symbol");
         assert_eq!(
             ctx.eval(&rust_x),
             Some(0x41),
@@ -118,9 +118,9 @@ fn sync_constraints_wide_literal_imported_by_the_typed_tier() {
         let first = claripy_object(py, GLOBAL_CONTEXT.eq_(&x, wide(200)).expect("x == 2^200"));
         {
             let solver = state.solver();
-            let ctx = solver.borrow();
+            let ctx = solver;
             assert!(
-                claripy_to_rustbv(py, &first, &ctx).is_ok(),
+                claripy_to_rustbv(py, &first, ctx).is_ok(),
                 "a comparison against a >128-bit literal imports as a clarirs term"
             );
         }
@@ -173,8 +173,8 @@ fn sync_constraints_unconvertible_item_does_not_abort_siblings() {
         );
 
         let solver = state.solver();
-        let ctx = solver.borrow();
-        let rust_x = claripy_to_rustbv(py, &x, &ctx).expect("import symbol");
+        let ctx = solver;
+        let rust_x = claripy_to_rustbv(py, &x, ctx).expect("import symbol");
         assert_eq!(
             ctx.eval(&rust_x),
             Some(0x55),

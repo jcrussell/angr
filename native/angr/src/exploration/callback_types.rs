@@ -200,9 +200,9 @@ pub(crate) fn apply_deferred_fork_constraints(
     for fork in deferred_forks {
         if let Some(cond) = stored_conditions.get(&fork.condition_id) {
             if fork.path_taken {
-                state.solver().borrow().assume_true(cond);
+                state.solver().assume_true(cond);
             } else {
-                state.solver().borrow().assume_false(cond);
+                state.solver().assume_false(cond);
             }
         }
     }

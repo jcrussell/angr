@@ -374,7 +374,7 @@ fn forked_successor_routes_from_its_own_fork() {
         // x == 0 and x != 0: this successor's guard contradicts the path.
         let fork = mgr.find_state(dead).expect("dead fork");
         let solver = fork.solver();
-        let ctx = solver.borrow();
+        let ctx = solver;
         ctx.assume_true(&cond);
         ctx.assume_false(&cond);
     }

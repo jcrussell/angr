@@ -310,9 +310,7 @@ fn test_snprintf_output_that_fits_stays_native() {
 #[test]
 fn test_sprintf_symbolic_dest() {
     let mut state = setup_state();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("dest", 64);
-    drop(ctx);
 
     let result = NativeSprintf.call(
         &mut state,

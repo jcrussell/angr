@@ -63,7 +63,7 @@ fn test_solver_close_off_owner_is_noop() {
 
 /// Documentation-grade size probe for the `large_enum_variant` allow on
 /// `SolverCtxStorage`. Backs the decision not to box it: `Owned` exists
-/// precisely to skip the alloc that `Shared` (Rc) requires; boxing
+/// precisely to skip the alloc that `Shared` (`Arc`) requires; boxing
 /// `Owned` defeats that. Run with
 /// `cargo test --release -p angr -- --nocapture print_solver_storage_sizes`.
 #[test]
@@ -71,10 +71,10 @@ fn print_solver_storage_sizes() {
     use std::mem::size_of;
     let storage = size_of::<SolverCtxStorage>();
     let sym_ctx = size_of::<SymContext>();
-    let shared_payload = size_of::<Rc<RefCell<SymContext>>>();
+    let shared_payload = size_of::<std::sync::Arc<SymContext>>();
     println!("SolverCtxStorage          = {storage} bytes");
     println!("  SymContext (Owned)      = {sym_ctx} bytes");
-    println!("  Rc<RefCell<SymContext>> = {shared_payload} bytes");
+    println!("  Arc<SymContext> = {shared_payload} bytes");
     println!(
         "boxing-Owned-would-save   = {} bytes per fork (and add a heap alloc)",
         sym_ctx.saturating_sub(shared_payload)

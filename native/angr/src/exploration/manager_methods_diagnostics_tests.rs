@@ -23,7 +23,7 @@ use crate::symbolic::RustBV;
 /// `assumed_constraints_push` rather than `assume_true` so the tests below do
 /// no solver work at all.
 fn assume_bv(state: &RustSimState, bv: RustBV) {
-    state.solver().borrow().assumed_constraints_push(bv, true);
+    state.solver().assumed_constraints_push(bv, true);
 }
 
 /// The all-zeroes baseline. Worth pinning because every other assertion here

@@ -70,7 +70,7 @@ impl RustExplorationManager {
         let mut states_analyzed: u64 = 0;
         let mut constraints_analyzed: u64 = 0;
         for state in self.all_live_states() {
-            let ctx = state.solver().borrow();
+            let ctx = state.solver();
             let n_constraints = ctx.assumed_constraint_count();
             if n_constraints == 0 {
                 continue;

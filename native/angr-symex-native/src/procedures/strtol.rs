@@ -464,8 +464,8 @@ fn run_strtol(
     let bits = state.arch().bits();
 
     let (prefix_end, prefix) = {
-        let ctx = state.solver().borrow();
-        parse_concrete_prefix(&ctx, &bytes, base_arg)?
+        let ctx = state.solver();
+        parse_concrete_prefix(ctx, &bytes, base_arg)?
     };
 
     // No digits possible (empty after prefix or invalid base).
@@ -536,8 +536,7 @@ fn run_strtol(
     // the concrete path's sake; an ITE chain one term per byte is the one
     // consumer that cannot absorb a longer window, so it keeps the old cap.
     let sym_end = bytes.len().min(prefix_end.saturating_add(MAX_DIGITS));
-    let ctx_handle = state.solver().clone();
-    let ctx = ctx_handle.borrow();
+    let ctx = state.solver().clone();
     let (accum, run_len) = build_symbolic_accumulator(
         &bytes[..sym_end],
         prefix_end,

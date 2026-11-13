@@ -42,9 +42,7 @@ fn test_printf_empty_format() {
 #[test]
 fn test_printf_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("fmt", 64);
-    drop(ctx);
     let result = NativePrintf.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -205,9 +203,7 @@ fn test_fprintf_negative_fd_returns_minus_one() {
 #[test]
 fn test_fprintf_symbolic_stream_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("stream", 64);
-    drop(ctx);
     let result = NativeFprintf.call(&mut state, &[sym, RustBV::concrete(0x1000, 64)]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }

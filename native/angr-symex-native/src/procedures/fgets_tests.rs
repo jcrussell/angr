@@ -79,7 +79,7 @@ fn test_fgets_newline_only_at_last_byte() {
         .unwrap();
 
     let nl = RustBV::concrete(b'\n' as u128, 8);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
 
     // Byte 0 (not the last data byte) can NOT be a newline post-fix.
     let b0 = state.memory_load(0x2000, 1).unwrap();
@@ -154,9 +154,7 @@ fn test_fgets_size_0() {
 #[test]
 fn test_fgets_symbolic_buf() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("buf", 64);
-    drop(ctx);
 
     let result = NativeFgets.call(
         &mut state,
@@ -252,9 +250,7 @@ fn test_fgets_symbolic_stream_falls_back() {
     // A symbolic FILE* can't resolve to an fd — must error so Python handles it.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("stream", 64);
-    drop(ctx);
 
     let result = NativeFgets.call(
         &mut state,
@@ -405,7 +401,7 @@ fn test_fgetc_short_reads_can_return_eof() {
         .unwrap()
         .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert!(
         ctx.solution(&result, 0xFFFF_FFFF),
         "EOF (-1) must be reachable under SHORT_READS"
@@ -430,7 +426,7 @@ fn test_fgetc_default_never_eof() {
         .unwrap()
         .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert!(
         !ctx.solution(&result, 0xFFFF_FFFF),
         "default fgetc never returns the EOF sentinel"
@@ -472,7 +468,7 @@ fn test_fgets_short_reads_returns_symbolic_size() {
         "short-read fgets returns symbolic real_size, not the concrete buffer ptr"
     );
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert!(
         ctx.solution(&result, 0),
         "a zero-length short read must be reachable"
@@ -513,7 +509,7 @@ fn test_fgets_short_reads_nul_at_real_size() {
     state.add_constraint(pin);
 
     let byte3 = state.memory_load(0x2003, 1).unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let zero = RustBV::concrete(0, 8);
     assert!(
         !ctx.can_be_true(&byte3.ne(&zero)),
@@ -563,7 +559,7 @@ fn test_gets_nul_at_real_size_bounded() {
     // Constrain buf+5 to NUL and buf+4 to non-NUL: a self-consistent short read
     // of length 5 must be satisfiable under the case-2 constraints.
     let (cons, sat) = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let zero = RustBV::concrete(0, 8);
         let b4 = state.memory_load(0x2004, 1).unwrap();
         let b5 = state.memory_load(0x2005, 1).unwrap();
@@ -922,7 +918,7 @@ fn short_read_fgets_is_its_own_stdin_packet_sized_by_real_size() {
     assert_eq!(read.first_leaf, packets[1].0[0].0);
     let (name, bits) = read.length.as_ref().unwrap();
     let length = RustBV::symbol(name, *bits);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert!(
         !ctx.solution(&length.eq(&real_size), 0),
         "the recorded length names the count fgets returned"

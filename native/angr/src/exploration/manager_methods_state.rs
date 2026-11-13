@@ -193,7 +193,7 @@ impl RustExplorationManager {
     /// if the state isn't found. Used by RustStateProxy.__repr__.
     pub fn state_constraint_count(&self, state_id: u64) -> Option<usize> {
         let state = self.find_state(state_id)?;
-        Some(state.solver().borrow().num_constraints())
+        Some(state.solver().num_constraints())
     }
 
     /// Rebuild the state index after run() modifies stashes internally.
@@ -362,10 +362,9 @@ impl RustExplorationManager {
         self.with_state_mut(state_id, |state| {
             let code = match exit_code {
                 Some(ast) => {
-                    let solver_ref = state.solver();
-                    let sym_ctx = solver_ref.borrow();
+                    let sym_ctx = state.solver();
                     Some(
-                        claripy_to_rustbv(py, ast, &sym_ctx)
+                        claripy_to_rustbv(py, ast, sym_ctx)
                             .map_err(|e| ast_import_err("exit code", e))?,
                     )
                 }
@@ -393,9 +392,8 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             let bv = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                claripy_to_rustbv(py, last_time, &sym_ctx)
+                let sym_ctx = state.solver();
+                claripy_to_rustbv(py, last_time, sym_ctx)
                     .map_err(|e| ast_import_err("sys_last_time", e))?
             };
             state.set_last_time(bv);

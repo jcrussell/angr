@@ -511,11 +511,11 @@ impl SymContext {
     /// cleared, and the second witness takes its place when that one
     /// resolves, so afterwards an occupied `model_cache` names a live model.
     pub(super) fn cached_model(&self) -> Option<std::rc::Rc<z3::Model>> {
-        let mut cache = self.model_cache.borrow_mut();
+        let mut cache = self.model_cache.lock();
         if let Some(model) = cache.as_ref().and_then(ModelRef::get) {
             return Some(model);
         }
-        *cache = self.alt_model_cache.borrow_mut().take();
+        *cache = self.alt_model_cache.lock().take();
         let model = cache.as_ref().and_then(ModelRef::get);
         if model.is_none() {
             *cache = None;
@@ -526,15 +526,15 @@ impl SymContext {
     /// Make `model` the primary witness. The caller has just read it off a
     /// solver holding exactly the current constraints.
     fn cache_model(&self, model: z3::Model) {
-        *self.model_cache.borrow_mut() = Some(ModelRef::store(model));
+        *self.model_cache.lock() = Some(ModelRef::store(model));
     }
 
     /// Test-only: whether each witness slot resolves to a model on this
     /// thread, primary first.
     #[cfg(any(test, feature = "testing"))]
     pub fn cached_models_for_test(&self) -> (bool, bool) {
-        let live = |slot: &std::cell::RefCell<Option<ModelRef>>| {
-            slot.borrow().as_ref().and_then(ModelRef::get).is_some()
+        let live = |slot: &parking_lot::Mutex<Option<ModelRef>>| {
+            slot.lock().as_ref().and_then(ModelRef::get).is_some()
         };
         (live(&self.model_cache), live(&self.alt_model_cache))
     }
@@ -553,7 +553,7 @@ impl SymContext {
             if self.cached_model().is_none() {
                 self.cache_model(model);
             } else {
-                *self.alt_model_cache.borrow_mut() = Some(ModelRef::store(model));
+                *self.alt_model_cache.lock() = Some(ModelRef::store(model));
             }
         }
         decided

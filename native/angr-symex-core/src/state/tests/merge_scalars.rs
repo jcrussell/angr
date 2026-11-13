@@ -84,7 +84,7 @@ fn test_merge_takes_symbolic_max_of_last_time() {
     let last = merged
         .last_time()
         .expect("last_time must survive the merge");
-    let val = merged.solver().borrow().eval(last);
+    let val = merged.solver().eval(last);
     assert_eq!(
         val,
         Some(250),

@@ -59,10 +59,10 @@ fn delegate_registers_merge_preserves_a_branch_only_concrete_write() {
     let [m0, m1] = conds("reg_delegate");
 
     let merged_a_active = a.merge(&[&b], &[m0.clone(), m1.clone()]);
-    merged_a_active.solver().borrow().assume_true(&m0);
+    merged_a_active.solver().assume_true(&m0);
     let a_view = merged_a_active
         .get_register("rbx")
-        .and_then(|v| merged_a_active.solver().borrow().eval(&v));
+        .and_then(|v| merged_a_active.solver().eval(&v));
     assert_eq!(
         a_view,
         Some(0),
@@ -70,10 +70,10 @@ fn delegate_registers_merge_preserves_a_branch_only_concrete_write() {
     );
 
     let merged_b_active = a.merge(&[&b], &[m0, m1.clone()]);
-    merged_b_active.solver().borrow().assume_true(&m1);
+    merged_b_active.solver().assume_true(&m1);
     let b_view = merged_b_active
         .get_register("rbx")
-        .and_then(|v| merged_b_active.solver().borrow().eval(&v));
+        .and_then(|v| merged_b_active.solver().eval(&v));
     assert_eq!(
         b_view,
         Some(0x4242),
@@ -95,12 +95,12 @@ fn delegate_memory_merge_preserves_a_branch_only_store() {
     let [m0, m1] = conds("mem_delegate");
     for (cond, want_a, want_b) in [(&m0, 0x11, 0), (&m1, 0, 0x22)] {
         let merged = a.merge(&[&b], &[m0.clone(), m1.clone()]);
-        merged.solver().borrow().assume_true(cond);
+        merged.solver().assume_true(cond);
         let read = |addr| {
             merged
                 .memory_load(addr, 1)
                 .ok()
-                .and_then(|v| merged.solver().borrow().eval(&v))
+                .and_then(|v| merged.solver().eval(&v))
         };
         assert_eq!(read(0x5000_0000), Some(want_a), "a's page under {cond:?}");
         assert_eq!(read(0x5000_1000), Some(want_b), "b's page under {cond:?}");
@@ -119,12 +119,12 @@ fn delegate_solver_merge_preserves_each_branchs_constraint() {
         RustBV::symbol("solver_delegate_x", 32)
     };
     {
-        let s = a.solver().borrow();
+        let s = a.solver();
         let c = x.eq(&RustBV::concrete(5, 32));
         s.assume_true(&c);
     }
     {
-        let s = b.solver().borrow();
+        let s = b.solver();
         let c = x.eq(&RustBV::concrete(9, 32));
         s.assume_true(&c);
     }
@@ -132,17 +132,17 @@ fn delegate_solver_merge_preserves_each_branchs_constraint() {
     let [m0, m1] = conds("solver_delegate");
 
     let merged_a_active = a.merge(&[&b], &[m0.clone(), m1.clone()]);
-    merged_a_active.solver().borrow().assume_true(&m0);
+    merged_a_active.solver().assume_true(&m0);
     assert_eq!(
-        merged_a_active.solver().borrow().eval(&x),
+        merged_a_active.solver().eval(&x),
         Some(5),
         "under a's own branch condition the merged solver must see a's constraint"
     );
 
     let merged_b_active = a.merge(&[&b], &[m0, m1.clone()]);
-    merged_b_active.solver().borrow().assume_true(&m1);
+    merged_b_active.solver().assume_true(&m1);
     assert_eq!(
-        merged_b_active.solver().borrow().eval(&x),
+        merged_b_active.solver().eval(&x),
         Some(9),
         "under b's own branch condition the merged solver must see b's constraint too"
     );
@@ -416,7 +416,7 @@ fn manual_last_time_takes_the_symbolic_max_across_branches() {
     let [m0, m1] = conds("last_time_max_b_bigger");
     let merged = a.merge(&[&b], &[m0, m1]);
     let last = merged.last_time().expect("last_time must survive the merge");
-    let val = merged.solver().borrow().eval(last);
+    let val = merged.solver().eval(last);
     assert_eq!(
         val,
         Some(250),
@@ -434,7 +434,7 @@ fn manual_last_time_takes_the_symbolic_max_across_branches() {
     let last2 = merged2
         .last_time()
         .expect("last_time must survive the merge");
-    let val2 = merged2.solver().borrow().eval(last2);
+    let val2 = merged2.solver().eval(last2);
     assert_eq!(
         val2,
         Some(999),

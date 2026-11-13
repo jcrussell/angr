@@ -60,7 +60,7 @@ impl ConstraintSolver {
 /// Single seam for the `deterministic` flag so `_create_state`, `_add_state`
 /// and `set_deterministic` share one body.
 pub(crate) fn apply_state_deterministic(state: &crate::state::RustSimState, v: bool) {
-    state.solver().borrow().set_deterministic(v);
+    state.solver().set_deterministic(v);
 }
 
 /// Apply strict-deterministic witness selection to the one solver context a
@@ -97,7 +97,7 @@ pub(crate) fn apply_fork_snapshots_deterministic(pending: &super::PendingCallbac
 
 /// Whether a state's solver is in strict-deterministic mode.
 pub(crate) fn state_is_deterministic(state: &crate::state::RustSimState) -> bool {
-    state.solver().borrow().is_deterministic()
+    state.solver().is_deterministic()
 }
 
 /// Which conversion tier [`import_one_constraint`] tries first.
@@ -319,9 +319,8 @@ pub(crate) fn import_constraints_and_recheck(
     state_id: u64,
 ) -> Option<bool> {
     let summary = {
-        let solver_ref = state.solver();
-        let sym_ctx = solver_ref.borrow();
-        import_python_constraints(py, &sym_ctx, constraints, kind)
+        let sym_ctx = state.solver();
+        import_python_constraints(py, sym_ctx, constraints, kind)
     };
     if summary.is_partial() {
         log::warn!(

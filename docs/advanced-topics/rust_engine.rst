@@ -67,22 +67,29 @@ parallelism is its own work-stealing worker pool, engaged with
 :doc:`rust_parallel_design`). Three architectural facts bound what else
 is possible, and the design works *with* them rather than against them:
 
-* ``RustSimState`` shares its solver through ``Rc<RefCell<SymContext>>``
-  under a single-threaded copy-on-write idiom, so a state is owned by
-  exactly one thread.
+* A ``RustSimState`` holds no Z3 object and is ``Send`` (asserted in
+  ``state/migration.rs``): its values and its constraint log are clarirs
+  terms, and it reaches its solver context through an
+  ``Arc<SymContext>``. One owner drives a state at a time; the ``Arc``
+  exists for the same-id base copy a deferred fork takes and for the
+  Python solver handle onto a parked state.
 * z3-rs binds every Z3 AST to the thread-local Z3 context that created
-  it; crossing threads with an AST handle is undefined behavior.
+  it; crossing threads with an AST handle is undefined behavior. Solvers,
+  models and lowered terms are therefore per-thread caches, rebuilt from
+  a state's constraint log on whichever thread queries it
+  (:doc:`rust_z3_sharing`).
 * The claripy bridge's Z3 lowering memo is ``thread_local!`` by design.
 
 Consequently the load-bearing ``#[pyclass]`` types
 (``RustExplorationManager``, ``PyRustSimState``, ``RustSolverContext``)
 are ``unsendable``: a manager cannot be stepped from several Python
-threads, and workers never share a state. Work moves between workers
-only as an ``ExplorationStateSnapshot`` (``Send + Sync``), and each
-worker rebuilds its own solver from the snapshot's constraint list.
-Turning Z3's own ``parallel.enable`` on, or converting the ``Rc`` to an
-``Arc<Mutex<..>>``, does not change this — see
-:doc:`rust_engine_decisions`.
+threads, and workers never share a state. The scheduler moves work
+between workers as a serialized ``StateMigrationPayload``, and each
+worker rebuilds its own solver from the constraint list; that a state
+is ``Send`` is what lets a scheduler hand over the state itself
+instead. Turning Z3's own ``parallel.enable`` on, or putting a state
+behind an ``Arc<Mutex<..>>`` for several workers to share, does not
+change this — see :doc:`rust_engine_decisions`.
 
 Outside the engine's control, and matching Python angr:
 

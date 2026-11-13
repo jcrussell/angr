@@ -212,14 +212,11 @@ impl RustExplorationManager {
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         self.with_pending_mut(state_id, |pending| {
-            let solver_ref = pending.state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &sym_ctx;
+            let sym_ctx = pending.state.solver();
+            let ctx_ref: &SymContext = sym_ctx;
 
             let bv = claripy_to_rustbv(py, ast, ctx_ref)
                 .map_err(|e| ast_import_err(&format!("register {reg_name}"), e))?;
-
-            drop(sym_ctx);
 
             if pending.state.set_register(reg_name, bv) {
                 log::debug!("Set symbolic register {reg_name} from claripy AST");
@@ -244,11 +241,9 @@ impl RustExplorationManager {
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
-            let solver_ref = state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &sym_ctx)
+            let sym_ctx = state.solver();
+            let bv = claripy_to_rustbv(py, ast, sym_ctx)
                 .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
-            drop(sym_ctx);
             state
                 .memory_mut()
                 .import_symbolic_value(addr, bv, None)
@@ -337,11 +332,9 @@ impl RustExplorationManager {
         ast: &Bound<'_, PyAny>,
     ) -> PyResult<()> {
         self.with_pending_mut(state_id, |pending| {
-            let solver_ref = pending.state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let bv = claripy_to_rustbv(py, ast, &sym_ctx)
+            let sym_ctx = pending.state.solver();
+            let bv = claripy_to_rustbv(py, ast, sym_ctx)
                 .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
-            drop(sym_ctx);
 
             pending
                 .state
@@ -571,7 +564,7 @@ impl RustExplorationManager {
                 dict.set_item("solver", Py::new(py, rust_ctx)?)?;
                 dict.set_item("constraint_count", constraint_count)?;
             } else {
-                let forked_ctx = solver_ref.borrow().fork();
+                let forked_ctx = solver_ref.fork();
                 let rust_ctx = RustSolverContext::from_sym_context(forked_ctx);
                 let constraint_count = rust_ctx.num_constraints();
                 dict.set_item("solver", Py::new(py, rust_ctx)?)?;
@@ -598,7 +591,7 @@ impl RustExplorationManager {
     pub(crate) fn _fork_pending_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
         self.with_pending(state_id, |pending| {
             let solver_ref = pending.state.solver();
-            let forked_ctx = solver_ref.borrow().fork();
+            let forked_ctx = solver_ref.fork();
             Ok(RustSolverContext::from_sym_context(forked_ctx))
         })
     }
@@ -730,8 +723,7 @@ impl RustExplorationManager {
             .map_err(PyValueError::new_err)?;
         self.with_pending(state_id, |pending| {
             // One solver borrow for the whole range, not one per 16-byte chunk.
-            let solver_ref = pending.state.solver();
-            let ctx = solver_ref.borrow();
+            let ctx = pending.state.solver();
             crate::symbolic::load_concrete_bytes_chunked(addr, size, |a, n| {
                 let memory = pending.state.memory();
                 match memory.load_concrete(a, n) {
@@ -804,11 +796,10 @@ fn import_byte_asts(
     state: &crate::state::RustSimState,
     byte_asts: &Bound<'_, pyo3::types::PyList>,
 ) -> PyResult<Vec<crate::symbolic::RustBV>> {
-    let solver_ref = state.solver();
-    let sym_ctx = solver_ref.borrow();
+    let sym_ctx = state.solver();
     let mut bytes = Vec::with_capacity(byte_asts.len());
     for (idx, item) in byte_asts.iter().enumerate() {
-        let bv = claripy_to_rustbv(py, &item, &sym_ctx)
+        let bv = claripy_to_rustbv(py, &item, sym_ctx)
             .map_err(|e| ast_import_err(&format!("content byte {idx}"), e))?;
         if bv.width() != 8 {
             return Err(PyValueError::new_err(format!(

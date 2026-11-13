@@ -92,9 +92,7 @@ fn test_memcpy_zero_size() {
 fn test_memcpy_symbolic_dst() {
     let mut state = RustSimState::new("amd64").unwrap();
 
-    let ctx = state.solver().borrow();
     let sym_dst = RustBV::symbol("dst", 64);
-    drop(ctx);
 
     let proc = NativeMemcpy;
     let result = proc.call(
@@ -191,7 +189,7 @@ fn test_memcpy_symbolic_size_pinned() {
         .unwrap();
     assert_eq!(result.unwrap().as_u64(), Some(0x2000));
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // dst[0..4) == "abcd" (only feasible value under n == 4).
     for (i, &c) in b"abcd".iter().enumerate() {
         let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
@@ -233,7 +231,7 @@ fn test_memcpy_symbolic_size_conditional() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // Each byte in [0,4) is ITE(i < n, 0x41, 0xFF): both branches feasible.
     for i in 0..4u64 {
         let b = state.memory_load(0x2000 + i, 1).unwrap();
@@ -299,7 +297,7 @@ fn test_memmove_symbolic_size_overlap() {
     .unwrap();
 
     // Should have "cdefgh" at the front (same as concrete-size overlap test).
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, &c) in b"cdefgh".iter().enumerate() {
         let b = state.memory_load(0x1000 + i as u64, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(c as u128), "byte {i}");
@@ -331,7 +329,7 @@ fn test_memcpy_symbolic_dst_pinned() {
         )
         .unwrap();
     let ret = result.unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.eval(&ret), Some(0x2000));
 
     for (i, &c) in b"ABCD".iter().enumerate() {
@@ -367,7 +365,7 @@ fn test_memcpy_symbolic_src_pinned() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, &c) in b"WXYZ".iter().enumerate() {
         let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(c as u128));
@@ -400,7 +398,7 @@ fn test_memcpy_symbolic_dst_two_candidates() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // Each region's bytes can be the src byte (when dst selects it) or the
     // original zero (when dst selects the other region).
     for base in [0x2000u64, 0x2008u64] {
@@ -441,7 +439,7 @@ fn test_memcpy_symbolic_src_dst_cross_product() {
     proc.call(&mut state, &[dst, src, RustBV::concrete(2, 64)])
         .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, &c) in b"GH".iter().enumerate() {
         let b = state.memory_load(0x2000 + i as u64, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(c as u128));
@@ -516,7 +514,7 @@ fn test_memmove_symbolic_dst_overlap() {
     )
     .unwrap();
 
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, &c) in b"cdefgh".iter().enumerate() {
         let b = state.memory_load(0x1000 + i as u64, 1).unwrap();
         assert_eq!(ctx.min(&b, false), Some(c as u128), "byte {i}");

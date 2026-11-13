@@ -91,7 +91,7 @@ pub(super) fn build_populated_state() -> RustSimState {
         let ten = RustBV::concrete(10, 64);
         rbx_sym.ugt(&ten)
     };
-    s.solver().borrow().assume_true(&cmp);
+    s.solver().assume_true(&cmp);
 
     s
 }

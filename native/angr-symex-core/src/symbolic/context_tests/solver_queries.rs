@@ -1879,11 +1879,11 @@ fn branch_check_model_witnesses_the_assumed_side() {
     // the `x != v` side reaches Z3.
     let cond = x.ne(&RustBV::concrete(v, 32));
     assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
-    assert!(ctx.alt_model_cache.borrow().is_some());
+    assert!(ctx.alt_model_cache.lock().is_some());
 
     ctx.assume_true(&cond);
     assert!(
-        ctx.model_cache.borrow().is_some(),
+        ctx.model_cache.lock().is_some(),
         "the taken side must keep the model its feasibility check found"
     );
     assert_eq!(ctx.is_sat_checked(), Some(true));
@@ -1899,16 +1899,16 @@ fn branch_check_models_are_dropped_when_stale() {
     let x = RustBV::symbol("x", 32);
     let cond = x.ugt(&RustBV::concrete(10, 32));
     assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
-    assert!(ctx.model_cache.borrow().is_some() && ctx.alt_model_cache.borrow().is_some());
+    assert!(ctx.model_cache.lock().is_some() && ctx.alt_model_cache.lock().is_some());
 
     ctx.assume_false(&cond);
-    assert!(ctx.model_cache.borrow().is_some(), "the ¬cond witness is promoted");
-    assert!(ctx.alt_model_cache.borrow().is_none(), "the cond witness fails ¬cond");
+    assert!(ctx.model_cache.lock().is_some(), "the ¬cond witness is promoted");
+    assert!(ctx.alt_model_cache.lock().is_none(), "the cond witness fails ¬cond");
     let w = ctx.eval(&x).expect("the promoted witness evals");
     assert!(w <= 10, "the witness must satisfy x <= 10, got {w}");
 
     ctx.assume_true(&cond);
-    assert!(ctx.model_cache.borrow().is_none());
+    assert!(ctx.model_cache.lock().is_none());
     assert_eq!(ctx.is_sat_checked(), Some(false));
 }
 
@@ -1921,9 +1921,9 @@ fn branch_check_models_follow_fork_and_pop() {
     ctx.push();
     assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
     let child = ctx.fork();
-    assert!(child.alt_model_cache.borrow().is_some());
+    assert!(child.alt_model_cache.lock().is_some());
     ctx.pop();
-    assert!(ctx.model_cache.borrow().is_none() && ctx.alt_model_cache.borrow().is_none());
+    assert!(ctx.model_cache.lock().is_none() && ctx.alt_model_cache.lock().is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -1975,7 +1975,7 @@ fn surviving_second_witness_is_promoted() {
     assert_eq!(ctx.check_branch_feasibility(&cond), (true, true));
     assert_eq!(ctx.cached_models_for_test(), (true, true));
 
-    *ctx.model_cache.borrow_mut() = None;
+    *ctx.model_cache.lock() = None;
     assert!(ctx.cached_model().is_some());
     assert_eq!(ctx.cached_models_for_test(), (true, false));
 }

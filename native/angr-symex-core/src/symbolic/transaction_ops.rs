@@ -74,8 +74,8 @@ impl SymContext {
         self.scope_savepoint_push();
         // Invalidate caches since constraint set may change
         self.sat_cache.set(None);
-        *self.model_cache.borrow_mut() = None;
-        *self.alt_model_cache.borrow_mut() = None;
+        *self.model_cache.lock() = None;
+        *self.alt_model_cache.lock() = None;
     }
 
     /// Restore solver state.
@@ -93,8 +93,8 @@ impl SymContext {
         self.scope_savepoint_pop();
         // Invalidate caches since constraint set has changed
         self.sat_cache.set(None);
-        *self.model_cache.borrow_mut() = None;
-        *self.alt_model_cache.borrow_mut() = None;
+        *self.model_cache.lock() = None;
+        *self.alt_model_cache.lock() = None;
     }
 
     /// Open the interpreter's branch scope: a [`push()`](Self::push) whose

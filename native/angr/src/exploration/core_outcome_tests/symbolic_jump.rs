@@ -134,7 +134,7 @@ fn symbolic_jump_single_target_keep_ip_symbolic_adds_no_constraint() {
             "IP register must stay symbolic"
         );
         assert_eq!(
-            succ[0].0.solver().borrow().num_constraints(),
+            succ[0].0.solver().num_constraints(),
             0,
             "keep_ip_symbolic must not pin the jump expression"
         );
@@ -154,7 +154,7 @@ fn symbolic_jump_missing_condition_sets_pc_without_constraining() {
         };
         assert_eq!(succ.len(), 1);
         assert_eq!(succ[0].0.pc(), TARGET);
-        assert_eq!(succ[0].0.solver().borrow().num_constraints(), 0);
+        assert_eq!(succ[0].0.solver().num_constraints(), 0);
     });
 }
 

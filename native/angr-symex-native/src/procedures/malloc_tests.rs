@@ -39,9 +39,7 @@ fn test_malloc_sequential_non_overlapping() {
 #[test]
 fn test_malloc_symbolic_size() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("size", 64);
-    drop(ctx);
     let result = NativeMalloc.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -346,9 +344,7 @@ fn test_memalign_rejects_non_power_of_two() {
 #[test]
 fn test_memalign_symbolic_size_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("size", 64);
-    drop(ctx);
     let result = NativeMemalign.call(&mut state, &[RustBV::concrete(32, 64), sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -428,9 +424,7 @@ fn test_posix_memalign_rejects_bad_alignment() {
 #[test]
 fn test_posix_memalign_symbolic_size_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("size", 64);
-    drop(ctx);
     let result = NativePosixMemalign.call(
         &mut state,
         &[

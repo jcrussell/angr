@@ -214,12 +214,12 @@ impl RustSimState {
     /// Inert in this slice — the materialization gate (step 1c) is the
     /// first consumer.
     pub fn set_use_shared_lineage_solver(&self, enabled: bool) {
-        self.solver.borrow().set_use_shared_lineage_solver(enabled);
+        self.solver.set_use_shared_lineage_solver(enabled);
     }
 
     /// Whether fork-time `SharedLineageSolver` materialization is opted
     /// in on this state's solver context (angr-3ms1 step 1b).
     pub fn use_shared_lineage_solver(&self) -> bool {
-        self.solver.borrow().use_shared_lineage_solver()
+        self.solver.use_shared_lineage_solver()
     }
 }

@@ -187,7 +187,7 @@ fn test_foreign_envelope_keeps_symbol_names() {
             .and_then(std::collections::VecDeque::front)
             .expect("restored active state");
         let solver = state.solver();
-        let ctx = solver.borrow();
+        let ctx = solver;
         let assumed = ctx.get_assumed_constraints();
         let (bv, _) = assumed.first().expect("restored assumed constraint");
         first_leaf(bv).expect("restored symbolic leaf")
@@ -197,7 +197,7 @@ fn test_foreign_envelope_keeps_symbol_names() {
     let state = RustSimState::new("amd64").unwrap();
     let leaf = {
         let solver = state.solver();
-        let ctx = solver.borrow();
+        let ctx = solver;
         let leaf = RustBV::symbol("euw28_leaf", 64);
         ctx.assume_true(&leaf.eq(&RustBV::concrete(7, 64)));
         leaf

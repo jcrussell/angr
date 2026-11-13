@@ -47,9 +47,7 @@ fn test_puts_multiple_calls() {
 #[test]
 fn test_puts_symbolic_addr() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("addr", 64);
-    drop(ctx);
     let result = NativePuts.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -93,9 +91,7 @@ fn test_putchar_multiple() {
 #[test]
 fn test_putchar_symbolic() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("c", 32);
-    drop(ctx);
     let result = NativePutchar.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -192,9 +188,7 @@ fn test_fputc_symbolic_stream_falls_back() {
     // A symbolic FILE* can't be resolved to an fd — must error so the Python
     // proc handles it (was previously serviced as stdout via the `bv` arg).
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("stream", 64);
-    drop(ctx);
     let result = NativeFputc.call(&mut state, &[RustBV::concrete(b'A' as u128, 32), sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }

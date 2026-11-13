@@ -233,9 +233,7 @@ fn test_stpncpy_long_src_returns_dest_plus_n() {
 #[test]
 fn test_strdup_symbolic_arg() {
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("ptr", 64);
-    drop(ctx);
     let result = NativeStrdup.call(&mut state, &[sym]);
     assert!(matches!(result, Err(ProcedureError::SymbolicArgument(_))));
 }
@@ -354,9 +352,7 @@ fn test_strndup_registered() {
 
 /// Insert a fully-symbolic byte at `addr` on an already-mapped page.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol(name, 8);
-    drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
 }
@@ -385,7 +381,7 @@ fn test_strncpy_symbolic_source_serves_natively() {
     // as_u64().
     let b0 = state.memory_load(0x2000, 1).unwrap();
     {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         assert_eq!(ctx.min(&b0, false), Some(b'a' as u128));
         assert_eq!(ctx.max(&b0, false), Some(b'a' as u128));
     }
@@ -399,7 +395,7 @@ fn test_strncpy_symbolic_source_serves_natively() {
         sym.eq(&RustBV::concrete(b'b' as u128, 8))
     };
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     for (i, &expected) in b"abc\x00".iter().enumerate() {
         let byte = state.memory_load(0x2000 + i as u64, 1).unwrap();
         assert_eq!(
@@ -436,7 +432,7 @@ fn test_strncpy_symbolic_source_null_pads_tail() {
         sym.eq(&RustBV::concrete(0u128, 8))
     };
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let b1 = state.memory_load(0x2001, 1).unwrap();
     assert_eq!(ctx.eval(&b1), Some(0));
     for i in 2..4u64 {

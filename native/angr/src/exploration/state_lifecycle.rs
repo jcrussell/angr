@@ -64,7 +64,6 @@ impl RustExplorationManager {
         if self.constraint_solver.solver_timeout_ms != DEFAULT_SOLVER_TIMEOUT_MS {
             state
                 .solver()
-                .borrow()
                 .set_timeout(self.constraint_solver.solver_timeout_ms);
         }
 
@@ -107,7 +106,6 @@ impl RustExplorationManager {
         if self.constraint_solver.solver_timeout_ms != DEFAULT_SOLVER_TIMEOUT_MS {
             forked
                 .solver()
-                .borrow()
                 .set_timeout(self.constraint_solver.solver_timeout_ms);
         }
 
@@ -226,7 +224,7 @@ impl RustExplorationManager {
         let merge_conditions: Vec<RustBV> = (0..states.len())
             .map(|i| {
                 let name = format!("merge_flag_{i}");
-                solver.borrow().new_bv(&name, 1)
+                solver.new_bv(&name, 1)
             })
             .collect();
 

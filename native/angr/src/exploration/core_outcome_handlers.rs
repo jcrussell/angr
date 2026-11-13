@@ -368,8 +368,8 @@ pub(super) fn handle_symbolic_branch_core(
     let mut false_state = state;
     false_state.set_pc(false_target);
     if let Some(ref cond) = branch_condition {
-        true_state.solver().borrow().assume_true(cond);
-        false_state.solver().borrow().assume_false(cond);
+        true_state.solver().assume_true(cond);
+        false_state.solver().assume_false(cond);
     }
 
     let mut succ = Vec::with_capacity(forks_out.len() + 2);

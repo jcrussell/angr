@@ -2,15 +2,13 @@
 //!
 //! A work-stealing scheduler (angr-1ilq.3) moves a [`RustSimState`] from the
 //! worker that owns it to a stealing worker on another thread. `RustSimState`
-//! is `!Send`: it shares its solver context through an `Rc<RefCell<..>>`.
-//! Its values ([`RustBV`]) and its solver context are clarirs terms and
-//! cache keys, and hold no Z3 object (angr-az6ru.2).
+//! is `Send` (angr-az6ru.2, asserted below): its values ([`RustBV`]) and its
+//! solver context are clarirs terms and cache keys, and hold no Z3 object.
+//! The scheduler does not move states yet; it still crosses threads with
+//! this payload, which predates that.
 //!
-//! Rather than asserting `unsafe impl Send for RustSimState` — which is
-//! **unsound** (it would let the stealing thread read the owner's *live* Z3
-//! context, and race the non-atomic `Rc` solver refcount; angr-1ilq.1) — this
-//! module crosses the thread boundary with data that is `Send` *by
-//! construction*:
+//! The payload crosses the thread boundary with data that is `Send` *by
+//! construction*, and with no `unsafe` (angr-1ilq.1):
 //!
 //! * `state_bytes` — the versioned serde envelope
 //!   ([`RustSimState::to_serialized`]). Every value is serialized to a
@@ -44,12 +42,14 @@ pub struct StateMigrationPayload {
 }
 
 // angr-1ilq.1: the migration transport is `Send` by construction, proven at
-// compile time; this design contains no `unsafe` (an `unsafe impl Send for
-// RustSimState` would be unsound). If a future
-// field reintroduces a non-`Send` member, this assertion fails the build.
+// compile time; this design contains no `unsafe`. If a future field
+// reintroduces a non-`Send` member, this assertion fails the build.
 const _: fn() = || {
     fn assert_send<T: Send>() {}
     assert_send::<StateMigrationPayload>();
+    // angr-az6ru.2: the state itself is `Send` too, with no `unsafe impl`:
+    // it holds no Z3 object and reaches its solver context through an `Arc`.
+    assert_send::<RustSimState>();
 };
 
 impl RustSimState {

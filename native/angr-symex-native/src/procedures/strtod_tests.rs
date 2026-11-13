@@ -148,9 +148,7 @@ fn test_strtod_symbolic_byte_falls_back() {
     // returns SymbolicArgument.
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"X.0\x00", Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("fp0", 8);
-    drop(ctx);
     state.memory_store(0x1000, sym).unwrap();
 
     let p = NativeStrtod;

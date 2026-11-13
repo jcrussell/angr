@@ -234,7 +234,7 @@ impl RustSimState {
             child_id,
             self.state_id,
         );
-        let mut child = self.copy_with(registers, memory, Rc::new(RefCell::new(solver)));
+        let mut child = self.copy_with(registers, memory, Arc::new(solver));
         child.state_id = child_id;
         child.parent_id = Some(self.state_id);
         child
@@ -243,12 +243,12 @@ impl RustSimState {
     /// The field carries [`fork_with`](Self::fork_with) makes, with the copy
     /// keeping this state's `state_id` and `parent_id`. Split out so
     /// [`fork_base_before_mutation`](Self::fork_base_before_mutation) can
-    /// share the solver `Rc` without minting an id.
+    /// share the solver `Arc` without minting an id.
     fn copy_with(
         &self,
         registers: RegisterFile,
         memory: SymbolicMemory,
-        solver: Rc<RefCell<SymContext>>,
+        solver: Arc<SymContext>,
     ) -> Self {
         let (symbolic_pages, hook_symbolic_memory, addr_to_ast) = self.clone_py_metadata();
         RustSimState {
@@ -326,7 +326,7 @@ impl RustSimState {
         self.fork_with(
             self.registers.fork(),
             self.memory.fork(),
-            self.solver.borrow().fork(),
+            self.solver.fork(),
             next_state_id(),
         )
     }
@@ -343,14 +343,14 @@ impl RustSimState {
     /// sibling forked off the post-call state inherits writes its path never
     /// made (angr-mx00p.132.4; bd memory `avoid-deferred-fork-base-mismatch`).
     ///
-    /// The copy keeps this state's ids and shares its solver `Rc`, so the
+    /// The copy keeps this state's ids and shares its solver `Arc`, so the
     /// taken-path guard that materialization installs on the base lands on
     /// the continuing state.
     pub fn fork_base_before_mutation(&self) -> Self {
         self.copy_with(
             self.registers.fork(),
             self.memory.fork(),
-            Rc::clone(&self.solver),
+            Arc::clone(&self.solver),
         )
     }
 
@@ -425,7 +425,7 @@ impl RustSimState {
         self.fork_with(
             self.registers.fork(),
             self.memory.fork(),
-            self.solver.borrow().fork_true(condition),
+            self.solver.fork_true(condition),
             next_state_id(),
         )
     }
@@ -435,7 +435,7 @@ impl RustSimState {
         self.fork_with(
             self.registers.fork(),
             self.memory.fork(),
-            self.solver.borrow().fork_false(condition),
+            self.solver.fork_false(condition),
             next_state_id(),
         )
     }
@@ -519,12 +519,8 @@ impl RustSimState {
         );
 
         // Merge solver contexts
-        let other_solvers: Vec<_> = others.iter().map(|s| s.solver.borrow()).collect();
-        let other_solver_refs: Vec<&SymContext> = other_solvers.iter().map(|s| &**s).collect();
-        let merged_solver = self
-            .solver
-            .borrow()
-            .merge(&other_solver_refs, merge_conditions);
+        let other_solver_refs: Vec<&SymContext> = others.iter().map(|s| &*s.solver).collect();
+        let merged_solver = self.solver.merge(&other_solver_refs, merge_conditions);
 
         // Start with a clone of self's registers and merge each other into it
         let mut merged_regs = self.registers.fork();
@@ -771,7 +767,7 @@ impl RustSimState {
             vex_arch: self.merge_field_vex_arch(others),
             registers: merged_regs,
             memory: merged_mem,
-            solver: Rc::new(RefCell::new(merged_solver)),
+            solver: Arc::new(merged_solver),
             pc: self.merge_field_pc(others),
             state_id: next_state_id(),
             parent_id: Some(self.state_id),

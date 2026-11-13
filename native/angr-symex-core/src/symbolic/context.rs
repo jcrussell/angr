@@ -49,7 +49,6 @@
 //! files — which opt out wholesale via a reasoned `#[allow]`.)
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -60,6 +59,7 @@ use parking_lot::Mutex;
 use super::RustBV;
 use super::local_constraints::LocalConstraints;
 use super::model_cache::ModelRef;
+use super::sync_cell::{SyncFlag, SyncOptBool, SyncOptUsize};
 // Constraint-sharing analysis types live in `sharing.rs` (angr-a2br.2 slice 3).
 // `fold_sharing_walk` below takes a `&mut ConstraintSharingWalk`.
 // Solver/engine profiling counters live in `stats.rs` (angr-ugc2). The glob
@@ -135,7 +135,7 @@ pub struct SymContext {
     /// added at that depth closes the scope first, so the scope can stay
     /// open across a block's symbolic Exits without discarding a pin taken
     /// between them (angr-vmi2l.161, angr-na982). Never inherited by a fork.
-    pub(super) branch_scope_depth: Cell<Option<usize>>,
+    pub(super) branch_scope_depth: SyncOptUsize,
 
     /// Track assumed RustBV constraints for export to Python.
     /// Each entry is (constraint, is_assumed_true). The shared prefix is an
@@ -190,25 +190,25 @@ pub struct SymContext {
     /// path: set by a scope pushed onto it and by [`mode_ladder_check`].
     /// A fresh solver starts on that path, so building one resets this to
     /// `false` (angr-vmi2l.345).
-    pub(super) solver_incremental: Cell<bool>,
+    pub(super) solver_incremental: SyncFlag,
     /// Cached SAT result, invalidated on constraint addition.
     /// `pub(super)` so the read-path query methods in `solving_ops.rs`
     /// (slice 7, angr-wf6f) can read/write it.
-    pub(super) sat_cache: Cell<Option<bool>>,
+    pub(super) sat_cache: SyncOptBool,
     /// A witness of the current constraints, dropped when a constraint it
     /// fails is added. The slot holds a token; the model is in this thread's
     /// model table (`model_cache.rs`), and a fork clones the token so it
     /// shares the parent's model instead of copying it (angr-gorvf.16).
     /// A held token does not prove a model: read it through
     /// [`cached_model`](Self::cached_model), never with `is_some()`.
-    pub(super) model_cache: RefCell<Option<ModelRef>>,
+    pub(super) model_cache: Mutex<Option<ModelRef>>,
     /// A second witness of the current constraints: the model of the branch
     /// side `check_branch_feasibility` checked that `model_cache` does not
     /// already satisfy. Whichever side the state then assumes keeps a
     /// witness, so `is_sat_checked` on the successor needs no fresh Z3
     /// check (angr-vmi2l.318). Same invariant and invalidation as
     /// `model_cache`, which it is promoted into when that one goes stale.
-    pub(super) alt_model_cache: RefCell<Option<ModelRef>>,
+    pub(super) alt_model_cache: Mutex<Option<ModelRef>>,
     /// The tracking literals minted for unsat core mapping, by name; a
     /// tracker's position is the index `unsat_core` reports. Each constraint is also
     /// in the z3 assertion log once, in an entry that carries the tracker,
@@ -323,10 +323,13 @@ pub struct SymContext {
 }
 
 // A context holds no Z3 object (angr-az6ru.2): its solver, its models and its
-// lineage solver are in per-thread tables, and it keeps their keys.
+// lineage solver are in per-thread tables, and it keeps their keys. It is
+// `Sync` so a state can hold it in an `Arc`; one logical owner drives it at a
+// time, and the locks and atomics make the alias sound, not concurrent use
+// meaningful.
 const _: () = {
-    const fn assert_send<T: Send>() {}
-    assert_send::<SymContext>();
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<SymContext>();
 };
 
 impl SymContext {
@@ -351,7 +354,7 @@ impl SymContext {
         check_tactic_spec_once();
         SymContext {
             bare_local_savepoints: Mutex::new(Vec::new()),
-            branch_scope_depth: Cell::new(None),
+            branch_scope_depth: SyncOptUsize::new(None),
             constraint_count: AtomicUsize::new(0),
             symbol_table: Arc::new(HashMap::new()),
             assumed_constraints_shared: Mutex::new(crate::arc_shared(Vec::new())),
@@ -360,10 +363,10 @@ impl SymContext {
             assume_class_reconstructible: AtomicBool::new(true),
             local_constraints: Mutex::new(LocalConstraints::new()),
             solver_slot: super::solver_cache::SolverSlot::new(),
-            solver_incremental: Cell::new(false),
-            sat_cache: Cell::new(None),
-            model_cache: RefCell::new(None),
-            alt_model_cache: RefCell::new(None),
+            solver_incremental: SyncFlag::new(false),
+            sat_cache: SyncOptBool::new(None),
+            model_cache: Mutex::new(None),
+            alt_model_cache: Mutex::new(None),
             constraint_trackers: Mutex::new(Vec::new()),
             timeout_ms: AtomicU32::new(timeout_ms),
             deterministic: AtomicBool::new(false),

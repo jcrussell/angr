@@ -94,7 +94,7 @@ pub(crate) fn enumerate_addr_candidates(
     name: &str,
 ) -> Result<Vec<u64>, ProcedureError> {
     let candidates = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         ctx.eval_upto(ptr, MAX_SYMBOLIC_ADDR_CANDIDATES + 1)
     };
     if candidates.is_empty() || candidates.len() > MAX_SYMBOLIC_ADDR_CANDIDATES {
@@ -128,7 +128,7 @@ pub(crate) fn bounded_symbolic_size(
     size_bv: &RustBV,
 ) -> Result<Option<u64>, ProcedureError> {
     let max_size = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         ctx.max(size_bv, false)
     };
     match max_size {

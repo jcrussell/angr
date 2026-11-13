@@ -38,7 +38,7 @@ use crate::symbolic::ToZ3;
 /// ```
 ///
 /// Deliberately narrow: an accessor with an extra lookup argument, a chained
-/// call (`state.solver().borrow().timeout_ms()`), a non-`u64` state key, or any
+/// call (`state.solver().timeout_ms()`), a non-`u64` state key, or any
 /// body beyond the single call stays hand-written. Widening this macro to cover
 /// those would hide the part a reader actually needs to see.
 macro_rules! state_accessors {
@@ -194,9 +194,7 @@ impl RustExplorationManager {
         &self,
         state_id: u64,
     ) -> PyResult<crate::symbolic::ConstraintLog> {
-        self.with_state(state_id, |state| {
-            Ok(state.solver().borrow().export_constraint_log())
-        })
+        self.with_state(state_id, |state| Ok(state.solver().export_constraint_log()))
     }
 
     /// Assert another state's constraint log on this state's solver,
@@ -208,7 +206,7 @@ impl RustExplorationManager {
         log: &crate::symbolic::ConstraintLog,
     ) -> PyResult<Option<bool>> {
         self.with_state_mut(state_id, |state| {
-            state.solver().borrow().import_constraint_log(log);
+            state.solver().import_constraint_log(log);
             log::debug!("Imported {} constraints to state {}", log.len(), state_id);
             Ok(state.satisfiable_checked())
         })
@@ -216,8 +214,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _debug_solver_info(&self, state_id: u64) -> PyResult<String> {
         self.with_state(state_id, |state| {
-            let solver_ref = state.solver();
-            let ctx = solver_ref.borrow();
+            let ctx = state.solver();
             // Live scope depth: `scope_savepoint_depth` covers the
             // shared-lineage branch, `bare_z3_push_depth` the None-lineage
             // one (exactly one of them is non-zero). The old `push_level`
@@ -244,8 +241,7 @@ impl RustExplorationManager {
     ) -> PyResult<Vec<Py<PyAny>>> {
         let claripy = crate::claripy_bridge::claripy_module(py)?;
         self.with_state(state_id, |state| {
-            let solver_ref = state.solver();
-            let ctx = solver_ref.borrow();
+            let ctx = state.solver();
             let assumed = ctx.get_assumed_constraints();
             let mut results = Vec::new();
             for (bv, is_true) in &assumed {
@@ -285,9 +281,8 @@ impl RustExplorationManager {
     ) -> PyResult<Vec<Py<PyAny>>> {
         let claripy = crate::claripy_bridge::claripy_module(py)?;
         self.with_state(state_id, |state| {
-            let solver_ref = state.solver();
-            let ctx = solver_ref.borrow();
-            let ctx_ref: &SymContext = &ctx;
+            let ctx = state.solver();
+            let ctx_ref: &SymContext = ctx;
 
             let mut extra = Vec::new();
             for item in extra_constraints.iter() {
@@ -341,13 +336,13 @@ impl RustExplorationManager {
 
     pub(crate) fn _set_state_solver_timeout(&self, state_id: u64, timeout_ms: u32) -> PyResult<()> {
         self.with_state(state_id, |state| {
-            state.solver().borrow().set_timeout(timeout_ms);
+            state.solver().set_timeout(timeout_ms);
             Ok(())
         })
     }
 
     pub(crate) fn _get_state_solver_timeout(&self, state_id: u64) -> PyResult<u32> {
-        self.with_state(state_id, |state| Ok(state.solver().borrow().timeout_ms()))
+        self.with_state(state_id, |state| Ok(state.solver().timeout_ms()))
     }
 
     state_accessors! {
@@ -482,7 +477,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _fork_state_solver(&self, state_id: u64) -> PyResult<RustSolverContext> {
         self.with_state(state_id, |state| {
-            let forked_ctx = state.solver().borrow().fork();
+            let forked_ctx = state.solver().fork();
             Ok(RustSolverContext::from_sym_context(forked_ctx))
         })
     }
@@ -822,9 +817,8 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             let bv = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &sym_ctx;
+                let sym_ctx = state.solver();
+                let ctx_ref: &SymContext = sym_ctx;
                 claripy_to_rustbv(py, ast, ctx_ref)
                     .map_err(|e| ast_import_err(&format!("register {reg_name}"), e))?
             };
@@ -996,9 +990,8 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             let bv = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &sym_ctx;
+                let sym_ctx = state.solver();
+                let ctx_ref: &SymContext = sym_ctx;
                 let bv = claripy_to_rustbv(py, ast, ctx_ref)
                     .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
                 lsb_first(state, bv)
@@ -1027,9 +1020,8 @@ impl RustExplorationManager {
     ) -> PyResult<()> {
         self.with_state_mut(state_id, |state| {
             let bv = {
-                let solver_ref = state.solver();
-                let sym_ctx = solver_ref.borrow();
-                let ctx_ref: &SymContext = &sym_ctx;
+                let sym_ctx = state.solver();
+                let ctx_ref: &SymContext = sym_ctx;
                 let bv = claripy_to_rustbv(py, ast, ctx_ref)
                     .map_err(|e| ast_import_err(&format!("memory 0x{addr:x}"), e))?;
                 lsb_first(state, bv)
@@ -1068,9 +1060,8 @@ impl RustExplorationManager {
         multiwrite: bool,
     ) -> PyResult<bool> {
         let converted = self.with_state_mut(state_id, |state| {
-            let solver_ref = state.solver();
-            let sym_ctx = solver_ref.borrow();
-            let ctx: &SymContext = &sym_ctx;
+            let sym_ctx = state.solver();
+            let ctx: &SymContext = sym_ctx;
             let addr_bv = match claripy_to_rustbv(py, addr_ast, ctx) {
                 Ok(bv) => bv,
                 Err(e) => {
@@ -1357,7 +1348,7 @@ impl RustExplorationManager {
 
     pub(crate) fn _eval_stdin_symbol(&self, state_id: u64, name: &str, width: u32) -> Option<u64> {
         let state = self.find_state(state_id)?;
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         // Reconstruct the symbol at its recorded width. The Z3 const identity is
         // (name, sort) — a hardcoded width 8 minted a *different*, unconstrained
         // const for any non-byte stdin symbol (scanf %d/%ld record at 32/64
@@ -1391,7 +1382,7 @@ impl RustExplorationManager {
         let Some(seed) = state.file_system_ref().fd_content_sym(0) else {
             return Some(Vec::new());
         };
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         Some(
             seed.iter()
                 .map(|byte| {
@@ -1435,7 +1426,7 @@ impl RustExplorationManager {
 /// leaf past it is `None`, so an index into this list is an index into the
 /// state's recorded leaves. An unevaluable count keeps the whole read.
 fn stdin_leaves(state: &crate::state::RustSimState) -> Vec<Option<&(String, u32)>> {
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     let mut leaves = Vec::new();
     for (syms, read) in state.stdin_packets() {
         let kept = read

@@ -95,6 +95,7 @@ mod solver_build;
 pub mod solver_cache;
 mod solving_ops;
 mod stats;
+mod sync_cell;
 mod to_z3;
 mod transaction_ops;
 pub mod z3_lower;

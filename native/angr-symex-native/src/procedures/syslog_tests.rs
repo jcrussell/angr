@@ -30,11 +30,9 @@ fn test_openlog_symbolic_args_no_fallback() {
     // force concretization or a Python fallback (the `bv` arg kind keeps the
     // raw BV).
     let mut state = RustSimState::new("amd64").unwrap();
-    let ctx = state.solver().borrow();
     let ident = RustBV::symbol("ident", 64);
     let option = RustBV::symbol("option", 64);
     let facility = RustBV::symbol("facility", 64);
-    drop(ctx);
     let result = NativeOpenlog
         .call(&mut state, &[ident, option, facility])
         .unwrap();

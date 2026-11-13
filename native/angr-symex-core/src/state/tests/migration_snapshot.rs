@@ -48,8 +48,8 @@ fn test_migrate_via_snapshot_cross_context() {
         let target = z3::Context::thread_local();
         let migrated = payload.reattach(&target).expect("reattach");
         let rax_t = migrated.get_register("rax").expect("rax present");
-        let got = migrated.solver().borrow().eval(&rax_t);
-        let sat = migrated.solver().borrow().is_sat();
+        let got = migrated.solver().eval(&rax_t);
+        let sat = migrated.solver().is_sat();
         (thread_ctx_addr(), got, sat, migrated.state_id())
     });
 
@@ -81,7 +81,7 @@ fn test_migrate_carries_multi_cell_bytes() {
     state.map_memory(0x1000, 0x4000, crate::memory::Permission::RWX);
 
     let (addr_var, val_bv) = {
-        let ctx = state.solver().borrow();
+        let ctx = state.solver();
         let addr_var = RustBV::symbol("sqfj8_71_multi_addr", 64);
         ctx.assume_true(
             &addr_var
@@ -97,7 +97,6 @@ fn test_migrate_carries_multi_cell_bytes() {
         ..crate::symbolic::concretize::AddressConcretizer::new()
     };
     let ctx = state.solver().clone();
-    let ctx = ctx.borrow();
     state
         .memory_mut()
         .store_symbolic_unified(addr_var, val_bv, &ctx, &concretizer)
@@ -152,7 +151,7 @@ fn test_migrate_resume_stack_roundtrip() {
 
     fn verify(twin: &RustSimState, label: &str) {
         assert!(
-            twin.solver().borrow().is_sat(),
+            twin.solver().is_sat(),
             "{label}: migrated solver must remain SAT",
         );
         let stack = twin.native_resume_stack();
@@ -166,7 +165,7 @@ fn test_migrate_resume_stack_roundtrip() {
         );
         assert_eq!(frame.saved_args.len(), 2, "{label}: saved_args count");
         assert_eq!(
-            twin.solver().borrow().eval(&frame.saved_args[0]),
+            twin.solver().eval(&frame.saved_args[0]),
             Some(0xCAFE_F00D_DEAD_BEEF),
             "{label}: symbolic saved_arg must re-prove its witness",
         );
@@ -229,7 +228,7 @@ fn test_migrate_preserves_py_overlays() {
             .expect("reattach");
         // Rust-side state survived too.
         let rax_t = migrated.get_register("rax").expect("rax present");
-        let got = migrated.solver().borrow().eval(&rax_t);
+        let got = migrated.solver().eval(&rax_t);
 
         assert_eq!(got, Some(0x1234_5678), "migrated rax re-proves witness");
         assert_eq!(
@@ -294,4 +293,53 @@ fn test_migrate_reattach_wrong_context_errors() {
             other.map(|s| s.state_id()),
         ),
     }
+}
+
+// angr-az6ru.2: a state is `Send`, so it can be moved to another thread as it
+// is. Its solver and its witness stay behind in the first thread's tables;
+// the second thread builds its own from the constraint log, and when the
+// state comes back the first thread's stale solver is brought up to date with
+// what was added elsewhere. Every answer is the one a state that never moved
+// gives.
+#[test]
+fn test_state_moved_between_threads_answers_from_its_log() {
+    let mut state = RustSimState::new("amd64").unwrap();
+    let x = RustBV::symbol("az6ru_moved_x", 8);
+    let y = RustBV::symbol("az6ru_moved_y", 8);
+    state.set_register("rax", x.zero_extend(56));
+    state.add_constraint(x.ugt(&RustBV::concrete(250, 8)));
+    // Builds this thread's solver and caches a witness here.
+    assert!(state.satisfiable());
+    assert_eq!(state.solver().eval_upto(&x, 16).len(), 5);
+    assert!(state.solver().has_built_solver());
+
+    let home_ctx = thread_ctx_addr();
+    let (wx, wy) = (x.clone(), y.clone());
+    let state = on_worker(move || {
+        let (x, y) = (wx, wy);
+        assert_ne!(thread_ctx_addr(), home_ctx);
+        assert!(
+            !state.solver().has_built_solver(),
+            "the solver stayed on the thread that built it"
+        );
+        assert_eq!(state.solver().cached_models_for_test(), (false, false));
+        assert!(state.satisfiable());
+        assert_eq!(state.solver().eval_upto(&x, 16).len(), 5);
+        // Narrow it here; the home thread's solver has not seen this.
+        state.add_constraint(x.ult(&RustBV::concrete(253, 8)));
+        state.add_constraint(y.eq(&x));
+        assert_eq!(state.solver().eval_upto(&x, 16).len(), 2);
+        state
+    });
+
+    assert!(state.solver().has_built_solver(), "the stale one, still here");
+    let mut values = state.solver().eval_upto(&y, 16);
+    values.sort_unstable();
+    assert_eq!(values, vec![251, 252]);
+    assert!(state.satisfiable());
+
+    // A fork taken after the round trip carries the whole log.
+    let child = state.fork();
+    child.add_constraint(x.eq(&RustBV::concrete(252, 8)));
+    assert_eq!(child.solver().eval_upto(&y, 16), vec![252]);
 }

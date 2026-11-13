@@ -13,9 +13,7 @@ fn setup_string(state: &mut RustSimState, addr: u64, s: &[u8]) {
 /// Insert a fully-symbolic byte at `addr`. The page must already be
 /// mapped; this overwrites the byte without disturbing the rest.
 fn place_symbolic_byte(state: &mut RustSimState, addr: u64, name: &str) -> RustBV {
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol(name, 8);
-    drop(ctx);
     state.memory_store(addr, sym.clone()).unwrap();
     sym
 }
@@ -233,10 +231,8 @@ fn test_atoi_single_symbolic_digit_constrained() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"X\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
-    let ctx = state.solver().borrow();
     let target = RustBV::concrete(b'7' as u128, 8);
     let eq = sym.eq(&target);
-    drop(ctx);
 
     state.add_constraint(eq);
     let p = NativeAtoi;
@@ -244,7 +240,7 @@ fn test_atoi_single_symbolic_digit_constrained() {
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(7));
     assert_eq!(ctx.max(&result, false), Some(7));
 }
@@ -257,14 +253,12 @@ fn test_atoi_three_symbolic_digits_constrained() {
     let s0 = place_symbolic_byte(&mut state, 0x1000, "d0");
     let s1 = place_symbolic_byte(&mut state, 0x1001, "d1");
     let s2 = place_symbolic_byte(&mut state, 0x1002, "d2");
-    let ctx = state.solver().borrow();
     let one = RustBV::concrete(b'1' as u128, 8);
     let two = RustBV::concrete(b'2' as u128, 8);
     let three = RustBV::concrete(b'3' as u128, 8);
     let c0 = s0.eq(&one);
     let c1 = s1.eq(&two);
     let c2 = s2.eq(&three);
-    drop(ctx);
 
     state.add_constraint(c0);
     state.add_constraint(c1);
@@ -274,7 +268,7 @@ fn test_atoi_three_symbolic_digits_constrained() {
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(123));
     assert_eq!(ctx.max(&result, false), Some(123));
 }
@@ -285,12 +279,10 @@ fn test_atoi_symbolic_digit_range_bounds() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"X\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
-    let ctx = state.solver().borrow();
     let zero = RustBV::concrete(b'0' as u128, 8);
     let nine = RustBV::concrete(b'9' as u128, 8);
     let c_lo = sym.uge(&zero);
     let c_hi = sym.ule(&nine);
-    drop(ctx);
 
     state.add_constraint(c_lo);
     state.add_constraint(c_hi);
@@ -299,7 +291,7 @@ fn test_atoi_symbolic_digit_range_bounds() {
         .call(&mut state, &[RustBV::concrete(0x1000, 64)])
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(0));
     assert_eq!(ctx.max(&result, false), Some(9));
 }
@@ -313,10 +305,8 @@ fn test_atoi_symbolic_terminator_after_digit() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"5X\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1001, "term");
-    let ctx = state.solver().borrow();
     let space = RustBV::concrete(b' ' as u128, 8);
     let eq = sym.eq(&space);
-    drop(ctx);
 
     let p = NativeAtoi;
     let result = p
@@ -324,7 +314,7 @@ fn test_atoi_symbolic_terminator_after_digit() {
         .unwrap()
         .unwrap();
     state.add_constraint(eq);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(5));
     assert_eq!(ctx.max(&result, false), Some(5));
 }
@@ -336,12 +326,10 @@ fn test_atoi_negative_symbolic_digits() {
     state.map_memory_data(0x1000, b"-XX\x00", Permission::RWX);
     let s0 = place_symbolic_byte(&mut state, 0x1001, "d0");
     let s1 = place_symbolic_byte(&mut state, 0x1002, "d1");
-    let ctx = state.solver().borrow();
     let four = RustBV::concrete(b'4' as u128, 8);
     let two = RustBV::concrete(b'2' as u128, 8);
     let c0 = s0.eq(&four);
     let c1 = s1.eq(&two);
-    drop(ctx);
 
     let p = NativeAtoi;
     let result = p
@@ -350,7 +338,7 @@ fn test_atoi_negative_symbolic_digits() {
         .unwrap();
     state.add_constraint(c0);
     state.add_constraint(c1);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     // atoi extracts int-width bits: -42 -> low 32 bits (0xFFFFFFD6) zero-extended
     // into the 64-bit register, matching Python's `val[31:0]`. See angr-vu1q4.
     assert_eq!(ctx.min(&result, false), Some(0xFFFF_FFD6));
@@ -426,14 +414,12 @@ fn test_strtoll_symbolic_digits_constrained() {
     let s0 = place_symbolic_byte(&mut state, 0x1000, "lld0");
     let s1 = place_symbolic_byte(&mut state, 0x1001, "lld1");
     let s2 = place_symbolic_byte(&mut state, 0x1002, "lld2");
-    let ctx = state.solver().borrow();
     let four = RustBV::concrete(b'4' as u128, 8);
     let five = RustBV::concrete(b'5' as u128, 8);
     let six = RustBV::concrete(b'6' as u128, 8);
     let c0 = s0.eq(&four);
     let c1 = s1.eq(&five);
     let c2 = s2.eq(&six);
-    drop(ctx);
 
     state.add_constraint(c0);
     state.add_constraint(c1);
@@ -450,7 +436,7 @@ fn test_strtoll_symbolic_digits_constrained() {
         )
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(456));
     assert_eq!(ctx.max(&result, false), Some(456));
 }
@@ -461,10 +447,8 @@ fn test_strtol_base_16_symbolic_letter_digit() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory_data(0x1000, b"X\x00", Permission::RWX);
     let sym = place_symbolic_byte(&mut state, 0x1000, "d0");
-    let ctx = state.solver().borrow();
     let a = RustBV::concrete(b'a' as u128, 8);
     let eq = sym.eq(&a);
-    drop(ctx);
 
     state.add_constraint(eq);
     let p = NativeStrtol;
@@ -479,7 +463,7 @@ fn test_strtol_base_16_symbolic_letter_digit() {
         )
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&result, false), Some(10));
     assert_eq!(ctx.max(&result, false), Some(10));
 }
@@ -725,7 +709,7 @@ fn test_strtol_symbolic_digits_endptr_capped_at_max_digits() {
     let d0 = place_symbolic_byte(&mut state, 0x10000, "d0");
     state.add_constraint(d0.eq(&RustBV::concrete(b'1' as u128, 8)));
     let end = strtol_symbolic_endptr(&mut state);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&end, false), Some(0x10000 + MAX_DIGITS as u128));
     assert_eq!(ctx.max(&end, false), Some(0x10000 + MAX_DIGITS as u128));
 }
@@ -745,13 +729,12 @@ fn test_strtol_symbolic_short_run_endptr_tracks_run() {
         state.add_constraint(d.ule(&RustBV::concrete(b'9' as u128, 8)));
     }
     let end = strtol_symbolic_endptr(&mut state);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&end, false), Some(0x10002));
     assert_eq!(ctx.max(&end, false), Some(0x10004));
-    drop(ctx);
     // A non-digit third byte pins the end at s+2.
     state.add_constraint(syms[2].eq(&RustBV::concrete(b'z' as u128, 8)));
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.max(&end, false), Some(0x10002));
 }
 
@@ -766,7 +749,7 @@ fn test_strtol_symbolic_no_conversion_endptr_is_nptr() {
     }
     state.add_constraint(syms[0].eq(&RustBV::concrete(b'x' as u128, 8)));
     let end = strtol_symbolic_endptr(&mut state);
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&end, false), Some(0x10000));
     assert_eq!(ctx.max(&end, false), Some(0x10000));
 }
@@ -815,7 +798,7 @@ fn test_strtol_symbolic_base0_leading_zero_endptr_past_zero() {
         .unwrap()
         .unwrap();
     let end = state.memory_load(0x100000, 8).unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     assert_eq!(ctx.min(&end, false), Some(0x10001));
     assert_eq!(ctx.max(&end, false), Some(0x10001));
 }
@@ -838,7 +821,7 @@ fn strtoul_concrete_led_nines(arch: &str, n_sym: u64) -> (Option<u128>, Option<u
         .call(&mut state, &[word(0x10000), word(0), word(10)])
         .unwrap()
         .unwrap();
-    let ctx = state.solver().borrow();
+    let ctx = state.solver();
     (ctx.min(&result, false), ctx.max(&result, false))
 }
 

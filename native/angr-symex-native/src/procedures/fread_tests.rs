@@ -324,9 +324,7 @@ fn test_fread_unopened_fd_falls_back() {
 fn test_fread_symbolic_stream_falls_back() {
     let mut state = RustSimState::new("amd64").unwrap();
     state.map_memory(0x2000, 0x1000, Permission::RWX);
-    let ctx = state.solver().borrow();
     let sym = RustBV::symbol("stream", 64);
-    drop(ctx);
 
     let result = NativeFread.call(
         &mut state,
