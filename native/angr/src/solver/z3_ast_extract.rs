@@ -5,7 +5,7 @@
 //!
 //! None of it is a `#[pymethods]` item; these are internal helpers the
 //! claripy-AST API in the parent module calls. The claripy → Z3 lowering the
-//! constraint fast paths use is `claripy_bridge::lower_claripy_bool`.
+//! constraint fast paths use is `claripy_bridge::lower_claripy_constraint`.
 
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;

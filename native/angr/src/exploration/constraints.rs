@@ -190,7 +190,7 @@ pub(crate) fn import_one_constraint(
         return match claripy_to_rustbv(py, item, ctx) {
             // A constraint with a RustBV form is recorded in the assumed IR
             // rather than double-logged as a residual — see
-            // `SymContext::add_constraint_raw_assumed` (angr-op0dn.14.2).
+            // `SymContext::add_constraint_lowered_assumed` (angr-op0dn.14.2).
             Ok(bv) => {
                 ctx.add_constraint_lowered_assumed(z3_ast);
                 ctx.assumed_constraints_push(as_bool(bv), true);

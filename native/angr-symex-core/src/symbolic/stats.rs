@@ -164,24 +164,19 @@ pub(crate) static CONCRETIZE_DISJUNCTION_TERMS_TOTAL: AtomicU64 = AtomicU64::new
 pub(crate) static CONCRETIZE_DISJUNCTION_MAX_TERMS: AtomicU32 = AtomicU32::new(0);
 
 // angr-1joc: constraint-dedup measurement counters. Three signals to decide
-// whether canonicalization/dedup at add_constraint_raw is worth implementing
+// whether canonicalization/dedup at add_constraint_lowered is worth implementing
 // (threshold: any >=10%).
 //
 // (a) commutative-arg-order: `angr_bv::stats` (the value layer's own
 // counters).
 // (b) branch-condition simplify-skip: sampled across assume_true /
-// assume_false / add_constraint_raw. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
+// assume_false / add_constraint_lowered. `BRANCH_COND_SIMPLIFY_REDUCED_COUNT`
 // increments only when Z3 simplify() returns a STRUCTURALLY-DIFFERENT AST
 // (different Z3_ast pointer). Population total = Z3_ASSUME_SYMBOLIC_COUNT +
 // ADD_CONSTRAINT_RAW_TOTAL_COUNT — both pre-existing/added below.
 pub(crate) static ADD_CONSTRAINT_RAW_TOTAL_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Constraints recorded in the residual log, and how many of them carry no
-/// clarirs term (`Residual::term`). The second is what still ties a state's
-/// constraint list to Z3 (angr-az6ru.2).
-/// Constraints logged as asserted with a Z3 term only (`Origin::Z3Only`).
-pub(crate) static ASSERTED_WITHOUT_TERM_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Constraints recorded in the residual log.
 pub(crate) static RESIDUAL_LOGGED_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static RESIDUAL_WITHOUT_TERM_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BRANCH_COND_SIMPLIFY_SAMPLED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static BRANCH_COND_SIMPLIFY_REDUCED_COUNT: AtomicU64 = AtomicU64::new(0);
 /// Every Nth assertion runs Z3 simplify() for measurement.  Driven by a
@@ -208,12 +203,12 @@ pub(crate) static SIMPLIFY_SAMPLE_TICKER: AtomicU64 = AtomicU64::new(0);
 // appears in shared+local `z3_assertions` (angr-sfp9). Always-on via the
 // `dedup_set` HashSet side-table inside `LocalConstraints` — O(1) ptr lookup
 // per call after a one-time lazy seed from shared+local.
-// SCANNED bumps once per `add_constraint_raw` call. HIT bumps when the ptr
+// SCANNED bumps once per `add_constraint_lowered` call. HIT bumps when the ptr
 // was already present, in which case the push+assert are skipped.
 pub(crate) static ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT: AtomicU64 = AtomicU64::new(0);
 pub(crate) static ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT: AtomicU64 = AtomicU64::new(0);
 // angr-mwbp: dedup hit/scanned for the assume_true/assume_false hot path,
-// surfaced separately from the add_constraint_raw counters so the impact of
+// surfaced separately from the add_constraint_lowered counters so the impact of
 // extending dedup to the symbolic-branch sites is attributable. Same Z3 ptr
 // keying as `dedup_set`; the `assumed` vec is still grown on every call
 // (preserves Python-visible duplicate constraints) — the dedup only skips
@@ -485,9 +480,7 @@ pub(crate) static CORE_COUNTERS: &[(&str, &AtomicU64)] = &[
     // Constraint intake and simplify sampling (the sampling *phase* counter,
     // `SIMPLIFY_SAMPLE_TICKER`, is deliberately absent — see its doc comment).
     ("add_constraint_raw_total", &ADD_CONSTRAINT_RAW_TOTAL_COUNT),
-    ("asserted_without_term", &ASSERTED_WITHOUT_TERM_COUNT),
     ("residual_logged", &RESIDUAL_LOGGED_COUNT),
-    ("residual_without_term", &RESIDUAL_WITHOUT_TERM_COUNT),
     (
         "branch_cond_simplify_sampled",
         &BRANCH_COND_SIMPLIFY_SAMPLED_COUNT,

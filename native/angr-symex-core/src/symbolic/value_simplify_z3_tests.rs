@@ -6,7 +6,6 @@ use crate::symbolic::RustBV;
 // Expression-simplification tests: algebraic identities, the shift/mul →
 // Concat rewrites, and the pre-Z3 `Extract` rewrite pass (angr-p8cz).
 
-use crate::symbolic::ToZ3;
 use crate::symbolic::SymContext;
 #[test]
 fn test_reverse_z3_emission_32bit_leaf() {
@@ -17,7 +16,7 @@ fn test_reverse_z3_emission_32bit_leaf() {
     let rev = x.reverse(); // Expression { Reverse, [x] }
     // Pin x = 0x11223344; expect Reverse(x) = 0x44332211
     let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     assert_eq!(ctx.eval(&rev), Some(0x44332211));
 }
 #[test]
@@ -26,7 +25,7 @@ fn test_reverse_z3_emission_64bit_leaf() {
     let x = RustBV::symbol("x", 64);
     let rev = x.reverse();
     let pinned = x.eq(&RustBV::concrete(0x0123456789ABCDEF, 64));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     assert_eq!(ctx.eval(&rev), Some(0xEFCDAB8967452301));
 }
 #[test]
@@ -35,7 +34,7 @@ fn test_reverse_z3_emission_16bit_leaf() {
     let x = RustBV::symbol("x", 16);
     let rev = x.reverse();
     let pinned = x.eq(&RustBV::concrete(0xAABB, 16));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     assert_eq!(ctx.eval(&rev), Some(0xBBAA));
 }
 #[test]
@@ -57,7 +56,7 @@ fn test_reverse_z3_emission_concat_of_bytes() {
     let vals: [u64; 8] = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
     for (b, v) in bytes.iter().zip(vals.iter()) {
         let pin = b.eq(&RustBV::concrete(*v as u128, 8));
-        ctx.add_constraint(pin.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+        ctx.add_bv_constraint(&pin, 1);
     }
     // concat = 0x1122334455667788; reverse → 0x8877665544332211
     assert_eq!(ctx.eval(&rev), Some(0x8877665544332211));
@@ -77,7 +76,7 @@ fn test_pre_z3_extract_over_reverse_byte_aligned() {
     // Reverse(x) byte 0 ([7:0]) is byte 3 ([31:24]) of x.
     let lo_byte = raw_extract_node(rev, 7, 0);
     let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     assert_eq!(ctx.eval(&lo_byte), Some(0x11));
 }
 #[test]
@@ -90,7 +89,7 @@ fn test_pre_z3_extract_over_reverse_crossing_byte() {
     // Reverse(x)[15:0] = bytes 0,1 of reverse = bytes 3,2 of x = top half reversed.
     let lower16 = raw_extract_node(rev, 15, 0);
     let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     // Reverse(0x11223344) = 0x44332211; low 16 bits = 0x2211
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
 }
@@ -104,16 +103,8 @@ fn test_pre_z3_extract_over_concat_within_low() {
     let cat = a.concat(&b); // a:high, b:low
     // Extract [15:0] of cat = entirely within b.
     let lo = raw_extract_node(cat, 15, 0);
-    ctx.add_constraint(
-        a.eq(&RustBV::concrete(0xAAAA, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
-    ctx.add_constraint(
-        b.eq(&RustBV::concrete(0xBBBB, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&a.eq(&RustBV::concrete(0xAAAA, 16)), 1);
+    ctx.add_bv_constraint(&b.eq(&RustBV::concrete(0xBBBB, 16)), 1);
     assert_eq!(ctx.eval(&lo), Some(0xBBBB));
 }
 #[test]
@@ -124,16 +115,8 @@ fn test_pre_z3_extract_over_concat_within_high() {
     let cat = a.concat(&b);
     // Extract [31:16] of cat = entirely within a.
     let hi = raw_extract_node(cat, 31, 16);
-    ctx.add_constraint(
-        a.eq(&RustBV::concrete(0xAAAA, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
-    ctx.add_constraint(
-        b.eq(&RustBV::concrete(0xBBBB, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&a.eq(&RustBV::concrete(0xAAAA, 16)), 1);
+    ctx.add_bv_constraint(&b.eq(&RustBV::concrete(0xBBBB, 16)), 1);
     assert_eq!(ctx.eval(&hi), Some(0xAAAA));
 }
 #[test]
@@ -145,16 +128,8 @@ fn test_pre_z3_extract_over_concat_crossing() {
     let cat = a.concat(&b);
     // Extract [23:8] = high 8 bits of b ([15:8]) concat with low 8 bits of a ([7:0]).
     let mid = raw_extract_node(cat, 23, 8);
-    ctx.add_constraint(
-        a.eq(&RustBV::concrete(0x1234, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
-    ctx.add_constraint(
-        b.eq(&RustBV::concrete(0x5678, 16))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&a.eq(&RustBV::concrete(0x1234, 16)), 1);
+    ctx.add_bv_constraint(&b.eq(&RustBV::concrete(0x5678, 16)), 1);
     // cat = 0x12345678; extract [23:8] = 0x3456
     assert_eq!(ctx.eval(&mid), Some(0x3456));
 }
@@ -165,11 +140,7 @@ fn test_pre_z3_extract_over_extract_fused() {
     let mid = x.extract(47, 16); // width 32, = bits 16..=47 of x
     // Build outer Extract WITHOUT going through extract_into.
     let outer = raw_extract_node(mid, 23, 8); // mid[23:8] = bits [39:24] of x
-    ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&x.eq(&RustBV::concrete(0x0011_2233_4455_6677, 64)), 1);
     // x bytes (LSB→MSB): 0x77 0x66 0x55 0x44 0x33 0x22 0x11 0x00.
     // bits [39:24] of x = byte indices 3..=4 = 0x33:0x44 (high:low) = 0x3344.
     assert_eq!(ctx.eval(&outer), Some(0x3344));
@@ -181,11 +152,7 @@ fn test_pre_z3_extract_over_zero_ext_low_bits() {
     let zx = x.zero_extend(32); // width 32
     // Extract [7:0] entirely within original x.
     let lo = raw_extract_node(zx, 7, 0);
-    ctx.add_constraint(
-        x.eq(&RustBV::concrete(0xAB, 8))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&x.eq(&RustBV::concrete(0xAB, 8)), 1);
     assert_eq!(ctx.eval(&lo), Some(0xAB));
 }
 #[test]
@@ -195,11 +162,7 @@ fn test_pre_z3_extract_over_zero_ext_extended_bits() {
     let zx = x.zero_extend(32);
     // Extract [31:24] is entirely in the zero-extended region.
     let top = raw_extract_node(zx, 31, 24);
-    ctx.add_constraint(
-        x.eq(&RustBV::concrete(0xFF, 8))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&x.eq(&RustBV::concrete(0xFF, 8)), 1);
     assert_eq!(ctx.eval(&top), Some(0));
 }
 /// Regression for the latent bug in extract_into's Rule 3: multi-byte
@@ -215,7 +178,7 @@ fn test_extract_over_reverse_multibyte_construction() {
     // Use the normal extract (which now goes through the fixed Rule 3).
     let lower16 = rev.extract(15, 0);
     let pinned = x.eq(&RustBV::concrete(0x11223344, 32));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     // Reverse(0x11223344) = 0x44332211; low 16 = 0x2211.
     assert_eq!(ctx.eval(&lower16), Some(0x2211));
 }
@@ -227,11 +190,7 @@ fn test_extract_over_reverse_single_byte_construction() {
     let rev = x.reverse();
     // Byte 0 of reverse = byte 3 of x.
     let b0 = rev.extract(7, 0);
-    ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x11223344, 32))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&x.eq(&RustBV::concrete(0x11223344, 32)), 1);
     assert_eq!(ctx.eval(&b0), Some(0x11));
 }
 #[test]
@@ -240,11 +199,7 @@ fn test_pre_z3_extract_over_sign_ext_low_bits() {
     let x = RustBV::symbol("x", 8);
     let sx = x.sign_extend(32);
     let lo = raw_extract_node(sx, 7, 0);
-    ctx.add_constraint(
-        x.eq(&RustBV::concrete(0x80, 8))
-            .to_z3_ast().unwrap()
-            .eq(z3::ast::BV::from_u64(1, 1)),
-    );
+    ctx.add_bv_constraint(&x.eq(&RustBV::concrete(0x80, 8)), 1);
     assert_eq!(ctx.eval(&lo), Some(0x80));
 }
 

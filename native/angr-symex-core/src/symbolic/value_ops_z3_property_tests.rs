@@ -70,7 +70,7 @@ fn div_rem_matches_z3(
 
     let d = RustBV::symbol("dvd", w);
     let pinned = d.eq(&bv(a, w));
-    ctx.add_constraint(pinned.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&pinned, 1);
     let sym = op(&d, &bv(b, w));
     match ctx.eval(&sym) {
         Some(z) => z == folded,
@@ -216,7 +216,7 @@ fn prop_zext_const_cmp_fold_matches_z3(
     let total = inner_width + extend_bits; // 2..=64 — as_u128-readable
     let op = UCMPS[(op_seed % 6) as usize];
 
-    let ctx = SymContext::new_mock();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let x = RustBV::symbol("x", inner_width);
     let zx = x.zero_extend(total);
     let cbv = RustBV::concrete(c & mask(total), total);

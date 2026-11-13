@@ -7753,15 +7753,6 @@ class RustExplorationManager(
         The format-version byte at envelope head lets :meth:`load_snapshot`
         reject a stale snapshot fast (see :exc:`ValueError`).
 
-        Known limitation (prototype scope, angr-x04s.1):
-            Constraints added via :meth:`add_constraint_raw` (the path the
-            Python claripy-sync layer uses for initial-state constraints)
-            are NOT serialized — only the ``assume_true``/``assume_false``-
-            tracked subset is. After restore, the resumed solver may have
-            fewer constraints than the original and consequently solve to
-            a different model. End-to-end equality of ``posix.dumps(0)``
-            across a snapshot round-trip is therefore not guaranteed.
-
         Live parallel sessions (angr-op0dn.13.6):
             Under the steady-state parallel loop the frontier is resident in
             the worker Z3 contexts and belongs to no stash, so a mid-session

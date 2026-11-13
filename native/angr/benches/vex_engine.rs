@@ -318,9 +318,9 @@ fn bench_state_fork(c: &mut Criterion) {
 ///   a 32-link chain of `add`/`xor` across the leaves, so the SMT-LIB2 text
 ///   grows with `depth_d` and the chain length *independent of leaf count*.
 /// * `raw_fraction` — `floor(r * depth_d)` of the deep constraints are added
-///   via the RAW path (`add_constraint_raw`) so they land in the residual
-///   (no-`RustBV`) class — present in the solver text dump but absent from
-///   `assumed_constraints`.
+///   via the residual sink (`add_constraint_lowered`) so they land in the
+///   residual (no-`RustBV`) class — carried by a snapshot's `residual_terms`
+///   and absent from `assumed_constraints`.
 fn build_migration_state(
     n_leaves: u64,
     depth_d: usize,
@@ -395,22 +395,20 @@ fn bench_migration_roundtrip(c: &mut Criterion) {
     group.finish();
 }
 
-/// angr-t3l5o Phase 0a: split the migration round-trip into its six phases and
+/// angr-t3l5o Phase 0a: split the migration round-trip into its phases and
 /// time each in isolation, sweeping `constraint_depth D ∈ {0, 32, 256}` and
 /// `raw_fraction r ∈ {0.0, 0.5}` at a fixed representative leaf count (256):
 ///
-///   (1) `serde_encode`  — serde-json encode with `solver_smtlib2` forced empty
+///   (1) `serde_encode`  — serde-json encode with the solver residual emptied
 ///   (2) `serde_decode`  — serde-json decode of that (no `from_snapshot`)
 ///   (3) `smtlib2_emit`  — `dump_solver_smtlib2()` alone
-///   (4) `smtlib2_parse` — `from_string` + `get_assertions` + re-add loop alone
-///   (5) `leaf_rebuild`  — `from_serialized` of a NO-constraint state
-///   (6) `memory_copy`   — `memory.to_snapshot()` / `from_snapshot()` alone
+///   (4) `leaf_rebuild`  — `from_serialized` of a NO-constraint state
+///   (5) `memory_copy`   — `memory.to_snapshot()` / `from_snapshot()` alone
 ///
 /// Phases are measured in the bench thread's thread-local Z3 context, as in
 /// the round-trip bench.
 fn bench_migration_phases(c: &mut Criterion) {
     use rustylib::state::{RustSimState, RustSimStateSnapshot};
-    use rustylib::symbolic::SymContext;
 
     const LEAVES: u64 = 256;
     let mut group = c.benchmark_group("migration_phases");
@@ -426,18 +424,17 @@ fn bench_migration_phases(c: &mut Criterion) {
 
             // Pre-built artifacts (setup, not timed).
             let mut snap_no_solver = state.to_snapshot();
-            snap_no_solver.solver.residual_smtlib2 = String::new();
+            snap_no_solver.solver.residual_terms.clear();
             let encoded_no_solver = serde_json::to_vec(&snap_no_solver).unwrap();
-            let smtlib2 = state.solver().borrow().bench_dump_solver_smtlib2();
             let mut leaf_state = build_migration_state(LEAVES, 0, 0.0);
             let leaf_bytes = leaf_state.to_serialized();
             RustSimState::from_serialized(&leaf_bytes).expect("leaf rebuild probe");
 
-            // (1) serde encode (solver text empty)
+            // (1) serde encode (solver residual empty)
             group.bench_function(format!("serde_encode/{tag}"), |b| {
                 b.iter(|| black_box(serde_json::to_vec(&snap_no_solver).unwrap()))
             });
-            // (2) serde decode (solver text empty)
+            // (2) serde decode (solver residual empty)
             group.bench_function(format!("serde_decode/{tag}"), |b| {
                 b.iter(|| {
                     let snap: RustSimStateSnapshot =
@@ -450,15 +447,11 @@ fn bench_migration_phases(c: &mut Criterion) {
             group.bench_function(format!("smtlib2_emit/{tag}"), |b| {
                 b.iter(|| black_box(state.solver().borrow().bench_dump_solver_smtlib2()))
             });
-            // (4) SMT-LIB2 parse
-            group.bench_function(format!("smtlib2_parse/{tag}"), |b| {
-                b.iter(|| black_box(SymContext::bench_parse_smtlib2(&smtlib2)))
-            });
-            // (5) leaf rebuild (no-constraint state from_serialized)
+            // (4) leaf rebuild (no-constraint state from_serialized)
             group.bench_function(format!("leaf_rebuild/{tag}"), |b| {
                 b.iter(|| black_box(RustSimState::from_serialized(&leaf_bytes).unwrap()))
             });
-            // (6) memory-page copy
+            // (5) memory-page copy
             group.bench_function(format!("memory_copy/{tag}"), |b| {
                 b.iter(|| black_box(state.bench_memory_snapshot_roundtrip()))
             });

@@ -1002,7 +1002,7 @@ Z3 simplification touches the engine in three places:
    only ``.simplify()`` invocation in ``native/angr/src/`` is the
    sampled measurement helper ``sample_simplify_skip``
    (``symbolic/solver_build.rs::sample_simplify_skip``), which runs every 64th call across
-   ``assume_true`` / ``assume_false`` / ``add_constraint_raw`` and
+   ``assume_true`` / ``assume_false`` / ``add_constraint_lowered`` and
    only records whether the simplification would have produced a
    distinct AST pointer. The simplified Bool is dropped — the
    un-simplified ``z3::ast::Bool`` is what reaches the solver. The
@@ -1031,7 +1031,7 @@ default ``SIMPLIFY_SAMPLE_STRIDE_DEFAULT = 64``
 is unset, empty, unparseable, or ``0`` — so production runs and the
 benchmark gate see exactly the previous behavior. The override is
 write-once per process: changing the env var after the first
-``add_constraint_raw`` / ``assume_true`` / ``assume_false`` has no
+``add_constraint_lowered`` / ``assume_true`` / ``assume_false`` has no
 effect.
 
 Recipe for a full-population spike on a bimodal bench::
@@ -1306,9 +1306,11 @@ zero-cost when not read. They reset alongside the Z3 counters via
     bump the counter — these track real Z3-visible emissions.
 
 * **Constraint add path** (bumped in
-  ``symbolic/context.rs::add_constraint_raw``):
+  ``symbolic/constraint_ops.rs::add_constraint_lowered`` and the batch
+  adder beside it):
 
-  * ``add_constraint_raw_total`` — total ``add_constraint_raw`` calls.
+  * ``add_constraint_raw_total`` — constraints handed to the lowered
+    sinks, the ones Python-origin constraints arrive through.
   * ``add_constraint_raw_dedup_scanned`` — calls that consulted the
     per-context HashSet side-table.
   * ``add_constraint_raw_dedup_hit`` — subset where the constraint's
@@ -1327,14 +1329,9 @@ zero-cost when not read. They reset alongside the Z3 counters via
   ``symbolic/local_constraints.rs::LocalConstraints::push_residual``, the
   one place a constraint with no ``assumed`` pair is recorded):
 
-  * ``asserted_without_term`` — constraints logged as asserted with a Z3
-    term only, so the assertion log cannot be rebuilt from clarirs: an
-    SMT-LIB2 residual replayed from a snapshot, a ``merge`` guard whose
-    condition has no Z3 form.
-  * ``residual_logged`` — constraints recorded in the residual log.
-  * ``residual_without_term`` — the subset recorded with a Z3 term only
-    and no clarirs term, a subset of ``asserted_without_term``. A
-    snapshot sends these as SMT-LIB2 text and the rest as terms.
+  * ``residual_logged`` — constraints recorded in the residual log. Each
+    has a clarirs form, as every asserted constraint does (no sink takes
+    a Z3 term on its own), and a snapshot sends it as a term.
 
 ``tests/benchmarks/run_single.py`` prints these counters grouped by
 category whenever the Rust engine ran with non-zero counters;
@@ -3471,7 +3468,7 @@ No raw pointer crosses the boundary. Each copied constraint keeps the
 origin it had, so one that could be rebuilt from clarirs on the source
 state can be on the receiver.
 
-``add_constraint_raw`` on ``RustSolverContext`` is **not**
+``add_constraint_lowered`` on ``RustSolverContext`` is **not**
 Python-callable directly — it is only reachable through
 ``add_constraint_ast`` / ``add_constraint_tracked_ast``, which lower
 the claripy AST with ``claripy_bridge::lower_claripy_constraint`` (a
@@ -3623,8 +3620,9 @@ What is captured:
   bytes + symbolic overlay), memory (concrete pages + symbolic
   overlays), call_stack, history, posix (fd table), heap metadata,
   inspection counters, and the ``SymContext::assumed_constraints``
-  log. The full Z3 solver is also captured as SMT-LIB2 so
-  ``state_constraint_count`` round-trips (angr-82g6).
+  log. The asserted constraints with no entry in that log go along as
+  clarirs terms, so ``state_constraint_count`` round-trips
+  (angr-82g6).
 * Lineage: ``state_roots`` map.
 * Terminal counters: avoided / pruned / deadended / errored /
   unconstrained tallies.

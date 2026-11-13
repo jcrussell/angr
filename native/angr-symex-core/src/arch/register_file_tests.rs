@@ -11,7 +11,6 @@
 use crate::symbolic::ToZ3;
 use super::*;
 use crate::arch::registry::ALL_ARCHES;
-use crate::symbolic::SymContext;
 
 #[test]
 fn test_register_file_concrete() {
@@ -545,7 +544,7 @@ fn merge_widen_keeps_adjacent_symbolic_overlay() {
 /// their own bit positions, zero-extended over its concrete high bytes.
 #[test]
 fn merge_widen_adjacent_overlay_selects_both_bytes_under_solver() {
-    let ctx = SymContext::new();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     let al = RustBV::symbol("al", 8);
@@ -636,7 +635,7 @@ fn merge_concrete_chunk_keeps_unaligned_subregister_overlay() {
 /// composition, `other`'s carrying `ah` in byte 1.
 #[test]
 fn merge_concrete_chunk_unaligned_overlay_selects_each_path_under_solver() {
-    let ctx = SymContext::new();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     let mut a = RegisterFile::new(Box::new(AMD64));
@@ -755,7 +754,7 @@ fn merge_covers_short_tail_chunk_of_guest_state() {
 /// the merged tail value must equal that path's own bytes.
 #[test]
 fn merge_short_tail_chunk_selects_each_path_under_solver() {
-    let ctx = SymContext::new();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let reg_bytes = ShortTailArch.bits() as usize / 8;
     let tail_off =
         (ShortTailArch.state_size() - ShortTailArch.state_size() % reg_bytes) as u32;
@@ -787,7 +786,7 @@ fn merge_short_tail_chunk_selects_each_path_under_solver() {
 /// (zero) high bytes, so the `cond == 0` leg must equal `zero_extend(narrow)`.
 #[test]
 fn merge_width_mismatch_selects_each_path_under_solver() {
-    let ctx = SymContext::new();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let rax_off = AMD64.register_offset("rax").unwrap();
 
     let narrow = RustBV::symbol("narrow", 32);
@@ -1005,7 +1004,7 @@ fn assert_merged_high_lane_tracks_overlay(
     other_val: u128,
     lane: u32,
 ) {
-    let ctx = SymContext::new();
+    let ctx = crate::symbolic::Z3Scratch::new();
     let size = wide.width() / 8;
     let lane_bits = (size - lane) * 8;
     let mut a = RegisterFile::new(arch());

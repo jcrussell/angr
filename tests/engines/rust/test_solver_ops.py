@@ -274,7 +274,7 @@ class TestSolverOperations:
         """add_constraint_tracked_ast() must be visible to a forked child,
         not just the live solver it was asserted on directly.
 
-        Regression test (angr-sqfj8.101): add_constraint_tracked_indexed used
+        Regression test (angr-sqfj8.101): add_constraint_tracked_lowered used
         to call install_constraint() directly, skipping the
         local_constraints.z3_assertions push every sibling adder does.
         fork() freezes z3_assertions into the shared prefix the child

@@ -2680,7 +2680,7 @@ class TestNativeReadCacheSync:
         cid = event.callback_state_id
 
         # A convertible constraint exercises the fast path's Ok arm
-        # (add_constraint_raw_assumed + assumed_constraints_push). It must not
+        # (add_constraint_lowered_assumed + assumed_constraints_push). It must not
         # raise and the pending state must remain queryable.
         amd64_mgr.add_constraints_to_pending(cid, [sym_arg == 0x1234])
         assert amd64_mgr.borrow_pending_solver(cid) is not None

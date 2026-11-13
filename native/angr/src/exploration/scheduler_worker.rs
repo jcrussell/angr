@@ -653,9 +653,9 @@ fn offload_one(
 /// Serde budget: migration serde may consume at most `1 / SERDE_BUDGET_DIVISOR`
 /// of the useful stepping time all workers have logged so far.
 ///
-/// Both halves of a migration (`detach_for_migration` + `reattach`) are a full Z3
-/// AST round-trip through SMT-LIB2, whose cost scales with the state's constraint
-/// set — while a step's cost does not. So there is no fixed offload rate that is
+/// Both halves of a migration (`detach_for_migration` + `reattach`) serialize
+/// and rebuild the state's whole constraint list, whose cost scales with the
+/// state's constraint set — while a step's cost does not. So there is no fixed offload rate that is
 /// right for every workload: on a solve-heavy frontier (`fork_solve_trap`) a
 /// migration is cheap next to the solve it unblocks, and on a fat-constraint
 /// divergent frontier (`CADET_00001_partial`, angr-faorh) it costs an order of

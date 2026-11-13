@@ -15,7 +15,7 @@ fn test_zext_eq_collapse_solver_consistency() {
     let x = RustBV::symbol("x", 8);
     let zx = x.zero_extend(16);
     let eq = zx.eq(&RustBV::concrete(0x42, 16));
-    ctx.add_constraint(eq.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(1, 1)));
+    ctx.add_bv_constraint(&eq, 1);
     assert_eq!(ctx.eval(&x), Some(0x42));
     // Also verify the wider zext expression evaluates to the constant.
     assert_eq!(ctx.eval(&zx), Some(0x42));

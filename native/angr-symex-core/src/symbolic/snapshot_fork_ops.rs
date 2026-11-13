@@ -16,6 +16,7 @@
 
 use super::ToZ3;
 use super::local_constraints::{Asserted, LocalConstraints, LoweredConstraint, Origin, bool_term};
+use super::z3_lower::LowerError;
 use super::{ResidualParseError, RustBV, SymContext, SymContextSnapshot};
 use clarirs_core::GLOBAL_CONTEXT;
 use clarirs_core::prelude::*;
@@ -101,18 +102,17 @@ impl SymContext {
         let assumed_constraints = self.get_assumed_constraints();
         // angr-t3l5o Phase 1: two-class capture. The assume class is carried
         // as `assumed_constraints` IR and rebuilt by re-asserting via
-        // `assume_*` on restore (no text). The RESIDUAL class (no-RustBV
-        // assertions — raw / bv-eq / merge-guard) is carried as an SMT-LIB2
-        // text dump in `residual_smtlib2`, EMPTY in the common case.
+        // `assume_*` on restore. The RESIDUAL class (no-RustBV assertions —
+        // lowered / bv-eq / merge-guard) is carried as `residual_terms`,
+        // EMPTY in the common case.
         //
         // The merge fallback: when `assume_class_reconstructible` is false the
         // context's `assumed` pairs are export-only (a `merge()` left the
         // guarded `Or` disjunctions on the solver, not the unconditional
-        // pairs). Re-asserting them would over-constrain, so we instead dump
-        // the FULL solver and tell restore (via `reassert_assumed = false`)
-        // not to re-assert the assume class — the pre-Phase-1 behavior,
-        // preserved for correctness on merged lineages.
-        let (residual_terms, residual_smtlib2, reassert_assumed) = {
+        // pairs). Re-asserting them would over-constrain, so we instead send
+        // the FULL assertion log and tell restore (via
+        // `reassert_assumed = false`) not to re-assert the assume class.
+        let (residual_terms, reassert_assumed) = {
             let reassert_assumed = self
                 .assume_class_reconstructible
                 .load(std::sync::atomic::Ordering::Relaxed);
@@ -153,16 +153,15 @@ impl SymContext {
                      asserted on the solver without recording into a log"
                 );
             }
-            let (terms, text) = if reassert_assumed {
+            let terms = if reassert_assumed {
                 self.residual_for_snapshot()
             } else {
                 self.solver_for_snapshot()
             };
-            (terms, text, reassert_assumed)
+            (terms, reassert_assumed)
         };
         SymContextSnapshot {
             assumed_constraints,
-            residual_smtlib2,
             residual_terms,
             reassert_assumed,
             // angr-kenpr: capture the authoritative live assertion count so
@@ -190,13 +189,13 @@ impl SymContext {
         }
     }
 
-    /// Helper for [`Self::to_snapshot`]: dump the union of
-    /// `z3_assertions_shared` and the local Z3 assertion vector (the FULL
-    /// solver state) into a temp [`z3::Solver`] and emit SMT-LIB2.
+    /// Dump the union of `z3_assertions_shared` and the local Z3 assertion
+    /// vector (the FULL solver state) into a temp [`z3::Solver`] and emit
+    /// SMT-LIB2.
     ///
-    /// Returns the empty string when no Z3 assertions exist. `to_snapshot`
-    /// no longer uses it (see [`Self::solver_for_snapshot`]); it backs the
-    /// Phase-0 bench hook `bench_dump_solver_smtlib2`.
+    /// Returns the empty string when no Z3 assertions exist. No snapshot
+    /// carries this text; it backs `bench_dump_solver_smtlib2`, which the
+    /// manager's debug dump and the micro-bench read.
     fn dump_solver_smtlib2(&self) -> String {
         let temp = z3::Solver::new();
         let mut any = false;
@@ -219,24 +218,24 @@ impl SymContext {
 
     /// Helper for [`Self::to_snapshot`]: the residual log —
     /// `non_bv_assertions_shared ∪ local.non_bv_assertions` — as
-    /// `(residual_terms, residual_smtlib2)` (angr-t3l5o Phase 1,
-    /// angr-az6ru.2). Both are empty in the common case (pure assume-class
-    /// contexts): the assume class is rebuilt from `assumed_constraints`.
-    fn residual_for_snapshot(&self) -> (Vec<RustBV>, String) {
+    /// `residual_terms` (angr-t3l5o Phase 1, angr-az6ru.2). Empty in the
+    /// common case (pure assume-class contexts): the assume class is rebuilt
+    /// from `assumed_constraints`.
+    fn residual_for_snapshot(&self) -> Vec<RustBV> {
         let shared = Arc::clone(&self.non_bv_assertions_shared.lock());
         let local = self.local_constraints.lock();
         let entries = shared.iter().chain(local.non_bv_assertions.iter());
-        terms_and_text(entries.map(|r| (&r.z3, r.term.clone())))
+        snapshot_bits(entries.map(|r| &r.origin))
     }
 
     /// Helper for [`Self::to_snapshot`] on the merge fallback path
     /// (`assume_class_reconstructible == false`): the full assertion log as
-    /// `(residual_terms, residual_smtlib2)`.
-    fn solver_for_snapshot(&self) -> (Vec<RustBV>, String) {
+    /// `residual_terms`.
+    fn solver_for_snapshot(&self) -> Vec<RustBV> {
         let shared = Arc::clone(&self.z3_assertions_shared.lock());
         let local = self.local_constraints.lock();
         let entries = shared.iter().chain(local.z3_assertions.iter());
-        terms_and_text(entries.map(|a| (&a.z3, a.term())))
+        snapshot_bits(entries.map(|a| &a.origin))
     }
 
     /// Restore the path-constraint state captured by `to_snapshot` into
@@ -255,10 +254,10 @@ impl SymContext {
     /// angr-t3l5o Phase 1: two-class reattach. When `reassert_assumed` is
     /// true (the common case) the assume class is rebuilt from
     /// `assumed_constraints` IR by re-asserting each pair through the public
-    /// `assume_*` APIs — repopulating the Z3 solver, the BV-export log, and
-    /// `constraint_count` with NO SMT-LIB2 text emit/parse — then the
-    /// (usually empty) residual is replayed. When false (a merged context)
-    /// the full residual dump is replayed and the `assumed` pairs are pushed
+    /// `assume_*` APIs — repopulating the assertion log, the BV-export log,
+    /// and `constraint_count` — then the (usually empty) residual is
+    /// replayed. When false (a merged context) the full assertion log is
+    /// replayed from `residual_terms` and the `assumed` pairs are pushed
     /// to the BV-export log WITHOUT asserting (re-asserting would
     /// over-constrain the guarded merge state); `assume_class_reconstructible`
     /// is set false so a re-migration of the restored context stays correct.
@@ -273,9 +272,9 @@ impl SymContext {
     ///
     /// # Errors
     ///
-    /// [`ResidualParseError`] when the residual text holds a NUL or Z3 will
-    /// not parse it (a corrupted or foreign snapshot). The context is then
-    /// part-restored and must be dropped, not used.
+    /// [`ResidualParseError`] when a residual term has no Z3 form (a
+    /// corrupted or foreign snapshot). The context is then part-restored and
+    /// must be dropped, not used.
     pub fn restore_from_snapshot(
         &self,
         snap: &SymContextSnapshot,
@@ -314,7 +313,7 @@ impl SymContext {
         }
         {
             if snap.reassert_assumed {
-                // (i) Rebuild the assume class from IR — no text round-trip.
+                // (i) Rebuild the assume class from IR.
                 for (cond, is_true) in &snap.assumed_constraints {
                     if *is_true {
                         self.assume_true(cond);
@@ -322,14 +321,10 @@ impl SymContext {
                         self.assume_false(cond);
                     }
                 }
-                // (ii) Replay the residual (raw / bv-eq) class, if any: the
-                // entries with a clarirs form, then the text. Both route
+                // (ii) Replay the residual (lowered / bv-eq) class, if any,
                 // through a residual sink, so the restored context's
                 // `non_bv_assertions` log is rebuilt too.
                 self.replay_residual_terms(&snap.residual_terms)?;
-                if !snap.residual_smtlib2.is_empty() {
-                    self.replay_residual_smtlib2(&snap.residual_smtlib2)?;
-                }
                 // (iii) pin `constraint_count` back to the source's
                 // authoritative value. The assume-class IR replay above can
                 // re-assert `assumed`-log entries that were live-deduped away on
@@ -345,14 +340,11 @@ impl SymContext {
                 }
             } else {
                 // Merge fallback: the `assumed` pairs are export-only. Replay
-                // the full residual dump, then push the pairs to the BV log
+                // the full assertion log, then push the pairs to the BV log
                 // without asserting.
                 self.assume_class_reconstructible
                     .store(false, std::sync::atomic::Ordering::Relaxed);
                 self.replay_residual_terms(&snap.residual_terms)?;
-                if !snap.residual_smtlib2.is_empty() {
-                    self.replay_residual_smtlib2(&snap.residual_smtlib2)?;
-                }
                 for (cond, is_true) in &snap.assumed_constraints {
                     self.assumed_constraints_push(cond.clone(), *is_true);
                 }
@@ -363,8 +355,8 @@ impl SymContext {
 
     /// Assert a snapshot's `residual_terms` through
     /// [`Self::add_constraint_lowered`], so each lands in the residual log
-    /// with its term. All or nothing, like the text replay: every term is
-    /// lowered before the first is asserted.
+    /// with its term. All or nothing: every term is lowered before the first
+    /// is asserted.
     fn replay_residual_terms(&self, terms: &[RustBV]) -> Result<(), ResidualParseError> {
         let lowered = terms
             .iter()
@@ -382,58 +374,6 @@ impl SymContext {
         Ok(())
     }
 
-    /// Replay an SMT-LIB2 residual dump onto this context's solver via the
-    /// `from_string` + `get_assertions` + [`Self::add_constraint_raw`] loop
-    /// (angr-t3l5o Phase 1). Each re-asserted Bool lands in the residual log
-    /// (`add_constraint_raw` is residual sink #1).
-    fn replay_residual_smtlib2(&self, residual: &str) -> Result<(), ResidualParseError> {
-        self.parse_smtlib2_into_solver(residual).map(drop)
-    }
-
-    /// The body of [`Self::replay_residual_smtlib2`]: parse `smtlib2`
-    /// into a scratch solver and re-assert each of its assertions onto `self`
-    /// via [`Self::add_constraint_raw`]. Returns the number re-asserted.
-    ///
-    /// All or nothing: Z3 keeps the assertions it parsed before an error and
-    /// reports the error only through the context's error code (the crate's
-    /// error handler is a no-op), so the code is read straight after
-    /// `from_string` (the next API call resets it) and a rejected text asserts
-    /// nothing. A NUL is refused up front, since `from_string` unwraps its
-    /// `CString::new` (angr-vmi2l.94).
-    ///
-    /// Sole home of the handoff between the scratch solver and this context —
-    /// [`Self::bench_parse_smtlib2`] routes through here too, so a fix to it
-    /// only has to land once (angr-9ke6b.143).
-    fn parse_smtlib2_into_solver(&self, smtlib2: &str) -> Result<usize, ResidualParseError> {
-        if let Some(offset) = smtlib2.bytes().position(|b| b == 0) {
-            return Err(ResidualParseError::InteriorNul { offset });
-        }
-        let tmp = z3::Solver::new();
-        tmp.from_string(smtlib2);
-        let raw = tmp.get_context().get_z3_context();
-        // SAFETY: `raw` is the live context that owns `tmp`; both calls are
-        // pure reads of its error state, and the message is copied out before
-        // any further Z3 call on the context.
-        let rejected = unsafe {
-            let code = z3_sys::Z3_get_error_code(raw);
-            (code != z3_sys::ErrorCode::Ok).then(|| ResidualParseError::Rejected {
-                code: format!("{code:?}"),
-                message: std::ffi::CStr::from_ptr(z3_sys::Z3_get_error_msg(raw, code))
-                    .to_string_lossy()
-                    .into_owned(),
-            })
-        };
-        if let Some(err) = rejected {
-            return Err(err);
-        }
-        let assertions = tmp.get_assertions();
-        let n = assertions.len();
-        for assertion in assertions {
-            self.add_constraint_raw(assertion);
-        }
-        Ok(n)
-    }
-
     /// Bench hook: expose the private
     /// [`Self::dump_solver_smtlib2`] so the per-phase micro-bench in
     /// `benches/vex_engine.rs` can time the SMT-LIB2 *emit* in isolation
@@ -443,30 +383,15 @@ impl SymContext {
         self.dump_solver_smtlib2()
     }
 
-    /// Bench hook: re-parse an SMT-LIB2 text dump into a
-    /// fresh context's solver, isolating the SMT-LIB2 *parse* cost. Shares its
-    /// body with the production restore path — both call
-    /// [`Self::parse_smtlib2_into_solver`] — so the two can't drift
-    /// (angr-9ke6b.143). Returns the number of re-asserted constraints. Must
-    /// run inside an active thread-local Z3 context.
-    ///
-    /// # Errors
-    ///
-    /// The same [`ResidualParseError`] the restore path returns.
-    #[doc(hidden)]
-    pub fn bench_parse_smtlib2(smtlib2: &str) -> Result<usize, ResidualParseError> {
-        SymContext::new().parse_smtlib2_into_solver(smtlib2)
-    }
-
-    /// Bench hook: assert a width-1 `RustBV` predicate via
-    /// the *raw* path (`add_constraint_raw`) so it lands in the residual
-    /// (no-`RustBV`) class — i.e. it is NOT recorded in `assumed_constraints`
-    /// and so survives the round-trip only through the SMT-LIB2 text dump.
+    /// Bench hook: assert a width-1 `RustBV` predicate through the residual
+    /// sink ([`Self::add_constraint_lowered`]), so it is NOT recorded in
+    /// `assumed_constraints` and a snapshot carries it in `residual_terms`.
     /// Lets the micro-bench populate the `raw_fraction` axis.
     #[doc(hidden)]
     pub fn bench_add_constraint_raw_from_bool(&self, pred: &RustBV) {
-        if let Some(pred) = super::lowered_or_warn(pred.to_z3_bool(), "bench_add_constraint_raw") {
-            self.add_constraint_raw(pred);
+        let lowered = LoweredConstraint::of_bit(pred);
+        if let Some(pred) = super::lowered_or_warn(lowered, "bench_add_constraint_raw") {
+            self.add_constraint_lowered(pred);
         }
     }
 
@@ -649,7 +574,7 @@ impl SymContext {
             // `num_constraints()`, NOT `assumed_total_len` (frozen_assumed.len()).
             // The child inherits the parent's FULL constraint set via
             // frozen_shared/frozen_non_bv, which includes entries with no
-            // `assumed` pair — `add_constraint_raw` residuals and
+            // `assumed` pair — `add_constraint_lowered` residuals and
             // `add_bv_constraint` (address concretization) both bump
             // `constraint_count` but push no assumed pair. Seeding from the
             // assumed length alone erased those from the child's count, so a
@@ -756,8 +681,9 @@ impl SymContext {
     /// that asserts a new constraint must instead mint a `ScopeFrame` and
     /// route through `switch_to` so the lineage solver can replay the
     /// constraint on a later reload — see `install_constraint` (the shared
-    /// helper behind `add_constraint`, `add_constraint_raw`, and
-    /// `add_constraint_tracked_indexed`) and `add_constraints_raw_batch`
+    /// helper behind `add_constraint_lowered`, `add_bv_constraint`, the
+    /// `assume_*` pair and `add_constraint_tracked_lowered`) and
+    /// `add_constraints_raw_batch`
     /// (the N-at-once variant), both in `constraint_ops.rs`. Wrapping an
     /// `assert` in `with_z3_solver` instead would land it on the shared
     /// solver without a frame recording it, and it would silently vanish
@@ -889,7 +815,6 @@ impl SymContext {
         let all_contexts: Vec<&SymContext> = std::iter::once(self)
             .chain(others.iter().copied())
             .collect();
-        let mut all_z3_conditions = Vec::new();
         let mut all_cond_terms = Vec::new();
 
         // angr-op0dn.11.3: shared-prefix-aware merge. `fork()` freezes self's
@@ -928,7 +853,7 @@ impl SymContext {
                 let mut ml = merged.local_constraints.lock();
                 for assertion in common_prefix.iter() {
                     ml.push_assertion(assertion.z3.clone(), assertion.origin.clone());
-                    ml.push_residual(assertion.z3.clone(), assertion.term());
+                    ml.push_residual(assertion.z3.clone(), assertion.origin.clone());
                 }
             }
             for assertion in common_prefix.iter() {
@@ -943,7 +868,7 @@ impl SymContext {
         // `state.solver.constraints` (`get_assumed_constraints`) N-fold and
         // compounding multiplicatively across nested diamond merges. Tracked
         // independently of `common_prefix` above: the two shared vectors are
-        // separate Arcs, and a `add_constraint_raw`-only arm can diverge on one
+        // separate Arcs, and a `add_constraint_lowered`-only arm can diverge on one
         // without diverging on the other.
         let common_assumed = Arc::clone(&all_contexts[0].assumed_constraints_shared.lock());
         let assumed_prefix_shared_by_all = all_contexts[1..]
@@ -956,27 +881,22 @@ impl SymContext {
         }
 
         for (ctx, cond) in all_contexts.iter().zip(merge_conditions.iter()) {
-            // Compute NOT(cond) up front so cond_bool can be moved into
-            // all_z3_conditions without cloning the Z3 AST. A cond with no Z3
-            // form becomes an unconstrained Bool, so the arm's constraints are
-            // only optional, never forced: the under-constrained side `assume`
-            // takes for such a cond (angr-mx00p.116.2).
-            let lowered_cond = super::lowered_or_warn(cond.to_z3_bool(), "merge");
-            // The clarirs side of the guards (angr-az6ru.2). A cond with no
-            // Z3 form stands as a fresh Z3 constant, which no term names, so
-            // its guards are logged without one.
-            // SILENT(cat-a): a term that cannot be built leaves the guard
-            // logged with its Z3 form only, which `asserted_without_term`
-            // counts; the solver side is unaffected.
-            let cond_term = lowered_cond.as_ref().and_then(|_| bool_term(cond).ok());
+            // The guards are built as clarirs terms and lowered from them, so
+            // every merged constraint has a clarirs form (angr-az6ru.2). A
+            // cond with no Z3 form is stood in for by a fresh Bool symbol:
+            // unconstrained, so the arm's constraints are only optional,
+            // never forced, the under-constrained side `assume` takes for
+            // such a cond (angr-mx00p.116.2).
+            let cond_term = match super::lowered_or_warn(cond.to_z3_bool(), "merge") {
+                Some(_) => bool_term(cond),
+                None => GLOBAL_CONTEXT
+                    .bools(merged.unique_name("unlowerable_merge_cond"))
+                    .map_err(clarirs_refusal),
+            };
             let not_cond_term = cond_term
-                .as_ref()
-                .and_then(|t| GLOBAL_CONTEXT.not(t.clone()).ok()); // SILENT(cat-a): as above
+                .clone()
+                .and_then(|t| GLOBAL_CONTEXT.not(t).map_err(clarirs_refusal));
             all_cond_terms.push(cond_term);
-            let cond_bool = lowered_cond
-                .unwrap_or_else(|| z3::ast::Bool::fresh_const("unlowerable_merge_cond"));
-            let not_cond = cond_bool.not();
-            all_z3_conditions.push(cond_bool);
 
             // Collect all Z3 assertions and assumed pairs from this context.
             // The shared prefix is read ONLY on the slow path below, so bind it
@@ -1003,21 +923,22 @@ impl SymContext {
             //   assert (NOT merge_cond_i OR c_j)
             // This means: if this merge path is active, all its constraints hold
             for assertion in to_guard {
-                let guarded = z3::ast::Bool::or(&[&not_cond, &assertion.z3]);
-                let guarded_term = not_cond_term
-                    .as_ref()
-                    .zip(assertion.term())
-                    .and_then(|(n, c)| GLOBAL_CONTEXT.or2(n.clone(), c).ok()); // SILENT(cat-a): as for `cond_term` above
-                {
-                    // angr-t3l5o Phase 1: residual sink #3 (merge guard). The
-                    // guarded `Or` has no RustBV form and is not reconstructible
-                    // from `assumed`, so record it in the residual log too.
-                    let mut ml = merged.local_constraints.lock();
-                    let origin = guarded_term.clone().map_or(Origin::Z3Only, Origin::Term);
-                    ml.push_assertion(guarded.clone(), origin);
-                    ml.push_residual(guarded.clone(), guarded_term);
-                }
-                merged.install_constraint(&guarded);
+                let guarded = not_cond_term.clone().and_then(|not_cond| {
+                    let held = assertion.term().ok_or_else(|| {
+                        LowerError::InvalidArgs("an arm's constraint has no clarirs form".into())
+                    })?;
+                    let term = GLOBAL_CONTEXT
+                        .or2(not_cond, held)
+                        .map_err(clarirs_refusal)?;
+                    LoweredConstraint::lower(term)
+                });
+                // A guard that cannot be built is left out, with a warn: the
+                // merged state then lacks one of this arm's constraints, the
+                // under-constrained side.
+                let Some(guarded) = super::lowered_or_warn(guarded, "merge guard") else {
+                    continue;
+                };
+                merged.log_merged(guarded);
                 #[cfg(test)]
                 super::context::merge_instrument::note_guarded();
             }
@@ -1058,22 +979,16 @@ impl SymContext {
         }
 
         // Assert that at least one merge condition is true
-        let cond_refs: Vec<&z3::ast::Bool> = all_z3_conditions.iter().collect();
-        let or_conds = z3::ast::Bool::or(&cond_refs);
-        {
-            // angr-t3l5o Phase 1: residual sink #3 (merge `Or` guard).
-            let any_arm_term = all_cond_terms
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .and_then(|terms| GLOBAL_CONTEXT.or(terms).ok()); // SILENT(cat-a): as for `cond_term` above
-            let origin = any_arm_term.clone().map_or(Origin::Z3Only, Origin::Term);
-            let mut ml = merged.local_constraints.lock();
-            ml.push_assertion(or_conds.clone(), origin);
-            ml.push_residual(or_conds.clone(), any_arm_term);
+        let any_arm = all_cond_terms
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .and_then(|terms| GLOBAL_CONTEXT.or(terms).map_err(clarirs_refusal))
+            .and_then(LoweredConstraint::lower);
+        if let Some(any_arm) = super::lowered_or_warn(any_arm, "merge disjunction") {
+            merged.log_merged(any_arm);
+            #[cfg(test)]
+            super::context::merge_instrument::note_guarded();
         }
-        merged.install_constraint(&or_conds);
-        #[cfg(test)]
-        super::context::merge_instrument::note_guarded();
 
         // `merged` started from `with_timeout`, whose per-context settings are
         // defaults, so the merge is not tied to the field list the way
@@ -1182,25 +1097,35 @@ fn assumed_pair_as_bit(bv: &RustBV, is_true: bool) -> RustBV {
 // its only callers.
 // =============================================================================
 
-/// Split constraints for a snapshot: one with a clarirs form goes out as its
-/// 1-bit encoding, the rest as one SMT-LIB2 dump (empty when there are none).
-fn terms_and_text<'a>(
-    entries: impl Iterator<Item = (&'a z3::ast::Bool, Option<AstRef<'static>>)>,
-) -> (Vec<RustBV>, String) {
-    let mut terms = Vec::new();
-    let mut text_only: Option<z3::Solver> = None;
-    for (z3, term) in entries {
-        // SILENT(cat-a): a term with no 1-bit encoding falls back to the
-        // text dump of its Z3 form, which carries the same constraint.
-        match term.and_then(|t| RustBV::from_clarirs(t).ok()) {
-            Some(bit) => terms.push(bit),
-            None => text_only.get_or_insert_with(z3::Solver::new).assert(z3),
+impl SymContext {
+    /// Residual sink #3 (angr-t3l5o Phase 1): put one guarded `Or` of a
+    /// [`Self::merge`] on the freshly built merged context. It has no RustBV
+    /// form and is not reconstructible from `assumed`, so it goes in the
+    /// residual log as well as the assertion log.
+    fn log_merged(&self, constraint: LoweredConstraint) {
+        let (term, z3) = constraint.into_parts();
+        {
+            let mut local = self.local_constraints.lock();
+            local.push_assertion(z3.clone(), Origin::Term(term.clone()));
+            local.push_residual(z3.clone(), Origin::Term(term));
         }
+        self.install_constraint(&z3);
     }
-    (
-        terms,
-        text_only.map_or_else(String::new, |s| format!("{s}")),
-    )
+}
+
+/// A clarirs constructor's refusal, in the error type the lowering reports.
+fn clarirs_refusal(err: ClarirsError) -> LowerError {
+    LowerError::InvalidArgs(err.to_string())
+}
+
+/// Constraints for a snapshot, each as its 1-bit encoding.
+fn snapshot_bits<'a>(origins: impl Iterator<Item = &'a Origin>) -> Vec<RustBV> {
+    // SILENT(cat-a): `Origin::bit` is `None` only where clarirs refuses a
+    // node it never refuses for these shapes (see `Origin::term`).
+    let (lower, _) = origins.size_hint();
+    let bits: Vec<RustBV> = origins.filter_map(Origin::bit).collect();
+    debug_assert!(bits.len() >= lower, "a logged constraint has no 1-bit form");
+    bits
 }
 
 /// Freeze a local additions vector into the shared `Arc<Vec<T>>`.

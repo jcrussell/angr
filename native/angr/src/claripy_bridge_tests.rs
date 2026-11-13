@@ -176,7 +176,7 @@ fn test_roundtrip_import_export_preserves_semantics() {
             let rt = roundtrip(bv);
             assert_eq!(bv.width(), rt.width(), "{label}: round-trip width drift");
             ctx.push();
-            ctx.add_constraint(bv.to_z3_ast().unwrap().eq(rt.to_z3_ast().unwrap()).not());
+            ctx.assume_false(&bv.eq(&rt));
             assert!(
                 !ctx.is_sat(),
                 "{label}: round-trip changed semantics (counter-example exists)"
@@ -312,7 +312,7 @@ fn test_import_floordiv_mod_are_unsigned() {
         let bvs = claripy.call_method1("BVS", ("v", 32u32)).unwrap();
         let three = claripy.call_method1("BVV", (3u64, 32u32)).unwrap();
         let v = claripy_to_rustbv(py, &bvs, &ctx).unwrap();
-        ctx.add_constraint(v.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(0xFFFF_FFFE, 32)));
+        ctx.add_bv_constraint(&v, 0xFFFF_FFFE);
 
         // Import each op AST and evaluate under the pinned constraint. Same
         // BVS "v" maps to the same z3 var, so eval resolves to a single value.
@@ -536,7 +536,7 @@ fn test_assumed_guard_to_claripy_all_four_branches() {
 
         // Pin x = 5 so every result below evaluates to a single concrete bit:
         // the Bool guard holds, and x's bit 0 is 1.
-        ctx.add_constraint(x.to_z3_ast().unwrap().eq(z3::ast::BV::from_u64(5, 32)));
+        ctx.add_bv_constraint(&x, 5);
 
         // `want_op` is a set, not a single name: claripy's simplifier folds
         // `Not(a == b)` down to `a != b`, so the Bool/false branch is allowed

@@ -22,10 +22,9 @@ Z3 represents every AST as a ``Z3_ast`` pointer into a parent
 ``Z3_context``, valid only within that context. The engine keeps every
 AST it builds in the thread-local context of the thread that built it:
 ``RustBV`` values are clarirs terms with a lazy per-value Z3 memo, and
-claripy ASTs from Python are lowered by
-``native/angr/src/claripy_bridge/lower.rs::lower_claripy_ast`` to a
-``z3::ast::Dynamic`` (and, for a constraint, through the sort-checked
-``lower_claripy_bool``) before ``Z3_solver_assert`` sees them. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
+a claripy constraint from Python is lowered by
+``native/angr/src/claripy_bridge/lower.rs::lower_claripy_constraint``,
+which checks its sort, before ``Z3_solver_assert`` sees it. clarirs' own Z3 backend (``clarirs-z3``) keeps separate contexts of
 its own; the two never exchange pointers.
 
 The solver surface is split across the files below (angr-9ke6b.205):
@@ -84,7 +83,7 @@ translation) and a constraint:
 
 The fork side of this is what makes :ref:`rust-z3-sharing-fork-lazy`
 correct: the child can copy the parent's ``z3_assertions_shared``
-(a ``Mutex<Arc<Vec<Bool>>>``) by ``Arc::clone`` and replay assertions lazily
+(a ``Mutex<Arc<Vec<Asserted>>>``) by ``Arc::clone`` and replay assertions lazily
 without ever asking Z3 to translate them, because both contexts ARE
 the same context.
 
@@ -100,12 +99,15 @@ states travel through three phases:
    context holds a ``SolverSlot``, its identity in the per-thread
    solver cache (see :ref:`rust-z3-sharing-fork-lazy`), and a
    ``timeout_ms`` that defaults to 30000 (30 s) per query.
-2. **Constraint accumulation.** ``add_constraint_raw`` / ``assume_*``
-   append to two parallel structures: a frozen ``Arc<Vec<Bool>>``
-   (``z3_assertions_shared``) and a per-fork ``Vec<Bool>``
+2. **Constraint accumulation.** ``add_constraint_lowered`` / ``assume_*``
+   append to two parallel structures: a frozen ``Arc<Vec<Asserted>>``
+   (``z3_assertions_shared``) and a per-fork ``Vec<Asserted>``
    (``LocalConstraints::z3_assertions``). The split exists so a fork
    with no new constraints is an ``Arc::clone`` instead of a deep
-   copy.
+   copy. An entry holds the constraint's Z3 term and its origin, the
+   form it can be rebuilt from without Z3: an ``assume`` pair, a clarirs
+   term, or the value and constant of an address concretization. No
+   sink takes a Z3 term alone.
 3. **Fork.** ``SymContext::fork()`` "freezes self": when not inside
    a ``push()`` transaction, ``local_constraints.z3_assertions`` is
    drained into ``z3_assertions_shared`` (under ``Arc::get_mut``
@@ -225,11 +227,11 @@ falsely suppressed (``angr-ph300.41`` / ``angr-ph300.42``). Beyond that
 bookkeeping, the dispatch inside ``scope_savepoint_*`` keys on whether
 this ``SymContext`` has a lineage (``self.lineage`` is ``Some``):
 
-* **None branch (production today).** Directly issues
-  ``solver.push()`` / ``solver.pop(1)`` against the per-context Z3
-  solver, and bumps ``bare_z3_push_depth`` in lockstep. This is the
-  pre-lineage behavior that ``RustSolverContext::push()`` /
-  ``::pop()`` rely on.
+* **None branch (production today).** Records the savepoint and bumps
+  ``bare_z3_push_depth`` in lockstep; the context's solver opens or
+  closes the matching Z3 frame at its next query
+  (``SymContext::sync_solver``). This is what
+  ``RustSolverContext::push()`` / ``::pop()`` rely on.
 * **Some branch (opt-in only).** Records a depth marker on
   ``scope_savepoints`` (an in-memory ``Vec<usize>``) and defers the
   Z3-side push to the lazy ``SharedLineageSolver::switch_to`` the
@@ -306,7 +308,7 @@ benchmarking harness sets ``RLIMIT_AS = 4 GB`` per subprocess in
 Inside that envelope, two engine-side structures grow with
 exploration and need a mental model:
 
-* **``z3_assertions_shared`` (``Mutex<Arc<Vec<Bool>>>``)** holds every
+* **``z3_assertions_shared`` (``Mutex<Arc<Vec<Asserted>>>``)** holds every
   constraint ever asserted on the lineage of forks leading to this
   state. Each entry is a refcounted Z3 AST handle (``Z3_inc_ref``).
   Memory growth is linear in constraint count and shared across

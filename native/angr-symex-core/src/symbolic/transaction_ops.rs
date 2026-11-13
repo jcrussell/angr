@@ -216,7 +216,7 @@ impl SymContext {
     ///
     /// Complements [`Self::unsat_core`], which only reports constraints the
     /// caller opted into tracking at add time via
-    /// `add_constraint_tracked_indexed`. The engine's own path constraints
+    /// `add_constraint_tracked_lowered`. The engine's own path constraints
     /// (fork guards, SimProc adds) go in untracked — tracking booleans cost
     /// a fresh Bool symbol + `assert_and_track` per constraint on the hot
     /// path — so a core read off the live solver would be *silently
@@ -272,7 +272,7 @@ impl SymContext {
         //
         // EXCEPT the ones that also have an `assumed` entry. A constraint
         // imported from Python (`_add_constraints_to_state`'s Z3-ptr fast path)
-        // lands in BOTH lists: `add_constraint_raw` logs it as residual and the
+        // lands in BOTH lists: `add_constraint_lowered` logs it as residual and the
         // same call site pushes an `assumed` pair for it. Asserting the residual
         // copy unguarded would pin the constraint outside the assumption
         // literals, so an all-Python contradiction comes back Unsat with an

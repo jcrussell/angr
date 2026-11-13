@@ -31,7 +31,10 @@ use super::*;
 // carries the residual constraints that have a clarirs form; `residual_smtlib2`
 // now holds only the rest. A v2 reader would drop `residual_terms` unread and
 // restore the state with fewer constraints than it had.
-pub const SNAPSHOT_VERSION: u8 = 3;
+// v4 (angr-az6ru.2): `residual_smtlib2` is gone. Every asserted constraint has
+// a clarirs form, so `residual_terms` carries the whole residual; a v3
+// envelope's text residual would be dropped unread.
+pub const SNAPSHOT_VERSION: u8 = 4;
 
 /// Errors raised by [`RustSimState::from_serialized`] /
 /// `StashManager::load_snapshot`.
@@ -49,8 +52,8 @@ pub enum SnapshotError {
     /// Z3 context — rebuilding would mint ASTs in the wrong context (angr-1ilq.1).
     #[error("reattach target_ctx is not the active thread-local Z3 context")]
     ContextMismatch,
-    /// The solver capture's residual SMT-LIB2 would not replay, so restoring
-    /// it would drop constraints (angr-vmi2l.94).
+    /// The solver capture's residual would not replay, so restoring it
+    /// would drop constraints (angr-vmi2l.94).
     #[error(transparent)]
     Residual(#[from] crate::symbolic::ResidualParseError),
 }

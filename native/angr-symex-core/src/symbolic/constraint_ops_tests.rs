@@ -31,6 +31,11 @@ use super::*;
 use crate::symbolic::local_constraints::Asserted;
 use z3::ast::Ast;
 
+/// These tests look only at Z3 pointers, so one origin serves every entry.
+fn any_origin() -> Origin {
+    Origin::Assume(RustBV::concrete(1, 1), true)
+}
+
 /// Build a 1-bit `x == value` condition plus the exact `z3::ast::Bool` the
 /// dedup path would key on, and return it together with that Bool's Z3_ast
 /// ptr. Keeping the Bool alive in the caller is what keeps the ptr valid.
@@ -51,11 +56,11 @@ fn test_dedup_backing_of_ptr_sees_live_local_assertion() {
 
     let mut local = ctx.local_constraints.lock();
     assert!(
-        !ctx.seed_and_check_z3_dedup(&mut local, &b, Origin::Z3Only),
+        !ctx.seed_and_check_z3_dedup(&mut local, &b, any_origin()),
         "first sighting of the ptr is a miss, and pushes onto z3_assertions"
     );
     assert!(
-        ctx.seed_and_check_z3_dedup(&mut local, &b, Origin::Z3Only),
+        ctx.seed_and_check_z3_dedup(&mut local, &b, any_origin()),
         "the repeat must be a dedup HIT"
     );
 
@@ -80,12 +85,12 @@ fn test_dedup_backing_of_ptr_sees_frozen_shared_assertion() {
     *ctx.z3_assertions_shared.lock() = Arc::new(vec![Asserted {
         tracker: None,
         z3: b.clone(),
-        origin: Origin::Z3Only,
+        origin: any_origin(),
     }]);
 
     let mut local = ctx.local_constraints.lock();
     assert!(
-        ctx.seed_and_check_z3_dedup(&mut local, &b, Origin::Z3Only),
+        ctx.seed_and_check_z3_dedup(&mut local, &b, any_origin()),
         "seeding walks shared too, so the shared ptr reads as a HIT"
     );
     assert_eq!(
@@ -108,7 +113,7 @@ fn test_dedup_backing_of_ptr_flags_stale_ptr_hit() {
     let (b, ptr) = cond_bool("gmad2_stale_x", 9);
 
     let mut local = ctx.local_constraints.lock();
-    assert!(!ctx.seed_and_check_z3_dedup(&mut local, &b, Origin::Z3Only));
+    assert!(!ctx.seed_and_check_z3_dedup(&mut local, &b, any_origin()));
     assert_eq!(local.z3_assertions.len(), 1);
 
     // Simulate the broken pop(): drop the assertions, keep the seed flag.
@@ -119,7 +124,7 @@ fn test_dedup_backing_of_ptr_flags_stale_ptr_hit() {
     );
 
     assert!(
-        ctx.seed_and_check_z3_dedup(&mut local, &b, Origin::Z3Only),
+        ctx.seed_and_check_z3_dedup(&mut local, &b, any_origin()),
         "the stale set still reports a HIT -- this is the constraint being dropped"
     );
     assert_eq!(
@@ -141,7 +146,7 @@ fn test_dedup_backing_of_ptr_unknown_ptr_is_unbacked() {
     let (_other, other_ptr) = cond_bool("gmad2_unknown_b", 2);
 
     let mut local = ctx.local_constraints.lock();
-    assert!(!ctx.seed_and_check_z3_dedup(&mut local, &asserted, Origin::Z3Only));
+    assert!(!ctx.seed_and_check_z3_dedup(&mut local, &asserted, any_origin()));
 
     assert_eq!(
         ctx.dedup_backing_of_ptr(&local, other_ptr),

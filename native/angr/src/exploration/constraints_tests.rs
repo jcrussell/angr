@@ -436,7 +436,7 @@ fn import_fp_comparison_converts_to_the_assumed_ir() {
 /// fast path and the `RustBvFirst` rescue of an op `claripy_to_rustbv`
 /// declines — go through `claripy_z3_ptr`, so a BV-sorted lowering must come
 /// back `None` there (the rescue then reports `Failed`) rather than reach
-/// `add_constraint_raw` as a mis-sorted Bool.
+/// `add_constraint_lowered` as a mis-sorted Bool.
 #[test]
 fn claripy_z3_ptr_declines_a_bv_sorted_lowering() {
     use clarirs_core::prelude::*;

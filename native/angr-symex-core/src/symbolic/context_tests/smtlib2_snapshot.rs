@@ -4,7 +4,7 @@ use super::*;
 // angr-fs8kb.35: `SymContextSnapshot` moved out of `context.rs` into
 // `context_snapshot.rs`, so `use super::*` (which reaches `context`) no longer
 // brings it in — import it through the `symbolic` re-export instead.
-use crate::symbolic::{ResidualParseError, SymContextSnapshot};
+use crate::symbolic::{LoweredConstraint, ResidualParseError, SymContextSnapshot};
 
 // angr-9o4n.1: Constraint round-trip spike via Z3_solver_to_string /
 // Z3_solver_from_string. Drives whether SMT-LIB2 is the right format for
@@ -766,31 +766,24 @@ fn test_snapshot_assumed_constraints_roundtrip_via_z3() {
     assert_ne!(y_val, 0, "y must be non-zero");
 }
 
-/// angr-82g6: constraints added via `add_constraint_raw` (no RustBV
-/// available, e.g. the Python claripy-sync fallback path) must
-/// survive snapshot round-trip via the `solver_smtlib2` dump.
-/// `assumed_constraint_count` stays unchanged across the trip (the
-/// raw entries never touch the BV log), but `num_constraints` and
-/// solver SAT state are preserved end-to-end.
+/// angr-82g6: constraints added via `add_constraint_lowered` (no assumed
+/// pair, e.g. the Python claripy-sync fallback path) must survive snapshot
+/// round-trip via `residual_terms`. `assumed_constraint_count` stays
+/// unchanged across the trip (the residual entries never touch the BV log),
+/// but `num_constraints` and solver SAT state are preserved end-to-end.
 #[test]
-fn test_snapshot_add_constraint_raw_roundtrip() {
+fn test_snapshot_add_constraint_lowered_roundtrip() {
     let ctx = SymContext::new();
-    // Mix: one assume_true (RustBV-known), one add_constraint_raw
-    // (Z3-only, no RustBV form recorded).
+    // Mix: one assume_true (in the BV log), one add_constraint_lowered
+    // (residual, no assumed pair recorded).
     let x = RustBV::symbol("snap_82g6_x", 32);
     let ten = RustBV::concrete(10, 32);
     let twenty = RustBV::concrete(20, 32);
     ctx.assume_true(&x.ugt(&ten));
 
-    // Raw path: build a Z3 Bool directly and feed it through
-    // add_constraint_raw — mirrors `_add_constraints_to_state`'s
-    // Z3-ptr fast path when claripy_to_rustbv fails to translate.
-    let raw_bool = {
-        let x_z3 = x.to_z3_ast().unwrap();
-        let twenty_z3 = twenty.to_z3_ast().unwrap();
-        x_z3.bvult(&twenty_z3)
-    };
-    ctx.add_constraint_raw(raw_bool);
+    // Residual path: mirrors `_add_constraints_to_state`'s lowered fast
+    // path when claripy_to_rustbv fails to translate.
+    ctx.add_constraint_lowered(LoweredConstraint::of_bit(&x.ult(&twenty)).unwrap());
 
     // Pre-snapshot bookkeeping. `num_constraints` counts both paths;
     // `assumed_constraint_count` only the assume path.
@@ -806,10 +799,10 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
         snap.reassert_assumed,
         "a non-merged context must reconstruct its assume class from IR"
     );
-    assert!(
-        !snap.residual_smtlib2.is_empty(),
-        "snapshot must carry an SMT-LIB2 residual dump when raw constraints \
-         are present"
+    assert_eq!(
+        snap.residual_terms.len(),
+        1,
+        "snapshot must carry the residual constraint as a term"
     );
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -842,18 +835,17 @@ fn test_snapshot_add_constraint_raw_roundtrip() {
     );
 }
 
-/// angr-82g6: backward-compat path — a snapshot deserialized from
-/// JSON that omits `solver_smtlib2` (older payloads) must still
-/// restore via the assumed-replay codepath alone.
+/// angr-82g6: a snapshot deserialized from JSON that omits the residual
+/// must still restore via the assumed-replay codepath alone.
 #[test]
-fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
-    // Legacy JSON shape — a snapshot that omits both residual fields. The
+fn test_snapshot_missing_residual_deserializes_with_default() {
+    // A snapshot that omits the residual and `reassert_assumed`. The
     // serde defaults give an empty residual and `reassert_assumed == true`,
     // so restore falls through to the assume-only replay path.
     let legacy_json = r#"{"assumed_constraints":[]}"#;
     let restored: SymContextSnapshot =
         serde_json::from_str(legacy_json).expect("legacy JSON must parse");
-    assert!(restored.residual_smtlib2.is_empty());
+    assert!(restored.residual_terms.is_empty());
     assert!(restored.reassert_assumed);
 
     let ctx = SymContext::new();
@@ -864,7 +856,7 @@ fn test_snapshot_missing_solver_smtlib2_deserializes_with_default() {
 
 
 // =============================================================================
-// angr-t3l5o Phase 1: two-class (assume-IR + residual-text) round-trip tests.
+// angr-t3l5o Phase 1: two-class (assume-IR + residual) round-trip tests.
 // =============================================================================
 
 /// THE WIN PATH: a pure-`assume` context emits NO SMT-LIB2 residual text —
@@ -891,9 +883,9 @@ fn test_snapshot_pure_assume_residual_empty() {
         snap.reassert_assumed,
         "pure-assume context is reconstructible"
     );
-    assert_eq!(
-        snap.residual_smtlib2, "",
-        "WIN PATH: a pure-assume context must emit NO SMT-LIB2 residual text"
+    assert!(
+        snap.residual_terms.is_empty(),
+        "WIN PATH: a pure-assume context must emit NO residual"
     );
     assert_eq!(snap.assumed_constraints.len(), 3);
 
@@ -941,7 +933,6 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
         1,
         "the bv-eq constraint must live in the residual terms"
     );
-    assert_eq!(snap.residual_smtlib2, "", "and needs no text beside it");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -963,10 +954,10 @@ fn test_snapshot_add_bv_constraint_roundtrip() {
 }
 
 /// A *tracked* constraint with no `RustBV` form must round-trip via the
-/// residual text dump.
+/// residual log.
 ///
 /// Regression (angr-03vl4.74). `add_constraint_tracked_ast`'s raw fast path
-/// asserts through `add_constraint_tracked_indexed` (which only logs into
+/// asserts through `add_constraint_tracked_lowered` (which only logs into
 /// `z3_assertions`) and used to push an assumed entry *only* when
 /// `claripy_to_rustbv` succeeded, with no `else`. An AST the converter cannot
 /// lower — an FP comparison, say — was therefore live on the solver but absent
@@ -983,7 +974,7 @@ fn test_snapshot_tracked_residual_roundtrip() {
     // Exactly what solver.rs's `add_constraint_tracked_ast` fast path does for
     // an AST `claripy_to_rustbv` rejects: assert-and-track, then log residual.
     let constraint = crate::symbolic::LoweredConstraint::of_bit(&x.eq(&target)).unwrap();
-    let idx = ctx.add_constraint_tracked_indexed(constraint.z3().clone());
+    let idx = ctx.add_constraint_tracked_lowered(&constraint);
     ctx.push_residual_assertion(constraint);
     assert_eq!(idx, 0, "first tracked constraint gets tracker index 0");
     assert!(ctx.is_sat());
@@ -1001,7 +992,6 @@ fn test_snapshot_tracked_residual_roundtrip() {
         "the tracked constraint must live in the residual terms — without \
          push_residual_assertion it is in neither log and is lost here"
     );
-    assert_eq!(snap.residual_smtlib2, "");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -1017,8 +1007,8 @@ fn test_snapshot_tracked_residual_roundtrip() {
     );
 }
 
-/// A mixed assume + raw context: the assume class rebuilds from IR, the raw
-/// class from the residual text. Both must be present and binding after
+/// A mixed assume + residual context: the assume class rebuilds from IR, the
+/// residual class from its terms. Both must be present and binding after
 /// restore, with the assume entry alone in the BV-export log.
 #[test]
 fn test_snapshot_mixed_assume_raw_roundtrip() {
@@ -1028,13 +1018,8 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
     let twenty = RustBV::concrete(20, 32);
     // assume: x > 10 (RustBV-known)
     ctx.assume_true(&x.ugt(&ten));
-    // raw: x < 20 (no RustBV form recorded)
-    let raw_bool = {
-        let xz = x.to_z3_ast().unwrap();
-        let tw = twenty.to_z3_ast().unwrap();
-        xz.bvult(&tw)
-    };
-    ctx.add_constraint_raw(raw_bool);
+    // residual: x < 20 (no assumed pair recorded)
+    ctx.add_constraint_lowered(LoweredConstraint::of_bit(&x.ult(&twenty)).unwrap());
 
     let pre_sat = ctx.is_sat();
     let pre_count = ctx.num_constraints();
@@ -1047,9 +1032,10 @@ fn test_snapshot_mixed_assume_raw_roundtrip() {
         1,
         "only the assume entry hits the BV log"
     );
-    assert!(
-        !snap.residual_smtlib2.is_empty(),
-        "the raw entry lives in the residual dump"
+    assert_eq!(
+        snap.residual_terms.len(),
+        1,
+        "the residual entry goes out as a term"
     );
 
     let json = serde_json::to_string(&snap).expect("serialize");
@@ -1109,7 +1095,6 @@ fn test_snapshot_merge_context_roundtrip() {
         3,
         "the two merge guards and the arm disjunction go out as terms"
     );
-    assert_eq!(snap.residual_smtlib2, "");
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
@@ -1142,88 +1127,55 @@ fn test_snapshot_merge_context_roundtrip() {
     );
 }
 
-/// A snapshot with residual text: a raw Z3 Bool is the sink that has no
-/// clarirs term to send instead (a merged context's guards now have one).
-fn text_residual_snapshot(tag: &str) -> SymContextSnapshot {
-    let ctx = SymContext::new();
-    let x = RustBV::symbol(format!("vmi2l94_{tag}_x"), 32);
-    ctx.add_constraint_raw(x.ugt(&RustBV::concrete(5, 32)).to_z3_bool().unwrap());
-    let snap = ctx.to_snapshot();
-    assert!(snap.residual_terms.is_empty() && !snap.residual_smtlib2.is_empty());
-    snap
-}
-
-/// angr-vmi2l.94: a residual Z3 cannot parse fails the restore. Before, the
-/// parse error only latched the context error code, and the restore asserted
-/// the prefix that did parse and reported success.
+/// angr-vmi2l.94: a residual term with no Z3 form fails the restore, and
+/// nothing from the residual is asserted: the valid term ahead of it would
+/// otherwise leave a state restored with fewer constraints than it had.
 #[test]
-fn test_snapshot_malformed_residual_is_rejected() {
-    let mut snap = text_residual_snapshot("malformed");
-    // A valid assertion first, so a prefix replay would have asserted something.
-    snap.residual_smtlib2.push_str("(assert (bvult undeclared_vmi2l94 #x00000001))\n");
-    let err = SymContext::new()
+fn test_snapshot_unlowerable_residual_is_rejected() {
+    use clarirs_core::GLOBAL_CONTEXT;
+    use clarirs_core::prelude::*;
+
+    let ctx = SymContext::new();
+    let x = RustBV::symbol("vmi2l94_residual_x", 32);
+    ctx.add_constraint_lowered(LoweredConstraint::of_bit(&x.ugt(&RustBV::concrete(5, 32))).unwrap());
+    let mut snap = ctx.to_snapshot();
+    assert_eq!(snap.residual_terms.len(), 1);
+
+    let leaf = GLOBAL_CONTEXT.bvs("vmi2l94_residual_vsa", 32).unwrap();
+    let union = GLOBAL_CONTEXT.union([leaf.clone(), leaf]).unwrap();
+    let no_z3_form = RustBV::from_clarirs(union).unwrap().extract(0, 0);
+    snap.residual_terms.push(no_z3_form);
+
+    let restored = SymContext::new();
+    let err = restored
         .restore_from_snapshot(&snap)
-        .expect_err("a residual naming an undeclared symbol must not restore");
+        .expect_err("a residual with no Z3 form must not restore");
     assert!(
-        matches!(err, ResidualParseError::Rejected { .. }),
+        matches!(err, ResidualParseError::Term { index: 1, .. }),
         "unexpected error {err:?}"
     );
-
-    let mut snap = text_residual_snapshot("unbalanced");
-    snap.residual_smtlib2.push_str("(assert (= #x00 ");
-    assert!(matches!(
-        SymContext::new().restore_from_snapshot(&snap),
-        Err(ResidualParseError::Rejected { .. })
-    ));
+    assert_eq!(restored.residual_len(), 0, "the valid term was not asserted");
 }
 
-/// angr-vmi2l.94: a NUL in the residual is an error, not the `CString::new`
-/// unwrap panic inside `z3::Solver::from_string` (an abort under
-/// `panic = "abort"`).
+/// A snapshot's residual restores, each entry with its term.
 #[test]
-fn test_snapshot_residual_with_nul_is_rejected() {
-    let mut snap = text_residual_snapshot("nul");
-    let offset = snap.residual_smtlib2.len();
-    snap.residual_smtlib2.push('\0');
-    assert_eq!(
-        SymContext::new().restore_from_snapshot(&snap),
-        Err(ResidualParseError::InteriorNul { offset })
-    );
-}
-
-/// The well-formed residual still restores through the checked path, and the
-/// bench hook reports the same count.
-#[test]
-fn test_snapshot_wellformed_residual_still_restores() {
-    let snap = text_residual_snapshot("wellformed");
-    let ctx = SymContext::new();
-    ctx.restore_from_snapshot(&snap).expect("restore");
-    assert!(ctx.is_sat());
-    let n = SymContext::bench_parse_smtlib2(&snap.residual_smtlib2).expect("parse");
-    assert!(n > 0, "the raw constraint parses back");
-}
-
-/// angr-az6ru.2: a snapshot sends each residual in exactly one of the two
-/// forms, a term where the sink kept one and text otherwise, and restore
-/// asserts both. The restored entries that came as terms keep them.
-#[test]
-fn test_snapshot_splits_residual_between_terms_and_text() {
+fn test_snapshot_residual_restores_with_terms() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("az6ru2_split_x", 32);
     ctx.add_bv_constraint(&x.extract(7, 0), 0x41);
-    ctx.add_constraint_raw(x.ugt(&RustBV::concrete(0x1000, 32)).to_z3_bool().unwrap());
+    ctx.add_constraint_lowered(LoweredConstraint::of_bit(&x.ugt(&RustBV::concrete(0x1000, 32))).unwrap());
 
     let snap = ctx.to_snapshot();
-    assert_eq!(snap.residual_terms.len(), 1);
-    assert!(!snap.residual_smtlib2.is_empty());
+    assert_eq!(snap.residual_terms.len(), 2);
 
     let json = serde_json::to_string(&snap).expect("serialize");
     let restored: SymContextSnapshot = serde_json::from_str(&json).expect("deserialize");
     let ctx2 = SymContext::new();
     ctx2.restore_from_snapshot(&restored).expect("restore");
     assert_eq!(ctx2.num_constraints(), ctx.num_constraints());
-    assert_eq!(ctx2.residual_term_coverage(), (1, 2));
+    assert_eq!(ctx2.residual_len(), 2);
+    assert!(ctx2.asserted_terms().iter().all(Option::is_some));
     assert!(ctx2.solution(&x, 0x1041));
-    assert!(!ctx2.solution(&x, 0x1042), "the term residual is in force");
-    assert!(!ctx2.solution(&x, 0x41), "the text residual is in force");
+    assert!(!ctx2.solution(&x, 0x1042), "the bv-eq residual is in force");
+    assert!(!ctx2.solution(&x, 0x41), "the lowered residual is in force");
 }

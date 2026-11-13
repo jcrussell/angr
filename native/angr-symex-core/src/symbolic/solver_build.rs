@@ -43,12 +43,12 @@ fn simplify_sample_stride() -> u64 {
 /// angr-1joc: sampled Z3 simplify() check on a freshly-added Bool. Every
 /// Nth call (N = `simplify_sample_stride()`) runs `simplify()` and records
 /// whether the resulting Z3 AST ptr differs from the input. The ticker is
-/// shared across `assume_true`, `assume_false`, and `add_constraint_raw`.
+/// shared across `assume_true`, `assume_false`, and `add_constraint_lowered`.
 ///
 /// Calls `Z3_simplify` directly rather than the z3 crate's `Ast::simplify`,
 /// which `unwrap()`s the result: `Z3_simplify` returns NULL when the context
 /// has an error latched, and a Bool imported from claripy through
-/// `add_constraint_raw` can hit that (repro: the `TestProxyUnsatCore` tests in
+/// `add_constraint_lowered` can hit that (repro: the `TestProxyUnsatCore` tests in
 /// `tests/engines/rust/test_solver_ops.py`, which aborted the whole
 /// interpreter on the unwrap). This is a diagnostic counter — a NULL just
 /// means "no sample", never a crash.

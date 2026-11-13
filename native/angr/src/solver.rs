@@ -13,8 +13,8 @@
 //!   (`add_constraint*` / `eval*` / `min` / `max` / `push` / `pop` / `fork`);
 //! - [`z3_ast_extract`]: claripy-node evaluation (`node_to_eval_bv` /
 //!   `eval_claripy_node`);
-//! - [`claripy_bridge::lower_claripy_bool`](crate::claripy_bridge::lower_claripy_bool):
-//!   the sort-checked claripy → Z3 `Bool` lowering the raw constraint fast
+//! - [`claripy_bridge::lower_claripy_constraint`](crate::claripy_bridge::lower_claripy_constraint):
+//!   the sort-checked claripy → Z3 `Bool` lowering the constraint fast
 //!   paths assert.
 //!
 //! Python-boundary module: `unwrap`/`expect` denied (angr-qwyti.11; panic
@@ -36,7 +36,7 @@ use std::rc::Rc;
 use crate::claripy_bridge::{BridgeError, claripy_to_rustbv, clarirs_node, try_extract_bvv};
 use crate::symbolic::{RustBV, SymContext};
 
-use crate::claripy_bridge::{lower_claripy_bool, lower_claripy_constraint};
+use crate::claripy_bridge::lower_claripy_constraint;
 use z3_ast_extract::node_to_eval_bv;
 
 pub(crate) mod z3_ast_extract;
@@ -188,7 +188,7 @@ impl RustSolverContext {
 
     /// Add a constraint from a claripy AST.
     ///
-    /// A Bool node is lowered straight to Z3 (`lower_claripy_bool`) and
+    /// A Bool node is lowered straight to Z3 (`lower_claripy_constraint`) and
     /// asserted as is; anything else is imported to a RustBV and asserted
     /// as its `!= 0` test.
     pub fn add_constraint_ast(&self, py: Python<'_>, ast: &Bound<'_, PyAny>) -> PyResult<()> {
@@ -196,16 +196,16 @@ impl RustSolverContext {
 
         // Fast path: lower the clarirs Bool node to Z3 directly.
         {
-            // angr-58ks: `add_constraint_raw` takes a `Bool`, so only a
-            // Bool-sorted lowering takes the raw fast path. A non-Bool (e.g.
+            // angr-58ks: a lowered constraint is a `Bool`, so only a
+            // Bool-sorted lowering takes the fast path. A non-Bool (e.g.
             // a BV used as a truthiness constraint) falls through to the slow
             // path below, which lowers it to a proper `!= 0` Bool.
             if let Ok(lowered) = lower_claripy_constraint(ast) {
                 // angr-sqfj8.121: a constraint with a RustBV form must land
-                // in EXACTLY ONE of the residual (`add_constraint_raw`) or
-                // assumed (`add_constraint_raw_assumed` +
+                // in EXACTLY ONE of the residual (`add_constraint_lowered`) or
+                // assumed (`add_constraint_lowered_assumed` +
                 // `assumed_constraints_push`) logs, never both — see
-                // `add_constraint_raw_assumed`'s doc comment for why
+                // `add_constraint_lowered_assumed`'s doc comment for why
                 // double-listing corrupts `unsat_core_assumed`. Mirrors the
                 // already-correct `import_python_constraints` pattern
                 // (`exploration/constraints.rs`): try the RustBV conversion
@@ -254,12 +254,12 @@ impl RustSolverContext {
         {
             let ctx = self.i().ctx();
             let n = asts.len();
-            let mut entries: Vec<(z3::ast::Bool, RustBV, bool)> = Vec::with_capacity(n);
+            let mut entries = Vec::with_capacity(n);
             for ast in asts.iter() {
                 // angr-58ks: a non-Bool AST cannot go through the raw batch
-                // (`add_constraints_raw_batch` takes a `Bool`); drop to the
+                // (a lowered constraint is a `Bool`); drop to the
                 // per-constraint slow path, which lowers it correctly.
-                let Ok(ptr) = lower_claripy_bool(&ast) else {
+                let Ok(ptr) = lower_claripy_constraint(&ast) else {
                     break;
                 };
                 let bv = match claripy_to_rustbv(py, &ast, &ctx) {
@@ -287,7 +287,7 @@ impl RustSolverContext {
     /// Add a constraint with unsat-core tracking enabled.
     ///
     /// Mirrors `add_constraint_ast` but routes through
-    /// `SymContext::add_constraint_tracked_indexed`, which uses
+    /// `SymContext::add_constraint_tracked_lowered`, which uses
     /// `solver.assert_and_track` so the constraint participates in
     /// `solver.get_unsat_core()`. The index of the constraint within the
     /// per-context tracker vector is returned and is what
@@ -312,7 +312,7 @@ impl RustSolverContext {
             // a no-op error handler -- fails *silently*: no panic, no abort,
             // just a constraint that never actually gets asserted while this
             // function still returns Ok(idx) as if tracking succeeded.
-            // `lower_claripy_bool` refuses a non-Bool lowering, which falls
+            // `lower_claripy_constraint` refuses a non-Bool lowering, which falls
             // through to the slow path below.
             if let Ok(constraint) = lower_claripy_constraint(ast) {
                 let idx = ctx.add_constraint_tracked_lowered(&constraint);
@@ -320,7 +320,7 @@ impl RustSolverContext {
                 // `add_constraint_ast` upholds above — a constraint that is
                 // live on the solver must be recorded in the assumed log or
                 // the residual log, because every reconstruction path
-                // (`to_snapshot`'s `dump_non_bv_smtlib2`, `unsat_core_assumed`,
+                // (`to_snapshot`'s `residual_for_snapshot`, `unsat_core_assumed`,
                 // `_export_state_constraints`) rebuilds from those two logs and
                 // never from `z3_assertions`. This branch used to have no
                 // `else`, so an AST `claripy_to_rustbv` cannot lower (an FP

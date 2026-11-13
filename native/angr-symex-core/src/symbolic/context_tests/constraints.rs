@@ -1,6 +1,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::LoweredConstraint;
 
 /// Serializes every test that delta-asserts the process-global
 /// `ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT` — *and* every test that deliberately
@@ -250,27 +251,27 @@ fn test_add_constraint_sibling_isolation() {
 }
 
 /// angr-v5a5 slice 4c.2: helper mirrors `batch_entry` for the
-/// single-shot `add_constraint_raw` path: a width-1 RustBV's Z3 Bool.
-fn raw_entry(cond: &RustBV) -> z3::ast::Bool {
+/// single-shot `add_constraint_lowered` path: a width-1 RustBV's Z3 Bool.
+fn raw_entry(cond: &RustBV) -> LoweredConstraint {
     debug_assert_eq!(cond.width(), 1);
-    cond.to_z3_bool().unwrap()
+    LoweredConstraint::of_bit(cond).unwrap()
 }
 
-/// angr-v5a5 slice 4c.2: with no lineage attached, `add_constraint_raw`
+/// angr-v5a5 slice 4c.2: with no lineage attached, `add_constraint_lowered`
 /// must hit the per-context Z3 solver and leave `scope_path` empty —
 /// byte-identical behavior to the pre-slice
 /// `self.with_z3_solver(|s| s.assert(&c))` call. Mirrors
 /// `test_add_constraint_none_branch_no_scope_path` for the raw path.
 #[test]
-fn test_add_constraint_raw_none_branch_no_scope_path() {
+fn test_add_constraint_lowered_none_branch_no_scope_path() {
     let ctx = SymContext::new();
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbol("test_add_constraint_raw_none_x", 8);
+    let x = RustBV::symbol("test_add_constraint_lowered_none_x", 8);
     let five = RustBV::concrete(5, 8);
     let ast = raw_entry(&x.eq(&five));
-    ctx.add_constraint_raw(ast);
+    ctx.add_constraint_lowered(ast);
 
     // None branch must not touch scope_path.
     assert_eq!(
@@ -284,14 +285,14 @@ fn test_add_constraint_raw_none_branch_no_scope_path() {
     assert!(!ctx.solution(&x, 6));
 }
 
-/// angr-v5a5 slice 4c.2: with a lineage attached, `add_constraint_raw`
+/// angr-v5a5 slice 4c.2: with a lineage attached, `add_constraint_lowered`
 /// mints a fresh `ScopeFrame`, appends it to `scope_path`, and routes
 /// the assert through the shared solver's switch_to — same shape as
 /// `test_add_constraint_some_branch_appends_scope_frame` for the raw
-/// path. The `constraint.clone()` inside `add_constraint_raw` is a
+/// path. The `constraint.clone()` inside `add_constraint_lowered` is a
 /// ref-bump on the Z3 AST originally wrapped from the raw pointer.
 #[test]
-fn test_add_constraint_raw_some_branch_appends_scope_frame() {
+fn test_add_constraint_lowered_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
@@ -300,16 +301,16 @@ fn test_add_constraint_raw_some_branch_appends_scope_frame() {
 
     assert_eq!(ctx.scope_path_len(), 0);
 
-    let x = RustBV::symbol("test_add_constraint_raw_some_x", 8);
+    let x = RustBV::symbol("test_add_constraint_lowered_some_x", 8);
     let five = RustBV::concrete(5, 8);
     let ast = raw_entry(&x.eq(&five));
-    ctx.add_constraint_raw(ast);
+    ctx.add_constraint_lowered(ast);
 
     // Some branch must mint exactly one frame on scope_path.
     assert_eq!(
         ctx.scope_path_len(),
         1,
-        "Some branch must mint one scope frame per add_constraint_raw"
+        "Some branch must mint one scope frame per add_constraint_lowered"
     );
 
     // The frame must have been pushed onto the shared solver — its
@@ -322,11 +323,11 @@ fn test_add_constraint_raw_some_branch_appends_scope_frame() {
 }
 
 /// angr-v5a5 slice 4c.2: sibling isolation invariant for the raw path
-/// — the constraint minted by sibling A's `add_constraint_raw` must
+/// — the constraint minted by sibling A's `add_constraint_lowered` must
 /// NOT be visible when sibling B issues a query through the same
 /// shared lineage solver. Mirrors `test_add_constraint_sibling_isolation`.
 #[test]
-fn test_add_constraint_raw_sibling_isolation() {
+fn test_add_constraint_lowered_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
 
     let sibling_a = SymContext::new();
@@ -336,16 +337,16 @@ fn test_add_constraint_raw_sibling_isolation() {
     sibling_b.set_lineage_for_testing(Arc::clone(&lin));
 
     // Sibling A adds x == 5 via the raw path.
-    let x_a = RustBV::symbol("test_add_constraint_raw_sibling_x", 8);
+    let x_a = RustBV::symbol("test_add_constraint_lowered_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
     let ast = raw_entry(&x_a.eq(&five));
-    sibling_a.add_constraint_raw(ast);
+    sibling_a.add_constraint_lowered(ast);
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
 
     // Sibling B references the same named symbol but is unconstrained
     // — switch_to to B's empty scope_path must pop A's frame first.
-    let x_b = RustBV::symbol("test_add_constraint_raw_sibling_x", 8);
+    let x_b = RustBV::symbol("test_add_constraint_lowered_sibling_x", 8);
     assert!(sibling_b.solution(&x_b, 42));
     assert!(sibling_b.solution(&x_b, 99));
 
@@ -354,11 +355,11 @@ fn test_add_constraint_raw_sibling_isolation() {
     assert!(!sibling_a.solution(&x_a, 42));
 }
 
-/// angr-sfp9: a second `add_constraint_raw` with the SAME Z3_ast ptr
+/// angr-sfp9: a second `add_constraint_lowered` with the SAME Z3_ast ptr
 /// must hit the dedup side-table — z3_assertions stays at 1 entry, the
 /// per-call hit counter increments, and the constraint stays in force.
 #[test]
-fn test_add_constraint_raw_dedup_repeat_skips_push() {
+fn test_add_constraint_lowered_dedup_repeat_skips_push() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_dedup_repeat_x", 8);
     let five = RustBV::concrete(5, 8);
@@ -371,9 +372,9 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 
     // Three calls with the same Z3_ast — dedup must catch reps 2 and 3.
     // `clone` produces independent handles pointing at the same AST.
-    ctx.add_constraint_raw(ast.clone());
-    ctx.add_constraint_raw(ast.clone());
-    ctx.add_constraint_raw(ast);
+    ctx.add_constraint_lowered(ast.clone());
+    ctx.add_constraint_lowered(ast.clone());
+    ctx.add_constraint_lowered(ast);
 
     // Only one entry should land in local.z3_assertions despite three
     // calls — the side-table catches reps 2 and 3.
@@ -395,7 +396,7 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 }
 
 /// angr-mwbp: when `dedup_set` is already seeded (here by a prior
-/// `add_constraint_raw`), a repeat `assume_true` with the SAME 1-bit
+/// `add_constraint_lowered`), a repeat `assume_true` with the SAME 1-bit
 /// RustBV cond hits the side-table — `z3_assertions` stays at the same
 /// length, `assumed` still grows (Python-visible duplicates preserved
 /// for claripy `solver.add(c)` semantics), and the constraint stays
@@ -403,8 +404,8 @@ fn test_add_constraint_raw_dedup_repeat_skips_push() {
 ///
 /// Note: `assume_true` does NOT trigger seeding by itself (would impose
 /// an O(N) regression on branch-heavy benches without
-/// `add_constraint_raw` traffic — see `check_z3_dedup_if_seeded`). The
-/// `add_constraint_raw` call below provides the seed.
+/// `add_constraint_lowered` traffic — see `check_z3_dedup_if_seeded`). The
+/// `add_constraint_lowered` call below provides the seed.
 #[test]
 fn test_assume_true_dedup_repeat_skips_assert() {
     let ctx = SymContext::new();
@@ -412,10 +413,10 @@ fn test_assume_true_dedup_repeat_skips_assert() {
     let five = RustBV::concrete(5, 8);
     let cond = x.eq(&five);
 
-    // Seed the dedup_set via a distinct add_constraint_raw assertion.
+    // Seed the dedup_set via a distinct add_constraint_lowered assertion.
     let y = RustBV::symbol("test_assume_true_dedup_y", 8);
     let ten = RustBV::concrete(10, 8);
-    ctx.add_constraint_raw(raw_entry(&y.eq(&ten)));
+    ctx.add_constraint_lowered(raw_entry(&y.eq(&ten)));
     assert!(ctx.local_constraints.lock().dedup_set_seeded);
 
     ctx.assume_true(&cond);
@@ -453,10 +454,10 @@ fn test_assume_false_dedup_repeat_skips_assert() {
     let five = RustBV::concrete(5, 8);
     let cond = x.eq(&five);
 
-    // Seed the dedup_set via a distinct add_constraint_raw assertion.
+    // Seed the dedup_set via a distinct add_constraint_lowered assertion.
     let y = RustBV::symbol("test_assume_false_dedup_y", 8);
     let ten = RustBV::concrete(10, 8);
-    ctx.add_constraint_raw(raw_entry(&y.eq(&ten)));
+    ctx.add_constraint_lowered(raw_entry(&y.eq(&ten)));
 
     ctx.assume_false(&cond);
     ctx.assume_false(&cond);
@@ -473,7 +474,7 @@ fn test_assume_false_dedup_repeat_skips_assert() {
     assert!(ctx.solution(&x, 6));
 }
 
-/// angr-mwbp: with no prior `add_constraint_raw` to seed the side-table,
+/// angr-mwbp: with no prior `add_constraint_lowered` to seed the side-table,
 /// `assume_true` must NOT trigger seeding by itself — fresh contexts
 /// stay unseeded and fall through to the legacy push-only behavior.
 /// This is the bench-safety contract for `check_z3_dedup_if_seeded`.
@@ -503,10 +504,10 @@ fn test_assume_true_no_self_seeding_under_fresh_context() {
 }
 
 /// angr-sfp9: a ptr already present in shared (post-fork) must be
-/// caught by the lazy seed on first `add_constraint_raw` call in the
+/// caught by the lazy seed on first `add_constraint_lowered` call in the
 /// child — verifies the seed walks `z3_assertions_shared`.
 #[test]
-fn test_add_constraint_raw_dedup_seeds_from_shared() {
+fn test_add_constraint_lowered_dedup_seeds_from_shared() {
     let parent = SymContext::new();
     let x = RustBV::symbol("test_dedup_shared_x", 8);
     let five = RustBV::concrete(5, 8);
@@ -514,7 +515,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
     // Take a second ref for the child call below before the parent
     // consumes its handle.
     let ast_for_child = ast.clone();
-    parent.add_constraint_raw(ast);
+    parent.add_constraint_lowered(ast);
     // Fork the parent; child's frozen_shared should contain the
     // assertion, and child's local.dedup_set is unseeded.
     let child = parent.fork();
@@ -523,7 +524,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
-    child.add_constraint_raw(ast_for_child);
+    child.add_constraint_lowered(ast_for_child);
     // Seeded from shared; the ptr was already there, so this call is
     // a dedup hit. Child's local.z3_assertions stays empty.
     {
@@ -542,7 +543,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
 }
 
 /// angr-v5a5 slice 4c.2b: with no lineage attached,
-/// `add_constraint_tracked_indexed` must hit the per-context Z3 solver
+/// `add_constraint_tracked_lowered` must hit the per-context Z3 solver
 /// via `assert_and_track` — byte-identical behavior to the pre-slice
 /// `self.with_z3_solver(|s| s.assert_and_track(...))` call. The
 /// tracker registers in `constraint_trackers` and the returned index
@@ -550,7 +551,7 @@ fn test_add_constraint_raw_dedup_seeds_from_shared() {
 /// `test_add_constraint_none_branch_no_scope_path` plus an explicit
 /// unsat-core fidelity check.
 #[test]
-fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
+fn test_add_constraint_tracked_lowered_none_branch_no_scope_path() {
     let ctx = SymContext::new();
     assert!(ctx.lineage_arc().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
@@ -560,8 +561,8 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     let ten = RustBV::concrete(10, 8);
 
     // Tracked constraint 1: x == 5.
-    let c1 = x.eq(&five).to_z3_bool().unwrap();
-    let idx1 = ctx.add_constraint_tracked_indexed(c1);
+    let c1 = raw_entry(&x.eq(&five));
+    let idx1 = ctx.add_constraint_tracked_lowered(&c1);
     assert_eq!(idx1, 0, "first tracker registered at index 0");
 
     // None branch must not touch scope_path.
@@ -576,8 +577,8 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
     assert!(!ctx.solution(&x, 6));
 
     // Tracked constraint 2: x == 10 (deliberately UNSAT against c1).
-    let c2 = x.eq(&ten).to_z3_bool().unwrap();
-    let idx2 = ctx.add_constraint_tracked_indexed(c2);
+    let c2 = raw_entry(&x.eq(&ten));
+    let idx2 = ctx.add_constraint_tracked_lowered(&c2);
     assert_eq!(idx2, 1, "second tracker registered at index 1");
 
     // Both trackers should appear in the unsat core — full fidelity
@@ -599,20 +600,20 @@ fn test_add_constraint_tracked_indexed_none_branch_no_scope_path() {
 fn test_fork_keeps_tracked_constraints_in_unsat_core() {
     let parent = SymContext::new();
     let x = RustBV::symbol("test_fork_tracked_x", 8);
-    let c1 = x.eq(&RustBV::concrete(1, 8)).to_z3_bool().unwrap();
-    assert_eq!(parent.add_constraint_tracked_indexed(c1), 0);
+    let c1 = raw_entry(&x.eq(&RustBV::concrete(1, 8)));
+    assert_eq!(parent.add_constraint_tracked_lowered(&c1), 0);
 
     let child = parent.fork();
-    let c2 = x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap();
-    assert_eq!(child.add_constraint_tracked_indexed(c2), 1);
+    let c2 = raw_entry(&x.eq(&RustBV::concrete(2, 8)));
+    assert_eq!(child.add_constraint_tracked_lowered(&c2), 1);
     assert!(!child.is_sat());
     let mut core = child.unsat_core();
     core.sort_unstable();
     assert_eq!(core, vec![0, 1]);
 
     let untracked = parent.fork();
-    let c3 = x.eq(&RustBV::concrete(3, 8)).to_z3_bool().unwrap();
-    untracked.add_constraint_raw(c3);
+    let c3 = raw_entry(&x.eq(&RustBV::concrete(3, 8)));
+    untracked.add_constraint_lowered(c3);
     assert!(!untracked.is_sat());
     assert_eq!(untracked.unsat_core(), vec![0]);
 }
@@ -631,13 +632,13 @@ fn test_adds_to_a_fork_leave_its_solver_unbuilt() {
     child.assume_true(&x.ugt(&RustBV::concrete(5, 8)));
     child.assume_false(&x.eq(&RustBV::concrete(6, 8)));
     child.add_bv_constraint(&y, 3);
-    let raw = x.ne(&RustBV::concrete(7, 8)).to_z3_bool().unwrap();
-    child.add_constraint_raw(raw);
-    let tracked = x.ne(&RustBV::concrete(8, 8)).to_z3_bool().unwrap();
-    child.add_constraint_tracked_indexed(tracked);
+    let raw = raw_entry(&x.ne(&RustBV::concrete(7, 8)));
+    child.add_constraint_lowered(raw);
+    let tracked = raw_entry(&x.ne(&RustBV::concrete(8, 8)));
+    child.add_constraint_tracked_lowered(&tracked);
     let batched = x.ne(&RustBV::concrete(0, 8));
-    child.add_constraints_raw_batch(vec![(batched.to_z3_bool().unwrap(), batched, true)]);
-    child.add_constraint(x.ne(&RustBV::concrete(1, 8)).to_z3_bool().unwrap());
+    child.add_constraints_raw_batch(vec![(raw_entry(&batched), batched, true)]);
+    child.add_constraint_lowered(raw_entry(&x.ne(&RustBV::concrete(1, 8))));
     assert!(!child.has_built_solver(), "an add built the solver");
 
     // 5 < x < 10 without 6, 7 and 8 leaves 9.
@@ -678,10 +679,10 @@ fn test_evicted_solver_is_rebuilt_from_the_list() {
     assert!(ctx.solution(&x, 7));
     assert_eq!(ctx.z3_assertion_count(), 1);
 
-    let c1 = x.eq(&RustBV::concrete(1, 8)).to_z3_bool().unwrap();
-    let c2 = x.eq(&RustBV::concrete(2, 8)).to_z3_bool().unwrap();
-    let first = ctx.add_constraint_tracked_indexed(c1);
-    let second = ctx.add_constraint_tracked_indexed(c2);
+    let c1 = raw_entry(&x.eq(&RustBV::concrete(1, 8)));
+    let c2 = raw_entry(&x.eq(&RustBV::concrete(2, 8)));
+    let first = ctx.add_constraint_tracked_lowered(&c1);
+    let second = ctx.add_constraint_tracked_lowered(&c2);
     assert!(!ctx.is_sat());
     ctx.evict_solver_for_test();
     let mut core = ctx.unsat_core();
@@ -730,14 +731,14 @@ fn test_solver_cache_entry_follows_its_context() {
 }
 
 /// angr-v5a5 slice 4c.2b: with a lineage attached,
-/// `add_constraint_tracked_indexed` mints a fresh `ScopeFrame`,
+/// `add_constraint_tracked_lowered` mints a fresh `ScopeFrame`,
 /// appends it to `scope_path`, and routes the assert through the
 /// shared solver's `switch_to` — same shape as 4c.1/4c.2's Some-branch
 /// tests. The tracker registers in `constraint_trackers` (so the
 /// returned index is stable) but `switch_to` uses plain `assert`,
 /// so unsat-core fidelity is intentionally deferred here.
 #[test]
-fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
+fn test_add_constraint_tracked_lowered_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
@@ -748,8 +749,8 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
 
     let x = RustBV::symbol("test_act_indexed_some_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x.eq(&five).to_z3_bool().unwrap();
-    let idx = ctx.add_constraint_tracked_indexed(constraint);
+    let constraint = raw_entry(&x.eq(&five));
+    let idx = ctx.add_constraint_tracked_lowered(&constraint);
     assert_eq!(
         idx, 0,
         "tracker index 0 expected even with lineage installed"
@@ -759,7 +760,7 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
     assert_eq!(
         ctx.scope_path_len(),
         1,
-        "Some branch must mint one scope frame per add_constraint_tracked_indexed"
+        "Some branch must mint one scope frame per add_constraint_tracked_lowered"
     );
 
     // The frame must have been pushed onto the shared solver — its
@@ -773,11 +774,11 @@ fn test_add_constraint_tracked_indexed_some_branch_appends_scope_frame() {
 
 /// angr-v5a5 slice 4c.2b: sibling isolation invariant for the
 /// tracked-indexed path — the constraint minted by sibling A's
-/// `add_constraint_tracked_indexed` must NOT be visible when sibling
+/// `add_constraint_tracked_lowered` must NOT be visible when sibling
 /// B issues a query through the same shared lineage solver. Mirrors
 /// `test_add_constraint_sibling_isolation` for the tracked variant.
 #[test]
-fn test_add_constraint_tracked_indexed_sibling_isolation() {
+fn test_add_constraint_tracked_lowered_sibling_isolation() {
     use super::super::lineage::SharedLineageSolver;
 
     let sibling_a = SymContext::new();
@@ -789,8 +790,8 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     // Sibling A adds tracked x == 5.
     let x_a = RustBV::symbol("test_act_indexed_sibling_x", 8);
     let five = RustBV::concrete(5, 8);
-    let constraint = x_a.eq(&five).to_z3_bool().unwrap();
-    let _ = sibling_a.add_constraint_tracked_indexed(constraint);
+    let constraint = raw_entry(&x_a.eq(&five));
+    let _ = sibling_a.add_constraint_tracked_lowered(&constraint);
     assert_eq!(sibling_a.scope_path_len(), 1);
     assert_eq!(sibling_b.scope_path_len(), 0);
 
@@ -805,7 +806,7 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
     assert!(!sibling_a.solution(&x_a, 42));
 }
 
-/// angr-sqfj8.101 regression: `add_constraint_tracked_indexed` on a freshly
+/// angr-sqfj8.101 regression: `add_constraint_tracked_lowered` on a freshly
 /// `fork()`ed child (whose solver is lazily `None`, per `snapshot_fork_ops.rs`
 /// setting `solver: Mutex::new(None)`) must not corrupt `unsat_core()`.
 ///
@@ -823,7 +824,7 @@ fn test_add_constraint_tracked_indexed_sibling_isolation() {
 /// on a forked child (forcing the cold-start path) and checks both tracker
 /// indices survive in the core.
 #[test]
-fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
+fn test_add_constraint_tracked_lowered_first_op_on_forked_child_unsat_core() {
     let parent = SymContext::new();
     let child = parent.fork();
 
@@ -833,12 +834,12 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
 
     // First Z3-touching call on `child` — its solver is still `None`,
     // forcing `install_constraint`'s cold-start replay path.
-    let c1 = x.eq(&five).to_z3_bool().unwrap();
-    let idx1 = child.add_constraint_tracked_indexed(c1);
+    let c1 = raw_entry(&x.eq(&five));
+    let idx1 = child.add_constraint_tracked_lowered(&c1);
     assert_eq!(idx1, 0);
 
-    let c2 = x.eq(&ten).to_z3_bool().unwrap();
-    let idx2 = child.add_constraint_tracked_indexed(c2);
+    let c2 = raw_entry(&x.eq(&ten));
+    let idx2 = child.add_constraint_tracked_lowered(&c2);
     assert_eq!(idx2, 1);
 
     assert!(!child.is_sat(), "x == 5 ∧ x == 10 must be UNSAT");
@@ -855,17 +856,17 @@ fn test_add_constraint_tracked_indexed_first_op_on_forked_child_unsat_core() {
 /// both — `unsat_core_assumed` asserts residual entries UNCONDITIONALLY
 /// (see its doc comment), so a double-listed constraint sits outside its
 /// assumption literal and corrupts the on-demand core. `solver.rs`'s
-/// `add_constraint_ast` fast path used to call `add_constraint_raw`
+/// `add_constraint_ast` fast path used to call `add_constraint_lowered`
 /// (residual) *and* unconditionally `assumed_constraints_push` (assumed)
 /// for the same constraint; the fix branches so exactly one of
-/// `add_constraint_raw_assumed` (skips the residual log, per its own doc
-/// comment) or `add_constraint_raw` runs. This pins the exclusivity
-/// invariant the fix depends on: the `add_constraint_raw_assumed` +
+/// `add_constraint_lowered_assumed` (skips the residual log, per its own doc
+/// comment) or `add_constraint_lowered` runs. This pins the exclusivity
+/// invariant the fix depends on: the `add_constraint_lowered_assumed` +
 /// `assumed_constraints_push` pair the fixed code now calls must NOT touch
-/// `non_bv_assertions`, in contrast to plain `add_constraint_raw`, which
+/// `non_bv_assertions`, in contrast to plain `add_constraint_lowered`, which
 /// does (that's the whole point of the `_assumed` variant existing).
 #[test]
-fn test_add_constraint_raw_assumed_skips_residual_log() {
+fn test_add_constraint_lowered_assumed_skips_residual_log() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_araa_x", 8);
     let five = RustBV::concrete(5, 8);
@@ -873,7 +874,7 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
 
     // The pair `add_constraint_ast`'s fixed fast path calls when the
     // RustBV conversion succeeds.
-    ctx.add_constraint_raw_assumed(raw_entry(&cond));
+    ctx.add_constraint_lowered_assumed(raw_entry(&cond));
     ctx.assumed_constraints_push(cond.clone(), true);
 
     {
@@ -881,7 +882,7 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
         assert_eq!(
             local.non_bv_assertions.len(),
             0,
-            "add_constraint_raw_assumed must not populate the residual log — \
+            "add_constraint_lowered_assumed must not populate the residual log — \
              a constraint with a RustBV form belongs in `assumed` only"
         );
         assert_eq!(local.assumed.len(), 1);
@@ -890,17 +891,17 @@ fn test_add_constraint_raw_assumed_skips_residual_log() {
     assert!(ctx.solution(&x, 5));
     assert!(!ctx.solution(&x, 6));
 
-    // Contrast: plain `add_constraint_raw` (the residual sink) DOES push to
+    // Contrast: plain `add_constraint_lowered` (the residual sink) DOES push to
     // `non_bv_assertions` — proving the assertion above is discriminating
     // and not just an artifact of an always-empty field.
     let ctx2 = SymContext::new();
     let y = RustBV::symbol("test_araa_y", 8);
     let five2 = RustBV::concrete(5, 8);
-    ctx2.add_constraint_raw(raw_entry(&y.eq(&five2)));
+    ctx2.add_constraint_lowered(raw_entry(&y.eq(&five2)));
     assert_eq!(
         ctx2.local_constraints.lock().non_bv_assertions.len(),
         1,
-        "add_constraint_raw is the residual sink and must log here"
+        "add_constraint_lowered is the residual sink and must log here"
     );
 }
 
@@ -962,7 +963,7 @@ fn test_unsat_core_assumed_check_is_counted() {
 
 /// angr-op0dn.14.2: a constraint imported from Python lands in BOTH constraint
 /// lists — `_add_constraints_to_state`'s Z3-ptr fast path calls
-/// `add_constraint_raw` (which logs it as a residual `non_bv_assertion`) and
+/// `add_constraint_lowered` (which logs it as a residual `non_bv_assertion`) and
 /// then pushes an `assumed` pair for the same constraint. `unsat_core_assumed`
 /// must guard such a constraint by its assumption literal ONLY: asserting the
 /// residual copy unguarded as well pins it outside the literals, so an
@@ -982,7 +983,7 @@ fn test_unsat_core_assumed_ignores_residual_copy_of_assumed_constraint() {
         } else {
             x.ult(&rhs)
         };
-        ctx.add_constraint_raw(guard.to_z3_bool().unwrap());
+        ctx.add_constraint_lowered(raw_entry(&guard));
         ctx.assumed_constraints_push(guard, true);
     }
 
@@ -1079,7 +1080,7 @@ fn test_fork_preserves_num_constraints_after_add_bv_constraint() {
     );
 }
 
-/// angr-ph300.47: the residual `add_constraint_raw`-without-pair path also
+/// angr-ph300.47: the residual `add_constraint_lowered`-without-pair path also
 /// bumps `constraint_count` with no `assumed` entry. Fork must carry that count
 /// to the child exactly.
 #[test]
@@ -1087,7 +1088,7 @@ fn test_fork_preserves_num_constraints_after_raw_constraint() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_fork_raw_count_x", 8);
     let five = RustBV::concrete(5, 8);
-    ctx.add_constraint_raw(raw_entry(&x.eq(&five)));
+    ctx.add_constraint_lowered(raw_entry(&x.eq(&five)));
     let parent_count = ctx.num_constraints();
     assert_eq!(parent_count, 1);
 
@@ -1187,7 +1188,7 @@ fn test_fork_under_bare_push_leaves_parent_poppable() {
 }
 
 /// angr-5mnx3.43: `add_constraints_raw_batch` must not push/assert/count every
-/// entry unconditionally (angr-sfp9). It must dedup exactly like `add_constraint_raw`,
+/// entry unconditionally (angr-sfp9). It must dedup exactly like `add_constraint_lowered`,
 /// both against constraints added by an earlier call AND against repeats
 /// inside the same batch.
 ///
@@ -1208,7 +1209,7 @@ fn test_add_constraints_raw_batch_dedups_repeats() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     // Pre-seed the dedup set with `lt_ten` via the single-shot path.
-    ctx.add_constraint_raw(raw_entry(&lt_ten));
+    ctx.add_constraint_lowered(raw_entry(&lt_ten));
     let after_first = ctx.num_constraints();
     let hits_before = ADD_CONSTRAINT_RAW_DEDUP_HIT_COUNT.load(Ordering::Relaxed);
 
@@ -1267,7 +1268,7 @@ fn test_add_constraints_raw_batch_all_dups_is_noop() {
     let _serial = DEDUP_HIT_COUNTER_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    ctx.add_constraint_raw(raw_entry(&cond));
+    ctx.add_constraint_lowered(raw_entry(&cond));
     let before = ctx.num_constraints();
 
     ctx.add_constraints_raw_batch(vec![(raw_entry(&cond), cond.clone(), true)]);
@@ -1336,9 +1337,9 @@ fn test_add_in_a_nested_scope_leaves_the_branch_scope_open() {
     assert!(ctx.solution(&x, 6));
 }
 
-/// angr-az6ru.2: a residual sink handed a `LoweredConstraint` keeps the
-/// clarirs term beside the Z3 one, the term lowers back to the very Bool that
-/// was asserted, and `fork` carries it. A raw Z3 Bool has no term to keep.
+/// angr-az6ru.2: a residual sink keeps the clarirs term beside the Z3 one,
+/// the term lowers back to the very Bool that was asserted, and `fork`
+/// carries it.
 #[test]
 fn test_residual_keeps_clarirs_term() {
     use crate::symbolic::LoweredConstraint;
@@ -1349,14 +1350,14 @@ fn test_residual_keeps_clarirs_term() {
     let constraint = LoweredConstraint::of_bit(&x.eq(&RustBV::concrete(5, 8))).unwrap();
     let asserted = constraint.z3().clone();
     ctx.add_constraint_lowered(constraint);
-    assert_eq!(ctx.residual_term_coverage(), (1, 1));
+    assert_eq!(ctx.residual_len(), 1);
     {
         let local = ctx.local_constraints.lock();
         let entry = &local.non_bv_assertions[0];
         assert_eq!(entry.z3, asserted);
-        let term = entry.term.as_ref().expect("the lowered sink keeps its term");
+        let term = entry.origin.term().expect("the lowered sink keeps its term");
         assert_eq!(
-            lower_bool(term).unwrap(),
+            lower_bool(&term).unwrap(),
             entry.z3,
             "the kept term must lower to the Bool on the solver"
         );
@@ -1364,23 +1365,17 @@ fn test_residual_keeps_clarirs_term() {
     assert!(ctx.solution(&x, 5));
     assert!(!ctx.solution(&x, 6));
 
-    ctx.add_constraint_raw(raw_entry(&x.ne(&RustBV::concrete(9, 8))));
-    assert_eq!(
-        ctx.residual_term_coverage(),
-        (1, 2),
-        "a raw Z3 Bool is logged without a term"
-    );
+    ctx.add_constraint_lowered(raw_entry(&x.ne(&RustBV::concrete(9, 8))));
+    assert_eq!(ctx.residual_len(), 2);
 
     let child = ctx.fork();
-    assert_eq!(
-        child.residual_term_coverage(),
-        (1, 2),
-        "fork freezes the residual log with its terms"
-    );
+    assert_eq!(child.residual_len(), 2, "fork freezes the residual log");
+    assert_eq!(child.to_snapshot().residual_terms.len(), 2);
 }
 
-/// angr-az6ru.2: `add_bv_constraint` (address concretization) records
-/// `bv == value` as a clarirs term equivalent to the Z3 equality it asserts.
+/// angr-az6ru.2: `add_bv_constraint` (address concretization) logs the pair
+/// it was given. The pair lowers to the Z3 equality the sink asserts, and its
+/// clarirs term is equivalent to it.
 #[test]
 fn test_add_bv_constraint_records_equivalent_term() {
     use crate::symbolic::z3_lower::lower_bool;
@@ -1388,14 +1383,26 @@ fn test_add_bv_constraint_records_equivalent_term() {
     let ctx = SymContext::new();
     let x = RustBV::symbol("test_bv_constraint_term_x", 32);
     ctx.add_bv_constraint(&x, 0x2000);
-    assert_eq!(ctx.residual_term_coverage(), (1, 1));
+    assert_eq!(ctx.residual_len(), 1);
 
     let (asserted, relowered) = {
         let local = ctx.local_constraints.lock();
         let entry = &local.non_bv_assertions[0];
-        let term = entry.term.as_ref().expect("bv == value has a clarirs form");
-        (entry.z3.clone(), lower_bool(term).unwrap())
+        let term = entry.origin.term().expect("bv == value has a clarirs form");
+        (entry.z3.clone(), lower_bool(&term).unwrap())
     };
+    {
+        use z3::ast::Ast;
+        let direct = x
+            .to_z3_ast()
+            .unwrap()
+            .eq(z3::ast::BV::from_u64(0x2000, 32));
+        assert_eq!(
+            asserted.get_z3_ast(),
+            direct.get_z3_ast(),
+            "the solver holds `bv == const` as the sink has always built it"
+        );
+    }
     let differ = z3::Solver::new();
     differ.assert(asserted.iff(&relowered).not());
     assert_eq!(
@@ -1403,26 +1410,34 @@ fn test_add_bv_constraint_records_equivalent_term() {
         z3::SatResult::Unsat,
         "the term and the asserted Bool must agree on every model"
     );
+    assert_eq!(assert_log_rebuilds_from_origins(&ctx), 1);
 }
 
-/// Every entry of `ctx`'s assertion log has a clarirs term, and the term
-/// lowers to a Bool equivalent to the one on the solver. Returns how many
-/// entries lowered to the very same Z3 node.
-fn assert_asserted_terms_rebuild_the_log(ctx: &SymContext) -> (usize, usize) {
+/// Every entry of `ctx`'s assertion log can be rebuilt without the Z3 term
+/// it stores: its origin lowers to the very node on the solver, and its
+/// clarirs term lowers to a Bool equivalent to that node. Returns the number
+/// of entries.
+fn assert_log_rebuilds_from_origins(ctx: &SymContext) -> usize {
     use crate::symbolic::z3_lower::lower_bool;
+    use z3::ast::Ast;
 
     let shared = Arc::clone(&ctx.z3_assertions_shared.lock());
     let local = ctx.local_constraints.lock();
-    let mut same_node = 0;
     let mut total = 0;
     for entry in shared.iter().chain(local.z3_assertions.iter()) {
         total += 1;
+        let rebuilt = entry.origin.lower().unwrap();
+        assert_eq!(
+            rebuilt.get_z3_ast(),
+            entry.z3.get_z3_ast(),
+            "origin of {} lowers to another node, {rebuilt}",
+            entry.z3
+        );
         let term = entry
             .term()
             .unwrap_or_else(|| panic!("entry {} has no clarirs term", entry.z3));
         let relowered = lower_bool(&term).unwrap();
         if relowered == entry.z3 {
-            same_node += 1;
             continue;
         }
         let differ = z3::Solver::new();
@@ -1434,13 +1449,13 @@ fn assert_asserted_terms_rebuild_the_log(ctx: &SymContext) -> (usize, usize) {
             entry.z3
         );
     }
-    (same_node, total)
+    total
 }
 
 /// angr-az6ru.2: the assume class is rebuilt from its `(cond, polarity)`
 /// origin, in both polarities and across a fork, and lowers to the same Z3
-/// node the solver holds, so deriving the Z3 log from terms changes nothing
-/// the solver sees.
+/// node the solver holds, so deriving the Z3 log from origins changes
+/// nothing the solver sees.
 #[test]
 fn test_assume_origin_rebuilds_the_same_z3_node() {
     let ctx = SymContext::new();
@@ -1451,14 +1466,14 @@ fn test_assume_origin_rebuilds_the_same_z3_node() {
     child.assume_false(&x.ult(&RustBV::concrete(5, 32)));
     child.assume_true(&x.extract(0, 0));
 
-    assert_eq!(assert_asserted_terms_rebuild_the_log(&child), (4, 4));
+    assert_eq!(assert_log_rebuilds_from_origins(&child), 4);
     assert_eq!(child.asserted_terms().len(), 4);
     assert!(child.asserted_terms().iter().all(Option::is_some));
 }
 
-/// angr-az6ru.2: every sink that holds a clarirs form logs it: the lowered
-/// raw sink, its assumed variant, the tracked adder, the batch and
-/// `add_bv_constraint`. A raw Z3 Bool is the one entry without a term.
+/// angr-az6ru.2: every sink logs a form the constraint can be rebuilt from:
+/// the lowered sink, its assumed variant, the tracked adder, the batch and
+/// `add_bv_constraint`.
 #[test]
 fn test_term_keeping_sinks_log_their_terms() {
     use crate::symbolic::LoweredConstraint;
@@ -1471,19 +1486,15 @@ fn test_term_keeping_sinks_log_their_terms() {
     ctx.add_constraint_tracked_lowered(&LoweredConstraint::of_bit(&c(3)).unwrap());
     ctx.add_constraints_raw_batch(vec![(raw_entry(&c(4)), c(4), true)]);
     ctx.add_bv_constraint(&x.extract(7, 0), 0x41);
-    let (_, total) = assert_asserted_terms_rebuild_the_log(&ctx);
-    assert_eq!(total, 5);
-
-    ctx.add_constraint_raw(raw_entry(&c(6)));
+    assert_eq!(assert_log_rebuilds_from_origins(&ctx), 5);
     let terms = ctx.asserted_terms();
-    assert_eq!(terms.len(), 6);
-    assert!(terms[5].is_none(), "a raw Z3 Bool has no term to log");
-    assert!(terms[..5].iter().all(Option::is_some));
+    assert_eq!(terms.len(), 5);
+    assert!(terms.iter().all(Option::is_some));
 }
 
-/// angr-az6ru.2: `merge` logs its guards and the arm disjunction with
-/// clarirs terms equivalent to the Z3 guards, on the shared-prefix path and
-/// on the full-guard fallback.
+/// angr-az6ru.2: `merge` logs its guards and the arm disjunction as clarirs
+/// terms, on the shared-prefix path and on the full-guard fallback, and the
+/// merged solver holds each arm's constraints under its condition.
 #[test]
 fn test_merge_guards_carry_terms() {
     let base = SymContext::new();
@@ -1500,9 +1511,15 @@ fn test_merge_guards_carry_terms() {
 
     let merged = arm_a.merge(&[&arm_b], &flags);
     // The prefix once, one guard per arm, and the arm disjunction.
-    let (_, total) = assert_asserted_terms_rebuild_the_log(&merged);
-    assert_eq!(total, 4);
-    assert_eq!(merged.residual_term_coverage(), (4, 4));
+    assert_eq!(assert_log_rebuilds_from_origins(&merged), 4);
+    assert_eq!(merged.residual_len(), 4);
+    assert!(!merged.solution(&x, 100), "the prefix holds on every arm");
+    assert!(merged.solution(&x, 101));
+    assert!(merged.solution(&x, 300));
+    merged.assume_true(&flags[0]);
+    merged.assume_false(&flags[1]);
+    assert!(merged.solution(&x, 249));
+    assert!(!merged.solution(&x, 250), "arm a's guard holds under its flag");
 
     // No common frozen prefix: every constraint of every arm is guarded.
     let lone_a = SymContext::new();
@@ -1510,14 +1527,13 @@ fn test_merge_guards_carry_terms() {
     let lone_b = SymContext::new();
     lone_b.assume_true(&x.ult(&RustBV::concrete(9, 32)));
     let merged = lone_a.merge(&[&lone_b], &flags);
-    let (_, total) = assert_asserted_terms_rebuild_the_log(&merged);
-    assert_eq!(total, 3);
+    assert_eq!(assert_log_rebuilds_from_origins(&merged), 3);
 }
 
 /// angr-az6ru.2: a constraint log copied from one context is asserted on
 /// another with its origins, so the receiver can rebuild every entry from
-/// clarirs and a snapshot of it needs no SMT-LIB2 text. Importing the same
-/// log twice adds nothing.
+/// clarirs and a snapshot of it carries them all as terms. Importing the
+/// same log twice adds nothing.
 #[test]
 fn test_constraint_log_copies_constraints_with_their_terms() {
     let source = SymContext::new();
@@ -1533,15 +1549,67 @@ fn test_constraint_log_copies_constraints_with_their_terms() {
     let target = SymContext::new();
     assert!(target.export_constraint_log().is_empty());
     target.import_constraint_log(&log);
-    assert_eq!(assert_asserted_terms_rebuild_the_log(&target), (3, 3));
-    assert_eq!(target.residual_term_coverage(), (3, 3));
+    assert_eq!(assert_log_rebuilds_from_origins(&target), 3);
+    assert_eq!(target.residual_len(), 3);
     assert!(target.solution(&x, 11));
     assert!(!target.solution(&x, 12), "the low bit is pinned to 1");
     assert!(!target.solution(&x, 21));
     let snap = target.to_snapshot();
     assert_eq!(snap.residual_terms.len(), 3);
-    assert_eq!(snap.residual_smtlib2, "");
 
     target.import_constraint_log(&log);
     assert_eq!(target.asserted_len(), 3, "a repeated import is deduplicated");
+}
+
+/// A 1-bit value the lowering refuses (a VSA union has no Z3 form).
+fn bit_without_z3_form(name: &str) -> RustBV {
+    use clarirs_core::GLOBAL_CONTEXT;
+    use clarirs_core::prelude::*;
+
+    let leaf = GLOBAL_CONTEXT.bvs(name, 32).unwrap();
+    let union = GLOBAL_CONTEXT.union([leaf.clone(), leaf]).unwrap();
+    let bit = RustBV::from_clarirs(union).unwrap().extract(0, 0);
+    assert!(bit.to_z3_bool().is_err());
+    bit
+}
+
+/// angr-mx00p.116.2, angr-az6ru.2: a merge condition with no Z3 form is
+/// stood in for by a fresh Bool, so its arm's constraints are optional and
+/// never forced, the other arm still binds under its own condition, and
+/// every merged constraint still has a clarirs form a snapshot can carry.
+#[test]
+fn test_merge_condition_without_z3_form_leaves_its_arm_optional() {
+    let x = RustBV::symbol("test_merge_unlowerable_x", 32);
+    let arm_a = SymContext::new();
+    arm_a.assume_true(&x.ult(&RustBV::concrete(10, 32)));
+    let arm_b = SymContext::new();
+    arm_b.assume_true(&x.ugt(&RustBV::concrete(100, 32)));
+    let flag_b = RustBV::symbol("test_merge_unlowerable_fb", 1);
+    let flags = [bit_without_z3_form("test_merge_unlowerable_fa"), flag_b.clone()];
+
+    let merged = arm_a.merge(&[&arm_b], &flags);
+    // One guard per arm and the arm disjunction, each rebuilt from clarirs.
+    assert_eq!(assert_log_rebuilds_from_origins(&merged), 3);
+    assert!(merged.solution(&x, 5), "arm a is admissible");
+    assert!(merged.solution(&x, 200), "arm b is admissible");
+    assert!(
+        !merged.solution(&x, 50),
+        "one arm is active, and neither admits 50"
+    );
+
+    let snap = merged.to_snapshot();
+    assert_eq!(snap.residual_terms.len(), 3);
+    let json = serde_json::to_string(&snap).expect("serialize");
+    let snap: crate::symbolic::SymContextSnapshot =
+        serde_json::from_str(&json).expect("deserialize");
+    let restored = SymContext::new();
+    restored.restore_from_snapshot(&snap).expect("restore");
+    assert!(restored.solution(&x, 5));
+    assert!(!restored.solution(&x, 50));
+    restored.assume_false(&flag_b);
+    assert!(restored.solution(&x, 5));
+    assert!(
+        !restored.solution(&x, 200),
+        "without flag b the stand-in holds, and with it arm a's constraint"
+    );
 }

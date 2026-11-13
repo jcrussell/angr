@@ -1034,20 +1034,6 @@ class TestConstraintLogImport:
         assert len(mgr._rust_mgr.export_constraint_log(sid)) == 1
         assert mgr._rust_mgr.add_constraints_to_state_checked(sid, [z != 0x4242]) is False
 
-    def test_import_keeps_the_constraints_rebuildable(self, fauxware_project):
-        """A copied constraint keeps its clarirs form: the copy adds nothing to
-        the count of constraints logged with a Z3 term only."""
-        from angr import claripy
-
-        proj = fauxware_project
-        mgr = RustExplorationManager(proj, [proj.factory.entry_state()])
-        sid = next(iter(mgr._rust_mgr.get_state_ids("active")))
-        log = _donor_constraint_log(proj, claripy.BVS("w_az6ru2", 32) == 9)
-
-        before = mgr.stats["asserted_without_term"]
-        assert mgr._rust_mgr.import_constraint_log(sid, log) is True
-        assert mgr.stats["asserted_without_term"] == before
-
 
 class TestConstraintImportCheckedVariants:
     """angr-zoav9: the constraint-import calls have lenient and checked forms.
@@ -1406,11 +1392,11 @@ class TestSnapshotRoundTrip:
 
         # angr-82g6: `state_constraint_count` (the
         # `SymContext::num_constraints` counter) now round-trips because
-        # the snapshot captures the full Z3 solver as SMT-LIB2 and
-        # restore replays every assertion through `add_constraint_raw`.
-        # The `assumed_constraints` BV log is restored separately via
-        # `assumed_constraints_push` (no second solver assert), so the
-        # two captures don't double-count. Pre-82g6, the raw-path
+        # the snapshot carries the constraints with no assumed pair as
+        # residual terms and restore replays them through
+        # `add_constraint_lowered`; the `assumed_constraints` pairs are
+        # re-asserted from the BV log, so the two classes don't
+        # double-count. Pre-82g6, the raw-path
         # constraints from the Python claripy sync layer were dropped —
         # see `snapshot-add-constraint-raw-not-tracked` for the old gap.
         assert post_active_constraint_counts == pre_active_constraint_counts, (

@@ -10,6 +10,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::LoweredConstraint;
 // The instrumentation-counter tests below (`test_record_*_counters`) call
 // `stats.rs` directly; the explicit import names what they depend on rather
 // than leaning on `context`'s `use super::stats::*` glob (angr-c7xno.99).
@@ -89,13 +90,9 @@ fn test_z3_same_name_different_create() {
 
     // Check using x2 - should have the same constraint if same variable
     // If they're different variables, x2 wouldn't have the constraint
-    let ast2 = x2.to_z3_ast().unwrap();
-
     // Try to find if x2 can be 5 (should be UNSAT if same as x1)
     ctx.push();
-    let five = z3::ast::BV::from_u64(5, 32);
-    let eq_five = ast2.eq(&five);
-    ctx.add_constraint(eq_five);
+    ctx.add_bv_constraint(&x2, 5);
     let can_be_five = ctx.is_sat();
     ctx.pop();
 
@@ -239,12 +236,12 @@ fn test_min_max_no_cached_model_still_correct() {
     assert_eq!(ctx.max(&x, false), Some(199));
 }
 
-/// Helper: build a `(Bool, RustBV, bool)` tuple from a width-1 cond for use
-/// with `add_constraints_raw_batch`. Mirrors what the
+/// Helper: build a `(constraint, RustBV, bool)` tuple from a width-1 cond for
+/// use with `add_constraints_raw_batch`. Mirrors what the
 /// `RustSolverContext::add_constraints_ast` fast path does with claripy ASTs.
-fn batch_entry(cond: &RustBV) -> (z3::ast::Bool, RustBV, bool) {
+fn batch_entry(cond: &RustBV) -> (LoweredConstraint, RustBV, bool) {
     debug_assert_eq!(cond.width(), 1);
-    (cond.to_z3_bool().unwrap(), cond.clone(), true)
+    (LoweredConstraint::of_bit(cond).unwrap(), cond.clone(), true)
 }
 
 #[test]

@@ -2,9 +2,9 @@
 //!
 //! Slice 9 of the `symbolic/context.rs` split (angr-a2br.2.7). These are the
 //! Z3-backed constraint-addition paths: the public mutators
-//! (`add_constraint`, `add_constraint_raw`, `add_constraints_raw_batch`,
-//! `add_constraint_tracked_indexed`, `add_bv_constraint`, `assume_true`,
-//! `assume_false`) plus their private helpers — the ptr-keyed dedup pair
+//! (`add_constraint_lowered`, `add_constraint_lowered_assumed`,
+//! `add_constraints_raw_batch`, `add_constraint_tracked_lowered`,
+//! `add_bv_constraint`, `assume_true`, `assume_false`) plus their private helpers — the ptr-keyed dedup pair
 //! (`seed_and_check_z3_dedup` / `check_z3_dedup_if_seeded`) and the
 //! model-cache invalidators (`invalidate_model_if_inconsistent` and its
 //! batch variant).
@@ -22,7 +22,7 @@ use super::RustBV;
 use super::SymContext;
 use super::ToZ3;
 
-use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin, bool_term};
+use super::local_constraints::{LocalConstraints, LoweredConstraint, Origin};
 use super::model_cache::ModelRef;
 use super::solver_build::*;
 use super::stats::*;
@@ -41,7 +41,7 @@ impl SymContext {
     ///
     /// Caller holds `local` (the `local_constraints` lock guard inner) and
     /// is responsible for any SCANNED/HIT counter bookkeeping — this helper
-    /// stays counter-agnostic so each call site (`add_constraint_raw`,
+    /// stays counter-agnostic so each call site (`add_constraint_lowered`,
     /// `assume_true`, `assume_false`) attributes hits to its own counter
     /// pair (angr-mwbp).
     fn seed_and_check_z3_dedup(
@@ -97,13 +97,13 @@ impl SymContext {
     /// falls through to the legacy [`LocalConstraints::push_assertion`]
     /// behavior (push to z3_assertions, conditionally track in dedup_set if
     /// seeded) and returns `false` so callers fall through to
-    /// [`Self::add_constraint`].
+    /// `install_constraint`.
     ///
     /// Used by `assume_true`/`assume_false` (angr-mwbp): seeding from these
     /// sites would walk `shared + local z3_assertions` on every fresh
     /// context's first call, an O(N) regression on branch-heavy benches
-    /// without `add_constraint_raw` traffic. Piggy-backing on an existing
-    /// seed (most commonly placed by `add_constraint_raw` in the bridge)
+    /// without `add_constraint_lowered` traffic. Piggy-backing on an existing
+    /// seed (most commonly placed by `add_constraint_lowered` in the bridge)
     /// gets the dedup benefit when it's free and avoids cost otherwise.
     fn check_z3_dedup_if_seeded(
         &self,
@@ -113,7 +113,7 @@ impl SymContext {
     ) -> bool {
         if !local.dedup_set_seeded {
             // No seed yet — match the legacy push_assertion behavior and
-            // let the caller fall through to add_constraint.
+            // let the caller fall through to install_constraint.
             local.log_asserted(constraint.clone(), origin);
             return false;
         }
@@ -190,12 +190,24 @@ impl SymContext {
     /// solver (angr-az6ru.2).
     /// The `Some` (shared-lineage) path mints a fresh
     /// [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
-    /// pushes it onto `scope_path`, and calls
-    /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to); see
-    /// [`Self::add_constraint`] for why the `Some` branch can't route
-    /// through `with_z3_solver`'s closure form. Shared by
-    /// [`Self::add_constraint_raw`], [`Self::add_constraint`], and
-    /// [`Self::add_constraint_tracked_indexed`].
+    /// appends it to `self.scope_path`, and calls
+    /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to) to push
+    /// the new frame onto the shared solver. The constraint lands in its own
+    /// scope, visible only to states whose `scope_path` includes this frame's
+    /// id, which keeps siblings isolated (angr-v5a5 slice 4c.1).
+    ///
+    /// Why the `Some` path does not use `with_z3_solver`: that switches the
+    /// shared solver to the caller's *current* `scope_path` and then asserts
+    /// at scope `scope_path.len()`. For a freshly forked state with an empty
+    /// `scope_path` that is scope 0, the lineage base, so the constraint
+    /// would leak to every sibling. Mint-frame-then-switch keeps the assert
+    /// inside a fresh push that only this state holds in its `scope_path`.
+    ///
+    /// The frame's `is_true` is always `true`: the callers have already
+    /// negated the Z3 Bool they pass, and `switch_to` reads only
+    /// `z3_assertion`.
+    ///
+    /// Shared by every adder in this file.
     pub(super) fn install_constraint(&self, constraint: &z3::ast::Bool) {
         let lineage = self.lineage.lock().as_ref().map(Arc::clone);
         match lineage {
@@ -216,29 +228,20 @@ impl SymContext {
         self.invalidate_model_if_inconsistent(constraint);
     }
 
-    /// Add a constraint from an already-lowered Z3 Bool (shared context fast
-    /// path).
+    /// Add a constraint a caller lowered from a clarirs Bool it still holds
+    /// (the Python-origin sinks, a snapshot's residual terms).
     ///
-    /// This bypasses the RustBV → build_z3_ast_cached() conversion, preserving
-    /// the original Z3 AST structure from Python's claripy/z3 backend. The
-    /// sort is carried by the type: a caller holding a lowered
-    /// [`z3::ast::Dynamic`] reaches here only through its checked `as_bool`.
-    ///
-    /// The wrapped constraint is deduped against the ptr-keyed side table and,
-    /// on a miss, installed via `install_constraint`, which dispatches
-    /// on `self.lineage` (angr-v5a5 slice 4c.2; mirrors the pattern landed in
-    /// slice 4c.1 for [`Self::add_constraint`]).
+    /// The Z3 form is the caller's lowering, so the structure Python's
+    /// claripy built is what the solver sees. The constraint is deduped
+    /// against the side table and, on a miss, installed via
+    /// `install_constraint`, which dispatches on `self.lineage` (angr-v5a5
+    /// slice 4c.2).
     ///
     /// A non-dup constraint is also pushed to the residual log
-    /// (`non_bv_assertions`) so it can be round-tripped without a RustBV form;
-    /// [`Self::add_constraint_raw_assumed`] is the variant that skips that.
-    pub fn add_constraint_raw(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, Origin::Z3Only, true);
-    }
-
-    /// [`Self::add_constraint_raw`] for a caller that still holds the clarirs
-    /// term the Z3 Bool was lowered from: the residual entry keeps the term,
-    /// so the constraint can be rebuilt without Z3 (angr-az6ru.2).
+    /// (`non_bv_assertions`), since it has no `assumed` pair to be rebuilt
+    /// from; [`Self::add_constraint_lowered_assumed`] is the variant that
+    /// skips that. The entry keeps the term, so the constraint can be rebuilt
+    /// without Z3 (angr-az6ru.2).
     pub fn add_constraint_lowered(&self, constraint: LoweredConstraint) {
         let (term, z3) = constraint.into_parts();
         self.add_constraint_raw_inner(z3, Origin::Term(term), true);
@@ -254,15 +257,9 @@ impl SymContext {
         }
     }
 
-    /// [`Self::add_constraint_raw_assumed`] for a caller that still holds the
-    /// clarirs term: the assertion-log entry keeps it.
-    pub fn add_constraint_lowered_assumed(&self, constraint: LoweredConstraint) {
-        let (term, z3) = constraint.into_parts();
-        self.add_constraint_raw_inner(z3, Origin::Term(term), false);
-    }
-
-    /// `add_constraint_raw` for a caller that records an `assumed` pair for the
-    /// same constraint (`_add_constraints_to_state`'s Z3-ptr fast path).
+    /// [`Self::add_constraint_lowered`] for a caller that records an `assumed`
+    /// pair for the same constraint (`_add_constraints_to_state`'s lowered
+    /// fast path).
     ///
     /// Skips the residual log: the residual sink exists so constraints with no
     /// RustBV form can still be round-tripped, and this one HAS a RustBV form.
@@ -271,19 +268,20 @@ impl SymContext {
     /// claripy AST to blame) — a constraint sitting in both lists would be
     /// pinned outside its assumption literal, and an all-Python contradiction
     /// would come back Unsat with an EMPTY core (angr-op0dn.14.2).
-    pub fn add_constraint_raw_assumed(&self, ast: z3::ast::Bool) {
-        self.add_constraint_raw_inner(ast, Origin::Z3Only, false);
+    pub fn add_constraint_lowered_assumed(&self, constraint: LoweredConstraint) {
+        let (term, z3) = constraint.into_parts();
+        self.add_constraint_raw_inner(z3, Origin::Term(term), false);
     }
 
     /// Record an *already-logged* constraint in the residual log.
     ///
-    /// The `add_constraint_raw*` pair write both logs; this is the residual
+    /// [`Self::add_constraint_lowered`] writes both logs; this is the residual
     /// half on its own, for a caller that put the constraint in the
     /// assertion log by some other route — today only
-    /// [`Self::add_constraint_tracked_indexed`], whose entry carries a
-    /// tracker and so cannot reuse `add_constraint_raw`.
+    /// [`Self::add_constraint_tracked_lowered`], whose entry carries a
+    /// tracker and so cannot reuse `add_constraint_lowered`.
     ///
-    /// Same "exactly one log" contract as [`Self::add_constraint_raw_assumed`],
+    /// Same "exactly one log" contract as [`Self::add_constraint_lowered_assumed`],
     /// from the other side: call this only for a constraint with NO RustBV
     /// form (nothing to reconstruct it from in the assumed log). See that
     /// method's doc comment for why double-listing corrupts
@@ -294,18 +292,17 @@ impl SymContext {
     /// invariant `to_snapshot`'s `debug_assert!` pair checks.
     pub fn push_residual_assertion(&self, constraint: LoweredConstraint) {
         let (term, z3) = constraint.into_parts();
-        self.local_constraints.lock().push_residual(z3, Some(term));
+        self.local_constraints
+            .lock()
+            .push_residual(z3, Origin::Term(term));
     }
 
-    /// How many residual entries this context holds, and how many of them
-    /// carry a clarirs term: `(with_term, total)`.
-    pub fn residual_term_coverage(&self) -> (usize, usize) {
-        let shared = Arc::clone(&self.non_bv_assertions_shared.lock());
-        let local = self.local_constraints.lock();
-        let entries = shared.iter().chain(local.non_bv_assertions.iter());
-        entries.fold((0, 0), |(with_term, total), r| {
-            (with_term + usize::from(r.term.is_some()), total + 1)
-        })
+    /// How many entries the residual log holds, shared prefix and local
+    /// additions together.
+    pub fn residual_len(&self) -> usize {
+        // overflow-ok: two live `Vec::len`s; their sum cannot near `usize::MAX`.
+        self.non_bv_assertions_shared.lock().len()
+            + self.local_constraints.lock().non_bv_assertions.len()
     }
 
     fn add_constraint_raw_inner(
@@ -327,19 +324,18 @@ impl SymContext {
         ADD_CONSTRAINT_RAW_DEDUP_SCANNED_COUNT.fetch_add(1, Ordering::Relaxed);
         let was_dup = {
             let mut local = self.local_constraints.lock();
-            let term = if log_residual { origin.term() } else { None };
-            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint, origin);
+            let dup = self.seed_and_check_z3_dedup(&mut local, &constraint, origin.clone());
             if !dup && log_residual {
                 // angr-t3l5o Phase 1: residual sink #1. This no-RustBV
                 // constraint (Python claripy-sync fallback / a constraint
                 // log copied from another state) has no `assumed` entry to
                 // reconstruct it from,
                 // so record it in the residual log to round-trip via
-                // `residual_smtlib2`. Only on the non-dup path — a dup is
+                // `residual_terms`. Only on the non-dup path — a dup is
                 // already counted on its first add. `seed_and_check_z3_dedup`
                 // pushed the same Bool to `z3_assertions` just above, so the
                 // residual log stays a subset of `z3_assertions`.
-                local.push_residual(constraint.clone(), term);
+                local.push_residual(constraint.clone(), origin);
             }
             dup
         };
@@ -354,66 +350,19 @@ impl SymContext {
         self.install_constraint(&constraint);
     }
 
-    /// Add a constraint (fast path: no tracking overhead).
-    ///
-    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.1):
-    ///
-    /// - **None** (today's only production path): logs the constraint; the
-    ///   context's solver takes it at the next query.
-    /// - **Some** (shared-lineage): mints a fresh
-    ///   [`ScopeFrame`](super::lineage::ScopeFrame) carrying the constraint,
-    ///   appends it to `self.scope_path`, and calls
-    ///   [`SharedLineageSolver::switch_to`](super::lineage::SharedLineageSolver::switch_to)
-    ///   to push the new frame onto the shared solver. The constraint
-    ///   lands in its own scope, visible only to states whose
-    ///   `scope_path` includes this frame's id — preserving per-state
-    ///   isolation across siblings.
-    ///
-    /// Why not just use `with_z3_solver` in the Some path: `with_z3_solver`
-    /// switches the shared solver to the caller's *current* `scope_path`
-    /// and then runs `solver.assert(&c)`. That puts `c` at scope
-    /// `scope_path.len()` (the most-recently-pushed level). For a freshly
-    /// forked state with empty `scope_path`, that scope is 0 — the
-    /// lineage base — so the constraint would leak to every sibling
-    /// instead of being state-private. Mint-frame-then-switch keeps the
-    /// assert inside a fresh push that only this state holds in its
-    /// `scope_path`.
-    ///
-    /// The `is_true` field on the new frame is set to `true` because
-    /// callers (`assume_true`/`assume_false`) have already done the
-    /// negation in the Z3 Bool passed in. The flag is metadata for
-    /// [`switch_to`](super::lineage::SharedLineageSolver::switch_to) — it
-    /// only reads `z3_assertion`, so the flag doesn't affect Z3 semantics.
-    pub fn add_constraint(&self, constraint: z3::ast::Bool) {
-        // Use plain assert for fast path (no unsat_core tracking overhead).
-        // This avoids creating tracking booleans, string formatting, and
-        // mutex acquisition on constraint_trackers for every constraint.
-        // NOTE: Don't cache here — callers (assume_true, assume_false,
-        // add_constraint_raw) cache before calling this to avoid double-cache.
-        self.close_branch_scope_before_permanent_add();
-        // Logged as a residual with no term: a caller that has the clarirs
-        // form uses `add_constraint_lowered`.
-        {
-            let mut local = self.local_constraints.lock();
-            local.push_assertion(constraint.clone(), Origin::Z3Only);
-            local.push_residual(constraint.clone(), None);
-        }
-        self.install_constraint(&constraint);
-    }
-
     /// Install a constraint the caller has already put in the assertion log,
     /// without closing the branch scope.
     fn add_constraint_unscoped(&self, constraint: z3::ast::Bool) {
         self.install_constraint(&constraint);
     }
 
-    /// Batched fast path for `add_constraint_raw`: asserts N constraints under
-    /// one `local_constraints` lock, one solver/lineage transition, and one
-    /// model invalidation pass. Each `(z3_ast, bv, is_true)` tuple
-    /// corresponds to the per-constraint metadata that the single-shot path
-    /// stores in `local_constraints.{z3_assertions, assumed}`.
+    /// Batched [`Self::add_constraint_lowered_assumed`]: asserts N constraints
+    /// under one `local_constraints` lock, one solver/lineage transition, and
+    /// one model invalidation pass. Each `(constraint, bv, is_true)` tuple is
+    /// the lowered constraint the solver takes and the `assumed` pair that
+    /// stands for it in the export log.
     ///
-    /// Entries are deduped exactly as [`Self::add_constraint_raw`] dedupes
+    /// Entries are deduped exactly as [`Self::add_constraint_lowered`] dedupes
     /// its single constraint — via `seed_and_check_z3_dedup` (private, so no
     /// intra-doc link from this public method), which
     /// also covers duplicates *within* one batch since each miss inserts its
@@ -423,10 +372,8 @@ impl SymContext {
     /// `ADD_CONSTRAINT_RAW_*` counters are bumped in bulk so batch traffic
     /// shows up in `get_solver_stats` alongside the single-shot path.
     ///
-    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2c; mirrors the
-    /// pattern landed in slice 4c.1 for [`Self::add_constraint`], slice 4c.2
-    /// for [`Self::add_constraint_raw`], and slice 4c.2b for
-    /// [`Self::add_constraint_tracked_indexed`]):
+    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2c; the batch form
+    /// of `install_constraint`):
     ///
     /// - **None** (today's only production path): logs all N constraints;
     ///   the context's solver takes them at the next query.
@@ -439,35 +386,32 @@ impl SymContext {
     ///   once. `switch_to`'s tail walks the divergent suffix (here, the N
     ///   new frames) and asserts each one under the shared solver — N
     ///   ref-bumps but only a single round-trip through the lineage Mutex.
-    ///   Cheaper than N separate `add_constraint_raw` calls would be
+    ///   Cheaper than N separate `add_constraint_lowered` calls would be
     ///   (each of those is one lock + one switch_to call).
     ///
-    /// Why not just route through `with_z3_solver` in the Some branch: same
-    /// rationale as [`Self::add_constraint`] — `with_z3_solver`'s Some path
-    /// switches to the caller's *current* `scope_path` and then asserts at
-    /// scope_path.len() (the most-recently-pushed level). For a freshly
-    /// forked state with empty `scope_path`, that is scope 0 = the lineage
-    /// base, so the N constraints would leak to all siblings. Mint-N-frames-
-    /// then-switch keeps every constraint inside its own fresh push that
-    /// only this state holds in its `scope_path`.
-    pub fn add_constraints_raw_batch(&self, entries: Vec<(z3::ast::Bool, RustBV, bool)>) {
+    /// Why not route through `with_z3_solver` in the Some branch: see
+    /// `install_constraint`.
+    pub fn add_constraints_raw_batch(&self, entries: Vec<(LoweredConstraint, RustBV, bool)>) {
         if entries.is_empty() {
             return;
         }
         self.close_branch_scope_before_permanent_add();
-        let (constraints, assumed): (Vec<z3::ast::Bool>, Vec<(RustBV, bool)>) = entries
-            .into_iter()
-            .map(|(ast, bv, is_true)| (ast, (bv, is_true)))
-            .unzip();
-        // Each entry's pair is also its assertion-log origin.
-        let origins: Vec<Origin> = assumed
-            .iter()
-            .map(|(bv, is_true)| Origin::Assume(bv.clone(), *is_true))
-            .collect();
+        // Each entry's assertion-log origin is the term it was lowered from,
+        // as on the single-shot path, so the log rebuilds the Z3 form the
+        // caller asserted.
+        let mut constraints = Vec::with_capacity(entries.len());
+        let mut origins = Vec::with_capacity(entries.len());
+        let mut assumed = Vec::with_capacity(entries.len());
+        for (constraint, bv, is_true) in entries {
+            let (term, z3) = constraint.into_parts();
+            constraints.push(z3);
+            origins.push(Origin::Term(term));
+            assumed.push((bv, is_true));
+        }
         // The ptr-keyed dedup on the batch path (angr-sfp9, angr-5mnx3.43):
         // without it this API would push/assert/count every entry unconditionally, so a
         // constraint already asserted (a duplicate inside this very batch,
-        // or one added by an earlier `add_constraint_raw`) grew
+        // or one added by an earlier `add_constraint_lowered`) grew
         // `z3_assertions`, inflated `constraint_count`, and — under shared
         // lineage — minted a spurious `ScopeFrame`. Filter first, under the
         // same single `local_constraints` lock, so the solver/lineage
@@ -574,9 +518,8 @@ impl SymContext {
     /// the index that will appear in [`Self::unsat_core`] output if the
     /// constraint participates in the unsat core.
     ///
-    /// Dispatches on `self.lineage` (angr-v5a5 slice 4c.2b; mirrors the
-    /// pattern landed in slice 4c.1 for [`Self::add_constraint`] and slice
-    /// 4c.2 for [`Self::add_constraint_raw`]):
+    /// The log entry keeps the clarirs term the caller lowered. Dispatches on
+    /// `self.lineage` (angr-v5a5 slice 4c.2b):
     ///
     /// - **None** (today's only production path): logs the constraint with
     ///   its tracker, and the context's solver asserts it with
@@ -594,15 +537,8 @@ impl SymContext {
     ///   unsat-core fidelity is intentionally deferred: switch_to would
     ///   need an `assert_and_track`-aware variant (and a tracker field on
     ///   `ScopeFrame`) to re-register the tracker on every state load.
-    ///   See `add_constraint`'s rationale for why the Some branch can't
-    ///   route through `with_z3_solver`'s closure form (it would land
-    ///   the assert at scope 0 = the lineage base = sibling leak).
-    pub fn add_constraint_tracked_indexed(&self, constraint: z3::ast::Bool) -> usize {
-        self.add_constraint_tracked_inner(constraint, Origin::Z3Only)
-    }
-
-    /// [`Self::add_constraint_tracked_indexed`] for a caller that still holds
-    /// the clarirs term: the assertion-log entry keeps it.
+    ///   See `install_constraint` for why the Some branch can't
+    ///   route through `with_z3_solver`'s closure form.
     pub fn add_constraint_tracked_lowered(&self, constraint: &LoweredConstraint) -> usize {
         self.add_constraint_tracked_inner(
             constraint.z3().clone(),
@@ -673,26 +609,19 @@ impl SymContext {
         // Falls through to add False constraint (UNSAT). A term with no Z3
         // form cannot reach the solver: the constraint is dropped with a warn,
         // as `assume` drops one (angr-mx00p.116.2).
-        let Some(ast) = super::lowered_or_warn(bv.to_z3_ast(), "add_bv_constraint") else {
+        let origin = Origin::BvEq(bv.clone(), value);
+        let Some(constraint) = super::lowered_or_warn(origin.lower(), "add_bv_constraint") else {
             return;
         };
-        let val_ast = super::bv_codec::make_bv_const(value, bv.width());
-        let constraint = ast.eq(&val_ast);
         // angr-t3l5o Phase 1: residual sink #2 (address concretization).
-        // `add_constraint_unscoped` (below) does NOT write the
-        // `z3_assertions` log, which is the only place a solver reads
-        // constraints from. Push to BOTH logs: `z3_assertions` so this
-        // context's solver and every fork's hold it, and `non_bv_assertions`
-        // so it round-trips via `residual_smtlib2` (it has no `assumed` entry).
-        //
-        // The residual entry's clarirs term is `bv == value` built as a
-        // value; a width the value layer cannot compare leaves it `None`.
-        let term = bool_term(&bv.eq(&RustBV::concrete(value, bv.width()))).ok(); // SILENT(cat-a): no term is a counted state (`residual_without_term`), and the Z3 form above is still asserted
+        // Push to BOTH logs: `z3_assertions`, the only place a solver reads
+        // constraints from, so this context's solver and every fork's hold
+        // it, and `non_bv_assertions` so it round-trips via `residual_terms`
+        // (it has no `assumed` entry).
         {
             let mut local = self.local_constraints.lock();
-            let origin = term.clone().map_or(Origin::Z3Only, Origin::Term);
-            local.push_assertion(constraint.clone(), origin);
-            local.push_residual(constraint.clone(), term);
+            local.push_assertion(constraint.clone(), origin.clone());
+            local.push_residual(constraint.clone(), origin);
         }
         self.add_constraint_unscoped(constraint);
     }
@@ -715,7 +644,7 @@ impl SymContext {
     /// the tautology, the `bool` recorded in the `assumed` export log, and
     /// whether the Z3 bool is negated. Everything else — the concrete/symbolic
     /// counter split, the sampled simplify-skip probe, the dedup contract and
-    /// the `add_constraint` handoff — is identical, so it lives here once
+    /// the `install_constraint` handoff — is identical, so it lives here once
     /// rather than in two hand-synced copies.
     pub(super) fn assume_unscoped(&self, cond: &RustBV, want_true: bool) {
         debug_assert_eq!(cond.width(), 1);
@@ -754,15 +683,15 @@ impl SymContext {
         // angr-1joc measurement: sampled simplify-skip check.
         sample_simplify_skip(&constraint);
         // angr-mwbp: piggy-back dedup on the side-table when it's already
-        // seeded by an earlier `add_constraint_raw` call in this context.
+        // seeded by an earlier `add_constraint_lowered` call in this context.
         // Triggering the seed from here would walk shared+local on every
         // assume_true/false call in fresh contexts — a real bench regression
-        // on heavily-branched workloads where add_constraint_raw isn't
+        // on heavily-branched workloads where add_constraint_lowered isn't
         // hot (flareon2015_2 timed out at 30s under unconditional seeding).
         // When seeded, `assumed` still grows unconditionally to preserve
         // Python-visible duplicate constraints (claripy `solver.add(c)`
         // semantics) — dedup only short-circuits the redundant
-        // `z3_assertions.push` + `add_constraint(c)` round-trip.
+        // `z3_assertions.push` + `install_constraint(c)` round-trip.
         let was_dup = {
             let mut local = self.local_constraints.lock();
             local.assumed.push((cond.clone(), want_true));

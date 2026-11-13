@@ -36,7 +36,7 @@ mod lower;
 
 pub(crate) use export::*;
 pub(crate) use import::*;
-pub(crate) use lower::{lower_claripy_bool, lower_claripy_constraint};
+pub(crate) use lower::lower_claripy_constraint;
 
 /// The claripy Python module (clarirs, built into this extension).
 ///
@@ -63,7 +63,7 @@ pub(crate) fn claripy_module(py: Python<'_>) -> PyResult<Bound<'_, PyModule>> {
 ///
 /// Under `cargo test` the embedded interpreter's `angr.rustylib` is the
 /// installed extension, whose claripy classes are different type objects from
-/// this test binary's — so a test that needs `lower_claripy_ast` to accept its
+/// this test binary's — so a test that needs `lower_claripy_constraint` to accept its
 /// input builds the AST here instead of through `import("angr.rustylib.claripy")`.
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "test fixture")]

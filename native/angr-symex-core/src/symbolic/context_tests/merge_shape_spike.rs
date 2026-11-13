@@ -19,6 +19,7 @@
 
 use crate::symbolic::ToZ3;
 use super::*;
+use crate::symbolic::Z3Scratch;
 use std::sync::Arc;
 
 /// Shared pre-header constraints seeded on the base before the fork. Every arm
@@ -87,9 +88,11 @@ fn cow_guarded_count(arms: &[&SymContext]) -> u64 {
 /// Returns `(merged, guarded_count)` where `guarded_count` is the number of
 /// guarded `Or`s emitted (NOT counting the flag `Or`), i.e. the divergent
 /// constraint count.
-fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (SymContext, u64) {
+fn cow_merge(arms: &[&SymContext], merge_conditions: &[RustBV]) -> (Z3Scratch, u64) {
     assert_eq!(arms.len(), merge_conditions.len());
-    let merged = SymContext::new();
+    // A bare solver: the prototype asserts Z3 terms it builds by hand, which
+    // keeps it independent of how `merge` builds its guards.
+    let merged = Z3Scratch::new();
     let mut guarded = 0u64;
 
     // The frozen prefix is ptr-equal across all sibling arms (fork-freeze

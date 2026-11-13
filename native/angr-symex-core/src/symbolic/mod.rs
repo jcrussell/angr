@@ -60,6 +60,8 @@
 //! | `query_class.rs` | Structural classification of the checks that actually reach Z3, for the cheap-pre-solver-tier spike. **(z3)** |
 //! | `sharing.rs` | `ConstraintSharingWalk` — measures `Arc` sharing across a population of constraint DAGs. |
 //!
+//! | `z3_scratch.rs` | `Z3Scratch` — a bare Z3 solver for tests that assert hand-built Z3 terms, which a `SymContext` does not take. Test builds only. **(z3)** |
+//!
 //! ## Address concretization
 //!
 //! | File | Holds |
@@ -96,6 +98,10 @@ mod stats;
 mod to_z3;
 mod transaction_ops;
 pub mod z3_lower;
+#[cfg(any(test, feature = "testing"))]
+mod z3_scratch;
+#[cfg(any(test, feature = "testing"))]
+pub use z3_scratch::Z3Scratch;
 
 pub use angr_bv::names;
 pub use angr_bv::stats::{

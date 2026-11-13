@@ -250,12 +250,18 @@ fn test_state_snapshot_round_trip_buckets_a_b_c() {
     assert_state_round_trip(&orig, &restored);
 }
 
-/// angr-vmi2l.94: a solver residual Z3 rejects surfaces as
+/// angr-vmi2l.94: a solver residual with no Z3 form surfaces as
 /// `SnapshotError::Residual` instead of restoring an under-constrained state.
 #[test]
-fn test_from_snapshot_rejects_malformed_residual() {
+fn test_from_snapshot_rejects_unlowerable_residual() {
+    use clarirs_core::GLOBAL_CONTEXT;
+    use clarirs_core::prelude::*;
+
     let mut snap = build_populated_state().to_snapshot();
-    snap.solver.residual_smtlib2 = "(assert (bvult undeclared_vmi2l94_state #x01))\n".into();
+    let leaf = GLOBAL_CONTEXT.bvs("vmi2l94_state_vsa", 32).unwrap();
+    let union = GLOBAL_CONTEXT.union([leaf.clone(), leaf]).unwrap();
+    let no_z3_form = RustBV::from_clarirs(union).unwrap().extract(0, 0);
+    snap.solver.residual_terms.push(no_z3_form);
     assert!(matches!(
         RustSimState::from_snapshot(snap),
         Err(SnapshotError::Residual(_))

@@ -255,7 +255,7 @@ impl SymContext {
                 local.non_bv_assertions.truncate(non_bv_len);
                 // Stale dedup ptrs from the truncated assertions would falsely
                 // dedup a re-assert (angr-ph300.41); drop the side-table and
-                // let the next add_constraint_raw rebuild it from shared+local.
+                // let the next add_constraint_lowered rebuild it from shared+local.
                 local.dedup_set.clear();
                 local.dedup_set_seeded = false;
             }

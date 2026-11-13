@@ -157,9 +157,9 @@ pub struct SymContext {
     /// Shared (frozen) residual (no-[`RustBV`]) Z3 Bool assertions from
     /// parent (angr-t3l5o Phase 1) — mirrors `z3_assertions_shared` exactly so
     /// `fork`'s `freeze_into_shared` carries it with no new logic. Holds only
-    /// the residual subset (raw / bv-eq / merge-guard); the assume class is
-    /// reconstructed from `assumed_constraints` IR. Dumped to
-    /// `residual_smtlib2` in `to_snapshot`.
+    /// the residual subset (lowered / bv-eq / merge-guard); the assume class
+    /// is reconstructed from `assumed_constraints` IR. Sent as
+    /// `residual_terms` by `to_snapshot`.
     pub(super) non_bv_assertions_shared: Mutex<Arc<Vec<super::local_constraints::Residual>>>,
 
     /// Whether this context's `assumed` pairs are directly asserted on the
@@ -174,7 +174,7 @@ pub struct SymContext {
     pub(super) assume_class_reconstructible: AtomicBool,
 
     /// Local additions (assumed pairs + Z3 Bool cache) added after fork.
-    /// Combined under one Mutex so the assume_*/add_constraint_raw hot path
+    /// Combined under one Mutex so the assume_*/add_constraint_lowered hot path
     /// only acquires a single lock instead of two.
     /// `pub(super)` for the constraint-mutation methods in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
@@ -214,7 +214,7 @@ pub struct SymContext {
     /// in the z3 assertion log once, in an entry that carries the tracker,
     /// so any solver built from the log tracks it, and `fork` clones the list so a child
     /// keeps the parent's index space (angr-vmi2l.91).
-    /// `pub(super)` for `add_constraint_tracked_indexed` in `constraint_ops.rs`
+    /// `pub(super)` for `add_constraint_tracked_lowered` in `constraint_ops.rs`
     /// (slice 9, angr-a2br.2.7).
     pub(super) constraint_trackers: Mutex<Vec<(z3::ast::Bool, z3::ast::Bool)>>,
     /// Z3 solver timeout in milliseconds (default: [`DEFAULT_SOLVER_TIMEOUT_MS`]).
@@ -566,8 +566,8 @@ impl SymContext {
             .collect()
     }
 
-    // Constraint-mutation &self methods (add_constraint / add_constraint_raw /
-    // add_constraints_raw_batch / add_constraint_tracked_indexed /
+    // Constraint-mutation &self methods (add_constraint / add_constraint_lowered /
+    // add_constraints_raw_batch / add_constraint_tracked_lowered /
     // add_bv_constraint / assume_true / assume_false, plus the dedup helpers
     // seed_and_check_z3_dedup / check_z3_dedup_if_seeded and the model-cache
     // invalidators) moved to constraint_ops.rs (slice 9, angr-a2br.2.7).
