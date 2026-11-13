@@ -1,4 +1,3 @@
-#![allow(clippy::arc_with_non_send_sync)]
 use super::*;
 
 #[test]
@@ -72,7 +71,7 @@ fn test_fork() {
 #[test]
 fn test_lineage_starts_none() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 }
 
@@ -83,8 +82,8 @@ fn test_lineage_starts_none() {
 fn test_fork_keeps_lineage_none() {
     let ctx = SymContext::new();
     let forked = ctx.fork();
-    assert!(ctx.lineage_arc().is_none());
-    assert!(forked.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
+    assert!(forked.lineage_ref().is_none());
     assert_eq!(forked.scope_path_len(), 0);
 }
 
@@ -93,20 +92,20 @@ fn test_fork_keeps_lineage_none() {
 /// `Arc::clone` gave the child an empty `scope_path` over the parent's
 /// solver, a stale base once the parent had post-mint constraints.
 #[test]
-fn test_fork_without_opt_in_drops_lineage_arc() {
+fn test_fork_without_opt_in_drops_lineage_ref() {
     let parent = SymContext::new();
-    let lin = Arc::new(Mutex::new(super::super::lineage::SharedLineageSolver::new(
+    let lin = super::super::lineage::LineageRef::store(super::super::lineage::SharedLineageSolver::new(
         build_solver(30_000),
-    )));
-    parent.set_lineage_for_testing(Arc::clone(&lin));
+    ));
+    parent.set_lineage_for_testing(lin.clone());
 
     let child = parent.fork();
     assert!(
-        child.lineage_arc().is_none(),
+        child.lineage_ref().is_none(),
         "a non-mint fork must not Arc::clone the parent's lineage"
     );
-    let parent_arc = parent.lineage_arc().expect("parent retains its lineage");
-    assert!(Arc::ptr_eq(&parent_arc, &lin));
+    let parent_arc = parent.lineage_ref().expect("parent retains its lineage");
+    assert!(parent_arc.same(&lin));
     assert_eq!(child.scope_path_len(), 0);
 }
 
@@ -156,7 +155,7 @@ fn test_lineage_telemetry_surfaced() {
 #[test]
 fn test_with_z3_solver_no_lineage_uses_local_solver() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
 
     let x = RustBV::symbol("test_with_z3_solver_no_lineage_x", 8);
     let five = RustBV::concrete(5, 8);
@@ -191,9 +190,9 @@ fn test_with_z3_solver_routes_to_lineage() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
-    assert!(ctx.lineage_arc().is_some());
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
+    assert!(ctx.lineage_ref().is_some());
 
     // The dispatcher should hand a solver to the closure and the
     // lineage_switch_count counter should advance — that's the

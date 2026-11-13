@@ -7,7 +7,6 @@
 //! Named `solver_queries.rs`, not `solver.rs`, so no basename search collides
 //! it with the crate-root `solver.rs` (the PyO3 `RustSolverContext`)
 //! (angr-5mnx3.50).
-#![allow(clippy::arc_with_non_send_sync)]
 use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::LoweredConstraint;
@@ -343,7 +342,7 @@ fn test_add_constraints_raw_batch_tracks_local_assertions() {
 #[test]
 fn test_add_constraints_raw_batch_none_branch_no_scope_path() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
     let x = RustBV::symbol("x_batch_none", 32);
@@ -380,8 +379,8 @@ fn test_add_constraints_raw_batch_some_branch_appends_scope_frames() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     assert_eq!(ctx.scope_path_len(), 0);
 
@@ -420,9 +419,9 @@ fn test_add_constraints_raw_batch_sibling_isolation() {
 
     let sibling_a = SymContext::new();
     let sibling_b = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    sibling_a.set_lineage_for_testing(Arc::clone(&lin));
-    sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    sibling_a.set_lineage_for_testing(lin.clone());
+    sibling_b.set_lineage_for_testing(lin.clone());
 
     // Sibling A batch-adds x > 10 ∧ x < 20.
     let x_a = RustBV::symbol("x_batch_sibling", 32);

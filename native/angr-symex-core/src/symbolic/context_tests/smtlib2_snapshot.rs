@@ -1,4 +1,3 @@
-#![allow(clippy::arc_with_non_send_sync)]
 use crate::symbolic::ToZ3;
 use super::*;
 // angr-fs8kb.35: `SymContextSnapshot` moved out of `context.rs` into
@@ -353,7 +352,7 @@ fn test_smtlib2_cross_context_round_trip() {
 #[test]
 fn test_bare_z3_push_depth_none_branch_balanced() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.bare_z3_push_depth(), 0);
 
     ctx.scope_savepoint_push();
@@ -385,7 +384,7 @@ fn test_bare_z3_push_depth_none_branch_balanced() {
 #[test]
 fn test_try_pop_refuses_bare_underpop() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.bare_z3_push_depth(), 0);
 
     // No matching push: refused, counter stays at 0, no panic.
@@ -410,8 +409,8 @@ fn test_try_pop_always_safe_on_some_branch() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     // No matching push, but the Some branch silently ignores it.
     assert!(ctx.try_pop(), "Some-branch pop is always safe");
@@ -427,8 +426,8 @@ fn test_bare_z3_push_depth_some_branch_inert() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     assert_eq!(ctx.bare_z3_push_depth(), 0);
 
@@ -563,17 +562,17 @@ fn test_fork_mints_lineage_when_gate_passes() {
     parent.set_use_shared_lineage_solver(true);
     assert_eq!(parent.bare_z3_push_depth(), 0);
     assert!(
-        parent.lineage_arc().is_none(),
+        parent.lineage_ref().is_none(),
         "parent starts without a lineage"
     );
 
     let child = parent.fork();
     assert!(
-        child.lineage_arc().is_some(),
+        child.lineage_ref().is_some(),
         "child must receive a freshly minted lineage when the gate passes"
     );
     assert!(
-        parent.lineage_arc().is_none(),
+        parent.lineage_ref().is_none(),
         "parent's lineage must NOT change as a side effect of forking — \
          minting only installs on the child"
     );
@@ -589,7 +588,7 @@ fn test_fork_skips_mint_when_flag_off() {
 
     let child = parent.fork();
     assert!(
-        child.lineage_arc().is_none(),
+        child.lineage_ref().is_none(),
         "default-off flag must keep the slice-1c gate inert — no mint"
     );
 }
@@ -614,7 +613,7 @@ fn test_fork_skips_mint_when_bare_push_outstanding() {
 
     let child = parent.fork();
     assert!(
-        child.lineage_arc().is_none(),
+        child.lineage_ref().is_none(),
         "gate must refuse to mint while parent has outstanding bare pushes"
     );
 
@@ -644,7 +643,7 @@ fn test_fork_minted_lineage_seeded_with_parent_constraints() {
 
     // Fork → child gets a fresh lineage seeded with x == 5.
     let child = parent.fork();
-    assert!(child.lineage_arc().is_some());
+    assert!(child.lineage_ref().is_some());
 
     // The child's lineage solver knows about x == 5: assume_true(x == 6)
     // through the lineage path produces UNSAT.
@@ -676,12 +675,12 @@ fn test_fork_chain_mints_fresh_lineage_at_each_level() {
     let child = parent.fork();
     let grandchild = child.fork();
 
-    let child_lin = child.lineage_arc().expect("child must have a lineage");
+    let child_lin = child.lineage_ref().expect("child must have a lineage");
     let grandchild_lin = grandchild
-        .lineage_arc()
+        .lineage_ref()
         .expect("grandchild must have a lineage");
     assert!(
-        !Arc::ptr_eq(&child_lin, &grandchild_lin),
+        !child_lin.same(&grandchild_lin),
         "each fork mints its own fresh lineage — Arc identities must differ"
     );
     assert!(

@@ -439,13 +439,6 @@ impl SymContext {
     ///   for the baby-re chr() repro this prevents. Regression guard for the
     ///   flag-flipped-off case (gate a):
     ///   `lineage_tests::test_fork_drops_lineage_when_flag_flipped_off`.
-    // Arc<Mutex<SharedLineageSolver>>: SharedLineageSolver wraps a z3::Solver (not Send/Sync),
-    // but the Arc is load-bearing — every sibling SymContext minted from a common fork shares
-    // the same Arc so cross-state lineage queries hit the same Z3 solver (see field doc on
-    // `lineage`). The missing Send/Sync is unobservable because SymContext is !Send and only
-    // travels between threads as a StateMigrationPayload (state/migration.rs), which rebuilds
-    // the solver on the destination thread; Rc would force the fork signature to surface
-    // non-Send, breaking the Arc<Mutex<...>> sharing contract. See `arc_shared` in lib.rs.
     pub fn fork(&self) -> Self {
         // angr-c7xno.75: freeze must not drain `local` while a bare
         // `push()` scope is open — the matching `pop()` truncates `local`,
@@ -552,7 +545,10 @@ impl SymContext {
                     lineage_solver.assert_base(&lowered);
                 }
             }
-            Some(crate::arc_shared(Mutex::new(lineage_solver)))
+            Some(super::lineage::LineageRef::store_with_base(
+                lineage_solver,
+                frozen_shared.len(),
+            ))
         } else {
             // angr-vmi2l.92: every non-mint arm gets `None`, not just the
             // dismantled one. The stale-base argument above holds whichever
@@ -693,12 +689,12 @@ impl SymContext {
     /// solver changed since this context's last query
     /// (`SymContext::with_own_solver`). Always `false` under a lineage.
     pub(crate) fn with_z3_solver_changed<R>(&self, f: impl FnOnce(&z3::Solver, bool) -> R) -> R {
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        let lineage = self.lineage.lock().clone();
         match lineage {
             None => self.with_own_solver(f),
             Some(lin) => {
                 let path = self.scope_path.lock().clone();
-                let mut guard = lin.lock();
+                let mut guard = self.lend_lineage(&lin);
                 // angr-vmi2l.93: the timeout is per-context, the solver is
                 // per-lineage, so apply this context's timeout per query.
                 guard.apply_timeout(self.timeout_ms());
@@ -707,19 +703,12 @@ impl SymContext {
         }
     }
 
-    /// Install a lineage Arc on this context (test-only, angr-v5a5 spike).
+    /// Install a lineage token on this context (test-only, angr-v5a5 spike).
     ///
-    /// Lets unit tests verify the fork-propagation invariant — that a
-    /// child's `lineage_arc()` returns the same Arc as the parent's —
-    /// without going through the production three-gate mint in
-    /// [`fork()`](Self::fork), which would require flipping the
-    /// `use_shared_lineage_solver` opt-in and staging a parent lineage
-    /// first.
+    /// Lets unit tests put one solver on several contexts, which the
+    /// production three-gate mint in [`fork()`](Self::fork) never does.
     #[cfg(test)]
-    pub(crate) fn set_lineage_for_testing(
-        &self,
-        lin: Arc<Mutex<super::lineage::SharedLineageSolver>>,
-    ) {
+    pub(crate) fn set_lineage_for_testing(&self, lin: super::lineage::LineageRef) {
         *self.lineage.lock() = Some(lin);
     }
 

@@ -2,11 +2,19 @@
 //!
 //! Implements the data structures and core mechanics for Option A from a
 //! research spike (angr-hk7k).
-//! The plan: all states descended from a common ancestor share one Z3
-//! [`z3::Solver`] wrapped in an `Arc<Mutex<SharedLineageSolver>>`. The
-//! shared solver carries the lineage's base assertions at scope 0; each
-//! state's local-diff is tracked as a [`ScopePath`] of frames pushed on
-//! top of the base.
+//! A context under the opt-in holds a [`LineageRef`], a token that is plain
+//! data, and the [`SharedLineageSolver`] the token names lives in this
+//! thread's table (angr-az6ru.2). The solver carries the lineage's base
+//! assertions at scope 0; the context's local-diff is tracked as a
+//! [`ScopePath`] of frames pushed on top of the base. A frame holds the
+//! clarirs form of its constraint and no Z3 term: the solver lowers it when
+//! it pushes the frame.
+//!
+//! A token is a cache key and nothing more. On a thread whose table has no
+//! solver for it (the context moved, or the entry was evicted) the context
+//! rebuilds the solver from its own record, the base prefix of its assertion
+//! log and its scope path (`SymContext::rebuild_lineage`), so no answer
+//! depends on the table's contents.
 //!
 //! On context switch (when a different state in the lineage issues a
 //! query), [`SharedLineageSolver::switch_to`] computes the longest common
@@ -67,9 +75,9 @@
 //!   `FrameId` minted at constraint-add time, not `Arc::ptr_eq` on the
 //!   underlying RustBV. Identity stays stable across fork boundaries.
 //! - **`SymContext.lineage` mutex shape** — typed
-//!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`; the outer `Mutex`
-//!   is what makes `fork(&self)` legal (it installs a lineage through a
-//!   shared reference). See the field rustdoc on `SymContext::lineage`.
+//!   `Mutex<Option<LineageRef>>`; the `Mutex` is what makes `fork(&self)`
+//!   legal (it installs a lineage through a shared reference). See the
+//!   field rustdoc on `SymContext::lineage`.
 //! - `v5ht-sampler-tick-bottleneck` — the sampler hook MUST be at the TOP
 //!   of the single-threaded loop (before any callback-path early-return) so
 //!   callback-heavy workloads still tick. See the comment at the call site
@@ -77,9 +85,14 @@
 //! - **Hot-threshold calibration** — the dismantle threshold was calibrated
 //!   on a small workload set; widen the dataset before changing it.
 
+use std::cell::RefCell;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use z3::ast::Bool;
+
+use super::RustBV;
+use super::local_constraints::Origin;
 
 /// Globally-unique scope-frame id. Assigned monotonically when a state
 /// adds a constraint. Sibling states descended from a common ancestor
@@ -97,28 +110,53 @@ pub fn mint_frame_id() -> FrameId {
 
 /// One constraint frame on a state's scope path.
 ///
-/// `is_true` mirrors `SymContext::assumed_constraints`'s assumed/negated
-/// flag; `z3_assertion` is the already-derived Z3 [`Bool`] (i.e. the
-/// `cond.to_z3_bool()` for `is_true == true`, or its `.not()` for
-/// `is_true == false`). Push-time logic does not need to re-derive the
-/// negation, keeping `switch_to` purely Z3-side bookkeeping.
+/// The frame holds the constraint as the form its assertion-log entry has,
+/// and no Z3 term: [`SharedLineageSolver::switch_to`] lowers it when it
+/// pushes the frame, on whichever thread the solver lives. `is_true` mirrors
+/// `SymContext::assumed_constraints`'s assumed/negated flag and is not read
+/// by the solver; the constraint is already in the polarity it is asserted
+/// in.
 #[derive(Clone)]
 pub struct ScopeFrame {
     pub id: FrameId,
     pub is_true: bool,
-    pub z3_assertion: Bool,
+    origin: Origin,
 }
 
 impl ScopeFrame {
-    /// Construct a fresh frame with a globally-unique id.
-    pub fn new(is_true: bool, z3_assertion: Bool) -> Self {
+    /// A fresh frame, with a globally-unique id, asserting the 1-bit value
+    /// `assertion`.
+    pub fn new(is_true: bool, assertion: RustBV) -> Self {
         ScopeFrame {
             id: mint_frame_id(),
             is_true,
-            z3_assertion,
+            origin: Origin::Assume(assertion, true),
+        }
+    }
+
+    /// The frame's constraint as a Z3 Bool on this thread, or `None` after a
+    /// warn when it has no Z3 form. What [`SharedLineageSolver::switch_to`]
+    /// asserts under the frame's scope.
+    pub fn z3_assertion(&self) -> Option<Bool> {
+        super::lowered_or_warn(self.origin.lower(), "lineage frame")
+    }
+
+    /// A fresh frame for a constraint the assertion log holds as `origin`.
+    pub(super) fn of_origin(origin: Origin) -> Self {
+        ScopeFrame {
+            id: mint_frame_id(),
+            is_true: true,
+            origin,
         }
     }
 }
+
+// A scope path is plain data: nothing in it is tied to a thread's Z3 context.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ScopeFrame>();
+    assert_send_sync::<LineageRef>();
+};
 
 /// Ordered sequence of scope frames a state has accumulated since its
 /// lineage's base. State A and state B share a prefix iff the first N
@@ -138,6 +176,9 @@ static LINEAGE_SWITCH_HOT_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_SWITCH_FAST_PATH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_PUSH_COUNT: AtomicU64 = AtomicU64::new(0);
 static LINEAGE_POP_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Lineage solvers rebuilt from a context's record because the querying
+/// thread's table held none for its token.
+static LINEAGE_REBUILD_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // =============================================================================
 // Runtime thrash detection (angr-v5ht)
@@ -446,7 +487,7 @@ pub fn reset_dismantle_state_for_test() {
 /// hit the O(1) check — useful for measuring how often consecutive
 /// queries land on the same state (the hot-cache win the BFS-thrash
 /// motivation targets) (angr-v5a5).
-pub fn lineage_stats() -> [(&'static str, u64); 5] {
+pub fn lineage_stats() -> [(&'static str, u64); 6] {
     [
         (
             "lineage_switch_count",
@@ -468,6 +509,10 @@ pub fn lineage_stats() -> [(&'static str, u64); 5] {
             "lineage_pop_count",
             LINEAGE_POP_COUNT.load(Ordering::Relaxed),
         ),
+        (
+            "lineage_rebuild_count",
+            LINEAGE_REBUILD_COUNT.load(Ordering::Relaxed),
+        ),
     ]
 }
 
@@ -482,6 +527,7 @@ pub fn reset_lineage_stats() {
     LINEAGE_SWITCH_FAST_PATH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_PUSH_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_POP_COUNT.store(0, Ordering::Relaxed);
+    LINEAGE_REBUILD_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_DISMANTLED.store(false, Ordering::Relaxed);
     LINEAGE_DISMANTLE_COUNT.store(0, Ordering::Relaxed);
     LINEAGE_SAMPLE_CALL_COUNT.store(0, Ordering::Relaxed);
@@ -501,14 +547,13 @@ pub fn reset_lineage_stats() {
     CENSUS_EPOCH.fetch_add(1, Ordering::Relaxed);
 }
 
-/// Z3 solver shared by all states in one lineage, with a scope-tracked
-/// stack of pushes corresponding to whichever state most recently issued
-/// a query through it.
+/// Z3 solver of one lineage, with a scope-tracked stack of pushes
+/// corresponding to whichever state most recently issued a query through it.
 ///
-/// Not thread-safe on its own — the integration wraps it in
-/// `Arc<Mutex<SharedLineageSolver>>`. Cross-state queries take the mutex,
-/// `switch_to` runs under the lock, and the solver is released before the
-/// caller does any Python or per-state mutation.
+/// It is bound to the thread that built it and lives in that thread's table
+/// under a [`LineageRef`]; a context borrows it for one call
+/// (`LineageRef::lend`) and it goes back before the caller does any Python
+/// or per-state mutation.
 pub struct SharedLineageSolver {
     z3: z3::Solver,
     loaded_path: ScopePath,
@@ -540,6 +585,17 @@ impl SharedLineageSolver {
     /// calls — they sit at scope 0 and are never popped.
     pub fn new(z3: z3::Solver) -> Self {
         note_tree_minted();
+        Self::uncounted(z3)
+    }
+
+    /// [`Self::new`] for a solver that stands in for one already counted by
+    /// the census: a lineage rebuilt on a thread that does not hold it.
+    pub(super) fn rebuilt(z3: z3::Solver) -> Self {
+        LINEAGE_REBUILD_COUNT.fetch_add(1, Ordering::Relaxed);
+        Self::uncounted(z3)
+    }
+
+    fn uncounted(z3: z3::Solver) -> Self {
         SharedLineageSolver {
             z3,
             loaded_path: ScopePath::new(),
@@ -672,7 +728,12 @@ impl SharedLineageSolver {
 
         for frame in &target_path[prefix..] {
             self.z3.push();
-            self.z3.assert(&frame.z3_assertion);
+            // A frame with no Z3 form keeps its scope, so `loaded_path`
+            // still counts the pushes, and asserts nothing: the state is
+            // under-constrained, never pruned, as in `sync_solver`.
+            if let Some(assertion) = frame.z3_assertion() {
+                self.z3.assert(&assertion);
+            }
             self.loaded_path.push(frame.clone());
         }
         if pushes > 0 {
@@ -705,6 +766,171 @@ fn common_prefix_len(a: &ScopePath, b: &ScopePath) -> usize {
         .zip(b.iter())
         .take_while(|(x, y)| x.id == y.id)
         .count()
+}
+
+// =============================================================================
+// The per-thread table
+// =============================================================================
+
+thread_local! {
+    /// This thread's lineage solvers by token id, least recently used first.
+    /// The solvers are few and each is costly to build, so a linear scan is
+    /// cheaper than a map, as in `solver_cache`.
+    static TABLE: RefCell<Vec<(u64, SharedLineageSolver)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The identity one lineage solver has in every thread's table, and how much
+/// of its minting context's assertion log is its base. Dropping it removes
+/// the solver from the table of the thread it is dropped on.
+struct Token {
+    id: u64,
+    base_len: usize,
+}
+
+impl Drop for Token {
+    fn drop(&mut self) {
+        // `try_with`: a context dropped while the thread is tearing down has
+        // no table left to clear. The solver is dropped outside the borrow.
+        let mine = TABLE.try_with(|table| {
+            let mut table = table.try_borrow_mut().ok()?; // SILENT(cat-a): the table is never borrowed across a token drop; if it were, the entry would wait for eviction
+            let at = table.iter().position(|(id, _)| *id == self.id)?;
+            Some(table.remove(at))
+        });
+        drop(mine);
+    }
+}
+
+/// A context's handle on its lineage solver: `Send`, cheap to clone, and
+/// valid on any thread, where it resolves to the solver or to nothing.
+#[derive(Clone)]
+pub struct LineageRef(Arc<Token>);
+
+impl LineageRef {
+    /// Put `solver` in this thread's table and return the token for it. The
+    /// solver has no base in any context's log; see `Self::store_with_base`.
+    pub fn store(solver: SharedLineageSolver) -> Self {
+        Self::store_with_base(solver, 0)
+    }
+
+    /// [`Self::store`] for a solver whose base assertions are the first
+    /// `base_len` entries of the minting context's assertion log, which is
+    /// what a rebuild on another thread asserts as its base.
+    pub(super) fn store_with_base(solver: SharedLineageSolver, base_len: usize) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let token = Self(Arc::new(Token {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            base_len,
+        }));
+        put(token.0.id, solver);
+        token
+    }
+
+    /// How many leading entries of the minting context's assertion log the
+    /// solver holds at scope 0.
+    pub(super) fn base_len(&self) -> usize {
+        self.0.base_len
+    }
+
+    /// Whether `other` names the same solver.
+    pub fn same(&self, other: &Self) -> bool {
+        self.0.id == other.0.id
+    }
+
+    /// Whether this thread's table holds the solver.
+    pub fn is_held(&self) -> bool {
+        TABLE.with(|table| table.borrow().iter().any(|(id, _)| *id == self.0.id))
+    }
+
+    /// Take the solver out of this thread's table for one call, building it
+    /// with `rebuild` if the table has none. It goes back when the returned
+    /// guard is dropped, so the holder may use other contexts but must not
+    /// reach this lineage again meanwhile.
+    pub(super) fn lend(&self, rebuild: impl FnOnce() -> SharedLineageSolver) -> Lent {
+        let held = TABLE.with(|table| {
+            let mut table = table.borrow_mut();
+            let at = table.iter().position(|(id, _)| *id == self.0.id)?;
+            Some(table.remove(at).1)
+        });
+        Lent {
+            solver: Some(held.unwrap_or_else(rebuild)),
+            owner: self.clone(),
+        }
+    }
+
+    /// Test-only: the solver, which this thread must hold.
+    #[cfg(test)]
+    pub(crate) fn lock(&self) -> Lent {
+        self.lend(|| panic!("this thread holds no solver for the lineage"))
+    }
+
+    /// Test-only: drop this thread's solver for the lineage, as an eviction
+    /// or a move to another thread would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn evict_for_test(&self) {
+        let mine = TABLE.with(|table| {
+            let mut table = table.borrow_mut();
+            let at = table.iter().position(|(id, _)| *id == self.0.id)?;
+            Some(table.remove(at))
+        });
+        drop(mine);
+    }
+}
+
+/// Store `solver` under `id` as the most recently used entry, evicting the
+/// least recently used past the thread's solver capacity. That bound is for
+/// solvers whose tokens were dropped on another thread and so never cleared
+/// their entry here; an evicted solver that is still wanted is rebuilt.
+fn put(id: u64, solver: SharedLineageSolver) {
+    let evicted: Vec<(u64, SharedLineageSolver)> = TABLE.with(|table| {
+        let mut table = table.borrow_mut();
+        table.push((id, solver));
+        let excess = table.len().saturating_sub(super::solver_cache::capacity());
+        table.drain(..excess).collect()
+    });
+    // Dropped here, outside the borrow.
+    drop(evicted);
+}
+
+/// A lineage solver out of its thread's table for one call; see
+/// `LineageRef::lend`.
+pub struct Lent {
+    solver: Option<SharedLineageSolver>,
+    /// Keeps the token alive for the length of the call, so the solver is
+    /// never put back under an id nothing will clear.
+    owner: LineageRef,
+}
+
+impl std::ops::Deref for Lent {
+    type Target = SharedLineageSolver;
+
+    fn deref(&self) -> &SharedLineageSolver {
+        match &self.solver {
+            Some(solver) => solver,
+            None => unreachable!("a lent solver is only taken by drop"),
+        }
+    }
+}
+
+impl std::ops::DerefMut for Lent {
+    fn deref_mut(&mut self) -> &mut SharedLineageSolver {
+        match &mut self.solver {
+            Some(solver) => solver,
+            None => unreachable!("a lent solver is only taken by drop"),
+        }
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        if let Some(solver) = self.solver.take() {
+            put(self.owner.0.id, solver);
+        }
+    }
+}
+
+/// How many lineage solvers this thread holds.
+pub fn live_lineage_solvers() -> usize {
+    TABLE.with(|table| table.borrow().len())
 }
 
 test_submod!("lineage_tests.rs" => lineage_tests);

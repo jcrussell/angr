@@ -270,13 +270,27 @@ Interaction with ``SharedLineageSolver``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``SharedLineageSolver`` (``native/angr-symex-core/src/symbolic/lineage.rs``)
-shares **one** ``z3::Solver`` across a forked lineage of states by
-tracking each state's ``scope_path`` and replaying pushes lazily on
-context switch. It is **opt-in only** (the
+is a ``z3::Solver`` that holds a context's inherited constraints at scope 0
+and one pushed scope per constraint the context has added since, tracked as
+the context's ``scope_path``; a switch pops and pushes only the frames that
+differ. ``SymContext::fork`` mints one for the child, so no two contexts
+share one. It is **opt-in only** (the
 ``use_shared_lineage_solver=True`` kwarg on
 ``RustExplorationManager``) and has a runtime thrash detector
 (``angr-v5ht``) that disables minting at fork time when the
 hot-cache hit rate slips below 35%.
+
+Like the solver and model caches above, the solver is worker-local. The
+context holds a ``LineageRef``, a token that is plain data, and a
+``scope_path`` whose frames carry the clarirs form of their constraint and
+no Z3 term; the solver the token names is in the table of the thread that
+built it. A thread that holds none for the token (the context moved there,
+or the entry was evicted) rebuilds it from the context's own record, the
+base prefix of the assertion log and the scope path
+(``SymContext::lend_lineage``), and counts a ``lineage_rebuild_count``. The
+table keeps at most ``solver_cache::capacity()`` solvers, least recently
+used first out, which bounds those whose token was dropped on another
+thread.
 
 A bare ``RustSolverContext.push()`` followed by a Python ``fork()``
 call interacts subtly with lineage minting. ``SymContext::fork``

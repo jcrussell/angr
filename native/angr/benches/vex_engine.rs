@@ -15,7 +15,6 @@ use rustylib::symbolic::lineage::{ScopeFrame, ScopePath, SharedLineageSolver};
 use rustylib::symbolic::{RustBV, SymContext};
 use rustylib::vex::ir::Endness;
 use rustylib::vex::{IROp, IRType, VEXOps};
-use z3::ast::BV;
 
 // ---------------------------------------------------------------------------
 // RustBV operations
@@ -624,13 +623,13 @@ fn bench_rustbv_neon_ops(c: &mut Criterion) {
 /// in isolation but pairwise-UNSAT — realistic for symbolic-execution
 /// path constraints.
 fn build_workload(n_states: usize, k_per_state: usize) -> Vec<ScopePath> {
-    let x = BV::new_const("lineage_bench_x", 32);
-    let zero = BV::from_u64(0, 32);
-    let big = BV::from_u64(1_000_000_000, 32);
+    let x = RustBV::symbol("lineage_bench_x", 32);
+    let zero = RustBV::concrete(0, 32);
+    let big = RustBV::concrete(1_000_000_000, 32);
 
     let pp_ancestor: Vec<ScopeFrame> = vec![
-        ScopeFrame::new(true, x.bvugt(&zero)),
-        ScopeFrame::new(true, x.bvult(&big)),
+        ScopeFrame::new(true, x.ugt(&zero)),
+        ScopeFrame::new(true, x.ult(&big)),
     ];
 
     let mut pp_paths = Vec::with_capacity(n_states);
@@ -641,8 +640,8 @@ fn build_workload(n_states: usize, k_per_state: usize) -> Vec<ScopePath> {
             // (always SAT in isolation, gives each frame a distinct AST
             // so Z3 doesn't fold them into a single hash-consed assertion).
             let offset = ((i * 100) + (j * 7)) as u64;
-            let term = x.bvadd(BV::from_u64(offset, 32));
-            let cstr = term.eq(BV::from_u64(0, 32)).not();
+            let term = x.add(&RustBV::concrete(u128::from(offset), 32));
+            let cstr = term.ne(&RustBV::concrete(0, 32));
             pp.push(ScopeFrame::new(true, cstr));
         }
         pp_paths.push(pp);
@@ -676,13 +675,13 @@ fn bfs_query_order(n_states: usize, n_queries: usize) -> Vec<usize> {
 /// which makes `SharedLineageSolver::switch_to` do exactly 0 pops and 1
 /// push per query (best case for the lineage push/pop architecture).
 fn build_lifo_chain_workload(n_chain: usize) -> Vec<ScopePath> {
-    let x = BV::new_const("lineage_bench_chain_x", 32);
-    let zero = BV::from_u64(0, 32);
-    let big = BV::from_u64(1_000_000_000, 32);
+    let x = RustBV::symbol("lineage_bench_chain_x", 32);
+    let zero = RustBV::concrete(0, 32);
+    let big = RustBV::concrete(1_000_000_000, 32);
 
     let ancestor: Vec<ScopeFrame> = vec![
-        ScopeFrame::new(true, x.bvugt(&zero)),
-        ScopeFrame::new(true, x.bvult(&big)),
+        ScopeFrame::new(true, x.ugt(&zero)),
+        ScopeFrame::new(true, x.ult(&big)),
     ];
 
     // Mint one fresh frame per chain link. Clone semantics preserve the
@@ -691,8 +690,8 @@ fn build_lifo_chain_workload(n_chain: usize) -> Vec<ScopePath> {
     let chain_frames: Vec<ScopeFrame> = (0..n_chain)
         .map(|i| {
             let offset = ((i * 7) + 13) as u64;
-            let term = x.bvadd(BV::from_u64(offset, 32));
-            let cstr = term.eq(BV::from_u64(0, 32)).not();
+            let term = x.add(&RustBV::concrete(u128::from(offset), 32));
+            let cstr = term.ne(&RustBV::concrete(0, 32));
             ScopeFrame::new(true, cstr)
         })
         .collect();
@@ -720,13 +719,13 @@ fn build_lifo_chain_workload(n_chain: usize) -> Vec<ScopePath> {
 /// branch), so the amortized transition is O(2) pops + O(2) pushes per
 /// query.
 fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
-    let x = BV::new_const("lineage_bench_dfs_x", 32);
-    let zero = BV::from_u64(0, 32);
-    let big = BV::from_u64(1_000_000_000, 32);
+    let x = RustBV::symbol("lineage_bench_dfs_x", 32);
+    let zero = RustBV::concrete(0, 32);
+    let big = RustBV::concrete(1_000_000_000, 32);
 
     let ancestor: Vec<ScopeFrame> = vec![
-        ScopeFrame::new(true, x.bvugt(&zero)),
-        ScopeFrame::new(true, x.bvult(&big)),
+        ScopeFrame::new(true, x.ugt(&zero)),
+        ScopeFrame::new(true, x.ult(&big)),
     ];
 
     // Mint exactly two frames per level: left-side and right-side. Cloning
@@ -738,15 +737,13 @@ fn build_lifo_dfs_tree_workload(depth: usize) -> Vec<ScopePath> {
             let r_off = ((lvl * 11) + 503) as u64;
             let lf = ScopeFrame::new(
                 true,
-                x.bvadd(BV::from_u64(l_off, 32))
-                    .eq(BV::from_u64(0, 32))
-                    .not(),
+                x.add(&RustBV::concrete(u128::from(l_off), 32))
+                    .ne(&RustBV::concrete(0, 32)),
             );
             let rf = ScopeFrame::new(
                 true,
-                x.bvadd(BV::from_u64(r_off, 32))
-                    .eq(BV::from_u64(0, 32))
-                    .not(),
+                x.add(&RustBV::concrete(u128::from(r_off), 32))
+                    .ne(&RustBV::concrete(0, 32)),
             );
             (lf, rf)
         })
@@ -823,7 +820,9 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                 .map(|path| {
                     let s = z3::Solver::new();
                     for f in path {
-                        s.assert(&f.z3_assertion);
+                        if let Some(assertion) = f.z3_assertion() {
+                            s.assert(&assertion);
+                        }
                     }
                     s
                 })
@@ -841,7 +840,9 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                 .map(|path| {
                     let s = z3::Solver::new();
                     for f in path {
-                        s.assert(&f.z3_assertion);
+                        if let Some(assertion) = f.z3_assertion() {
+                            s.assert(&assertion);
+                        }
                     }
                     s
                 })
@@ -883,7 +884,9 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                 .map(|path| {
                     let s = z3::Solver::new();
                     for f in path {
-                        s.assert(&f.z3_assertion);
+                        if let Some(assertion) = f.z3_assertion() {
+                            s.assert(&assertion);
+                        }
                     }
                     s
                 })
@@ -923,7 +926,9 @@ fn bench_lineage_push_pop_vs_per_state(c: &mut Criterion) {
                 .map(|path| {
                     let s = z3::Solver::new();
                     for f in path {
-                        s.assert(&f.z3_assertion);
+                        if let Some(assertion) = f.z3_assertion() {
+                            s.assert(&assertion);
+                        }
                     }
                     s
                 })

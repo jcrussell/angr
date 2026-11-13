@@ -1,4 +1,3 @@
-#![allow(clippy::arc_with_non_send_sync)]
 use crate::symbolic::ToZ3;
 use super::*;
 use crate::symbolic::LoweredConstraint;
@@ -31,7 +30,7 @@ fn test_scope_savepoints_start_empty() {
 #[test]
 fn test_scope_savepoint_none_branch_skips_stack() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
 
     ctx.scope_savepoint_push();
     assert_eq!(
@@ -52,8 +51,8 @@ fn test_scope_savepoint_some_branch_records_depth() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     // Initial state: scope_path empty.
     assert_eq!(ctx.scope_path_len(), 0);
@@ -82,12 +81,12 @@ fn test_scope_savepoint_truncates_scope_path() {
     use super::super::lineage::{ScopeFrame, SharedLineageSolver};
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
-    let bv_x = z3::ast::BV::new_const("test_scope_savepoint_x", 8);
+    let bv_x = RustBV::symbol("test_scope_savepoint_x", 8);
     let mk_frame =
-        |is_true: bool, val: u64| ScopeFrame::new(is_true, bv_x.eq(z3::ast::BV::from_u64(val, 8)));
+        |is_true: bool, val: u64| ScopeFrame::new(is_true, bv_x.eq(&RustBV::concrete(u128::from(val), 8)));
 
     // Add an initial frame (simulates a pre-existing per-state
     // constraint), save a savepoint, then add two more frames.
@@ -120,11 +119,11 @@ fn test_scope_savepoint_nested_lifo() {
     use super::super::lineage::{ScopeFrame, SharedLineageSolver};
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
-    let bv_x = z3::ast::BV::new_const("test_scope_savepoint_nested_x", 8);
-    let mk_frame = |val: u64| ScopeFrame::new(true, bv_x.eq(z3::ast::BV::from_u64(val, 8)));
+    let bv_x = RustBV::symbol("test_scope_savepoint_nested_x", 8);
+    let mk_frame = |val: u64| ScopeFrame::new(true, bv_x.eq(&RustBV::concrete(u128::from(val), 8)));
 
     // outer save (depth=0), add 1 frame, inner save (depth=1), add 2,
     // pop -> truncate to 1, pop -> truncate to 0.
@@ -160,7 +159,7 @@ fn test_scope_savepoint_nested_lifo() {
 #[test]
 fn test_add_constraint_none_branch_no_scope_path() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
     let x = RustBV::symbol("test_add_constraint_none_branch_x", 8);
@@ -188,8 +187,8 @@ fn test_add_constraint_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     assert_eq!(ctx.scope_path_len(), 0);
 
@@ -226,9 +225,9 @@ fn test_add_constraint_sibling_isolation() {
     // Both contexts share the same lineage.
     let sibling_a = SymContext::new();
     let sibling_b = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    sibling_a.set_lineage_for_testing(Arc::clone(&lin));
-    sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    sibling_a.set_lineage_for_testing(lin.clone());
+    sibling_b.set_lineage_for_testing(lin.clone());
 
     // Sibling A adds x == 5.
     let x_a = RustBV::symbol("test_add_constraint_sibling_x", 8);
@@ -265,7 +264,7 @@ fn raw_entry(cond: &RustBV) -> LoweredConstraint {
 #[test]
 fn test_add_constraint_lowered_none_branch_no_scope_path() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
     let x = RustBV::symbol("test_add_constraint_lowered_none_x", 8);
@@ -296,8 +295,8 @@ fn test_add_constraint_lowered_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     assert_eq!(ctx.scope_path_len(), 0);
 
@@ -332,9 +331,9 @@ fn test_add_constraint_lowered_sibling_isolation() {
 
     let sibling_a = SymContext::new();
     let sibling_b = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    sibling_a.set_lineage_for_testing(Arc::clone(&lin));
-    sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    sibling_a.set_lineage_for_testing(lin.clone());
+    sibling_b.set_lineage_for_testing(lin.clone());
 
     // Sibling A adds x == 5 via the raw path.
     let x_a = RustBV::symbol("test_add_constraint_lowered_sibling_x", 8);
@@ -553,7 +552,7 @@ fn test_add_constraint_lowered_dedup_seeds_from_shared() {
 #[test]
 fn test_add_constraint_tracked_lowered_none_branch_no_scope_path() {
     let ctx = SymContext::new();
-    assert!(ctx.lineage_arc().is_none());
+    assert!(ctx.lineage_ref().is_none());
     assert_eq!(ctx.scope_path_len(), 0);
 
     let x = RustBV::symbol("test_act_indexed_none_x", 8);
@@ -742,8 +741,8 @@ fn test_add_constraint_tracked_lowered_some_branch_appends_scope_frame() {
     use super::super::lineage::SharedLineageSolver;
 
     let ctx = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    ctx.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    ctx.set_lineage_for_testing(lin.clone());
 
     assert_eq!(ctx.scope_path_len(), 0);
 
@@ -783,9 +782,9 @@ fn test_add_constraint_tracked_lowered_sibling_isolation() {
 
     let sibling_a = SymContext::new();
     let sibling_b = SymContext::new();
-    let lin = Arc::new(Mutex::new(SharedLineageSolver::new(build_solver(30_000))));
-    sibling_a.set_lineage_for_testing(Arc::clone(&lin));
-    sibling_b.set_lineage_for_testing(Arc::clone(&lin));
+    let lin = super::super::lineage::LineageRef::store(SharedLineageSolver::new(build_solver(30_000)));
+    sibling_a.set_lineage_for_testing(lin.clone());
+    sibling_b.set_lineage_for_testing(lin.clone());
 
     // Sibling A adds tracked x == 5.
     let x_a = RustBV::symbol("test_act_indexed_sibling_x", 8);

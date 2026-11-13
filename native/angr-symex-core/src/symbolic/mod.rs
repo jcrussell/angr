@@ -46,7 +46,7 @@
 //! | `model_cache.rs` | The per-thread table of Z3 models and `ModelRef`, the `Send` token a context's witness slots hold in place of a model. **(z3)** |
 //! | `solver_cache.rs` | The per-thread cache of built solvers and `SolverSlot`, a context's identity in it. A context owns no solver; `SymContext::with_own_solver` in `context.rs` syncs the cached one to the assertion log. **(z3)** |
 //! | `solver_build.rs` | Slice 2: Z3 `Solver` construction and the per-check timing / sampling wrappers. Free functions, no `&self`. **(z3)** |
-//! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — one `z3::Solver` shared by a descendant set, with push/pop scope tracking. **(z3)** |
+//! | `lineage.rs` | The shared-lineage solver itself (`SharedLineageSolver`) — a `z3::Solver` with push/pop scope tracking, held in a per-thread table under the `LineageRef` token a context keeps. **(z3)** |
 //!
 //! ## Identity and trust-boundary guards
 //!

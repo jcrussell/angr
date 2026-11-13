@@ -18,12 +18,10 @@
 //! because no single slice owns them, they stay documented here beside the
 //! struct definition.
 //!
-//! - **`lineage` mutex shape**:
-//!   `Mutex<Option<Arc<Mutex<SharedLineageSolver>>>>`. The outer `Mutex` is
-//!   load-bearing — [`fork`](SymContext::fork) takes `&self`, not `&mut
-//!   self`, and must be able to install a fresh lineage. Collapsing to a
-//!   plain `Option<Arc<…>>` or to `OnceLock` would force the fork
-//!   signature to change.
+//! - **`lineage` mutex shape**: `Mutex<Option<LineageRef>>`. The `Mutex` is
+//!   load-bearing: [`fork`](SymContext::fork) takes `&self`, and must be
+//!   able to install a fresh lineage. The field is a token; the solver it
+//!   names is in a per-thread table ([`super::lineage`]).
 //! - **FrameId minting**: per-state scope-path
 //!   identity uses a globally-monotonic [`FrameId`](super::lineage::FrameId)
 //!   minted at constraint-add time, NOT `Arc::ptr_eq` on the RustBV. This
@@ -242,21 +240,20 @@ pub struct SymContext {
     /// opted in, which is the production default. Minted by
     /// [`fork()`](Self::fork) when `use_shared_lineage_solver` is set (see
     /// that field for the three-gate materialization rule); otherwise the
-    /// child gets `None` (angr-vmi2l.92), since a cloned Arc with an empty
-    /// `scope_path` would query a stale base. Each fork mints its own Arc,
-    /// so no two forks share one; the inner Mutex serializes solver access
-    /// through `&self` (fork's signature), and constraint
-    /// installs route through `ScopeFrame` + `SharedLineageSolver::switch_to`
-    /// (see `constraint_ops.rs`) instead of the per-context Z3 solver.
+    /// child gets `None` (angr-vmi2l.92), since a cloned token with an empty
+    /// `scope_path` would query a stale base. Each fork mints its own, so no
+    /// two forks share one. Constraint installs route through `ScopeFrame` +
+    /// `SharedLineageSolver::switch_to` (see `constraint_ops.rs`) instead of
+    /// the per-context Z3 solver.
     ///
-    /// **Mutex shape is load-bearing:**
-    /// the outer `Mutex<Option<...>>` lets [`fork`](Self::fork) install a
-    /// lineage through `&self` (fork's signature). The inner
-    /// `Mutex<SharedLineageSolver>` serializes sibling-state queries
-    /// against the shared Z3 solver. Both layers are required; do not
-    /// collapse to `OnceLock` or `Option<Arc<...>>` without first changing
-    /// the fork signature.
-    pub(super) lineage: Mutex<Option<Arc<Mutex<super::lineage::SharedLineageSolver>>>>,
+    /// The field is a token and holds no Z3 object: the solver it names is
+    /// in the table of the thread that built it, and a thread that holds
+    /// none rebuilds it from this context's record
+    /// (`SymContext::lend_lineage`).
+    ///
+    /// **The `Mutex` is load-bearing:** it lets [`fork`](Self::fork) install
+    /// a lineage through `&self` (fork's signature).
+    pub(super) lineage: Mutex<Option<super::lineage::LineageRef>>,
 
     /// Per-state scope path: the ordered list of constraint frames this
     /// state has added since its lineage's base. Empty when `lineage` is
@@ -324,6 +321,13 @@ pub struct SymContext {
     /// "Shared-lineage Z3 solver stays opt-in".
     pub(super) use_shared_lineage_solver: AtomicBool,
 }
+
+// A context holds no Z3 object (angr-az6ru.2): its solver, its models and its
+// lineage solver are in per-thread tables, and it keeps their keys.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<SymContext>();
+};
 
 impl SymContext {
     /// Create a new solver context with Z3.

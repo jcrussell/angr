@@ -968,6 +968,9 @@ The returned dict includes:
 * ``z3_model_cache_evict`` — models dropped from a thread's model
   cache; its capacity is ``ANGR_RUST_MODEL_CACHE_SIZE`` (see
   :ref:`rust-z3-sharing-fork-lazy`).
+* ``lineage_rebuild_count`` — shared-lineage solvers rebuilt from a
+  context's record because the querying thread held none for it (see
+  *Interaction with SharedLineageSolver* in :doc:`rust_z3_sharing`).
 * ``z3_assume_concrete`` / ``z3_assume_symbolic`` —
   ``assume_true``/``assume_false`` fast-path counters.
 * ``z3_branch_check``, ``z3_branch_concrete``, ``z3_branch_model_hit``,
@@ -1428,9 +1431,10 @@ Z3 itself (which may ignore or reject them).
 Experimental: ``use_shared_lineage_solver``
 -------------------------------------------
 
-``RustExplorationManager(use_shared_lineage_solver=True)`` lets a forked
-lineage of states share one Z3 solver and switch scopes with push/pop
-instead of materializing a solver per fork. It is **opt-in and stays
+``RustExplorationManager(use_shared_lineage_solver=True)`` gives each
+fork a Z3 solver that keeps its inherited constraints at scope 0 and
+switches the ones added since with push/pop, instead of materializing a
+solver from the whole list. It is **opt-in and stays
 opt-in**: the saving reaches wall time only where sibling
 reconvergence is dense enough to keep the switch cache hot, and the
 runtime sampler that dismantles the lineage when it is not cannot

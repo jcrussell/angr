@@ -16,8 +16,22 @@ fn bvconst(name: &str, width: u32) -> z3::ast::BV {
     z3::ast::BV::new_const(name, width)
 }
 
-fn eq_bv_const(bv: &z3::ast::BV, value: u64) -> Bool {
-    bv.eq(z3::ast::BV::from_u64(value, bv.get_size()))
+/// The value-layer symbol that lowers to the Z3 constant `bv`, so a frame
+/// built from it constrains the variable the test's Z3 terms name.
+fn value_of(bv: &z3::ast::BV) -> RustBV {
+    RustBV::symbol(bv.to_string(), bv.get_size())
+}
+
+fn eq_bv_const(bv: &z3::ast::BV, value: u64) -> RustBV {
+    value_of(bv).eq(&RustBV::concrete(u128::from(value), bv.get_size()))
+}
+
+fn ugt_bv_const(bv: &z3::ast::BV, value: u64) -> RustBV {
+    value_of(bv).ugt(&RustBV::concrete(u128::from(value), bv.get_size()))
+}
+
+fn ult_bv_const(bv: &z3::ast::BV, value: u64) -> RustBV {
+    value_of(bv).ult(&RustBV::concrete(u128::from(value), bv.get_size()))
 }
 
 /// Look up one counter by name in a `lineage_stats()` / `dismantle_stats()`
@@ -65,7 +79,7 @@ fn test_switch_push_then_pop() {
 
     let path = vec![
         ScopeFrame::new(true, eq_bv_const(&x, 5)),
-        ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 8))),
+        ScopeFrame::new(true, ugt_bv_const(&x, 0)),
     ];
 
     let (pops, pushes) = lin.switch_to(&path);
@@ -155,8 +169,8 @@ fn test_switch_common_prefix_only_diffs() {
     // Shared prefix: two frames the siblings would have inherited
     // from a common ancestor.
     let prefix = [
-        ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 8))),
-        ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(100, 8))),
+        ScopeFrame::new(true, ugt_bv_const(&x, 0)),
+        ScopeFrame::new(true, ult_bv_const(&x, 100)),
     ];
 
     let mut sibling_a = prefix.to_vec();
@@ -214,7 +228,7 @@ fn test_base_assertions_persist() {
     lin.assert_base(&x.bvugt(z3::ast::BV::from_u64(10, 8)));
 
     // Push a frame constraining x < 20, query, then pop back.
-    let scoped = vec![ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(20, 8)))];
+    let scoped = vec![ScopeFrame::new(true, ult_bv_const(&x, 20))];
     lin.switch_to(&scoped);
     lin.switch_to(&ScopePath::new());
 
@@ -223,7 +237,7 @@ fn test_base_assertions_persist() {
         // Add a temporary constraint forcing x == 5 (violates base),
         // verify the solver reports UNSAT.
         solver.push();
-        solver.assert(eq_bv_const(&x, 5));
+        solver.assert(x.eq(z3::ast::BV::from_u64(5, x.get_size())));
         let r = solver.check();
         solver.pop(1);
         r
@@ -242,11 +256,11 @@ fn test_switch_three_deep_siblings() {
     let mut lin = SharedLineageSolver::new(make_solver());
     let x = bvconst("test_switch_three_deep_siblings_x", 16);
 
-    let a = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 16)));
-    let b = ScopeFrame::new(true, x.bvult(z3::ast::BV::from_u64(1000, 16)));
+    let a = ScopeFrame::new(true, ugt_bv_const(&x, 0));
+    let b = ScopeFrame::new(true, ult_bv_const(&x, 1000));
     let c = ScopeFrame::new(true, eq_bv_const(&x, 5));
     let d = ScopeFrame::new(true, eq_bv_const(&x, 7));
-    let e = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(500, 16)));
+    let e = ScopeFrame::new(true, ugt_bv_const(&x, 500));
 
     let path_abc = vec![a.clone(), b.clone(), c];
     let path_abd = vec![a.clone(), b, d];
@@ -318,7 +332,7 @@ fn test_switch_fast_path_deep_path_repeated_reentry() {
     // 10-frame deep path representing many accumulated constraints
     // (e.g., from a long-running state).
     let path: ScopePath = (0..10)
-        .map(|i| ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(i as u64, 32))))
+        .map(|i| ScopeFrame::new(true, ugt_bv_const(&x, i as u64)))
         .collect();
 
     // Initial switch into the deep path.
@@ -581,7 +595,7 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
 
     // Two paths of identical length 2, sharing the first frame `a`
     // but diverging in the tail (`c` vs `d`).
-    let a = ScopeFrame::new(true, x.bvugt(z3::ast::BV::from_u64(0, 16)));
+    let a = ScopeFrame::new(true, ugt_bv_const(&x, 0));
     let c = ScopeFrame::new(true, eq_bv_const(&x, 5));
     let d = ScopeFrame::new(true, eq_bv_const(&x, 42));
 
@@ -626,8 +640,6 @@ fn test_switch_fast_path_does_not_collide_on_different_tails() {
 #[test]
 fn test_fork_drops_lineage_when_dismantled() {
     use crate::symbolic::SymContext;
-    use parking_lot::Mutex;
-    use std::sync::Arc;
 
     let _g = SAMPLER_TEST_LOCK.lock().unwrap();
     reset_dismantle_state_for_test();
@@ -637,18 +649,18 @@ fn test_fork_drops_lineage_when_dismantled() {
     // observably (None vs a non-None Arc).
     let parent = SymContext::new();
     parent.set_use_shared_lineage_solver(true);
-    let parent_lin = crate::arc_shared(Mutex::new(SharedLineageSolver::new(make_solver())));
-    parent.set_lineage_for_testing(Arc::clone(&parent_lin));
+    let parent_lin = LineageRef::store(SharedLineageSolver::new(make_solver()));
+    parent.set_lineage_for_testing(parent_lin.clone());
     assert_eq!(parent.bare_z3_push_depth(), 0);
 
     // Gates (a) and (b) pass and (c) has not fired → fresh mint, which
     // is neither None nor the parent's Arc.
     let child_live = parent.fork();
     let live_arc = child_live
-        .lineage_arc()
+        .lineage_ref()
         .expect("undismantled fork with (a)+(b) satisfied must mint");
     assert!(
-        !Arc::ptr_eq(&live_arc, &parent_lin),
+        !live_arc.same(&parent_lin),
         "mint must allocate a fresh SharedLineageSolver, not reuse the parent's"
     );
 
@@ -656,15 +668,15 @@ fn test_fork_drops_lineage_when_dismantled() {
     set_lineage_dismantled(true);
     let child_dead = parent.fork();
     assert!(
-        child_dead.lineage_arc().is_none(),
+        child_dead.lineage_ref().is_none(),
         "dismantled fork must drop the lineage, not Arc::clone the parent's stale base"
     );
     // The parent keeps its own lineage either way — the gate only
     // decides what the child gets.
     assert!(
         parent
-            .lineage_arc()
-            .is_some_and(|a| Arc::ptr_eq(&a, &parent_lin)),
+            .lineage_ref()
+            .is_some_and(|a| a.same(&parent_lin)),
         "fork must not disturb the parent's lineage"
     );
 
@@ -685,7 +697,7 @@ fn test_fork_drops_lineage_when_flag_flipped_off() {
     let root = SymContext::new();
     root.set_use_shared_lineage_solver(true);
     let a = root.fork();
-    assert!(a.lineage_arc().is_some(), "gate passes, so A mints a lineage");
+    assert!(a.lineage_ref().is_some(), "gate passes, so A mints a lineage");
 
     let x = RustBV::symbol("vmi2l_92_flag_off_x", 8);
     a.assume_true(&x.eq(&RustBV::concrete(3, 8)));
@@ -693,7 +705,7 @@ fn test_fork_drops_lineage_when_flag_flipped_off() {
 
     let b = a.fork();
     assert!(
-        b.lineage_arc().is_none(),
+        b.lineage_ref().is_none(),
         "a non-mint fork must drop the lineage, not Arc::clone the parent's stale base"
     );
     b.assume_true(&x.ne(&RustBV::concrete(3, 8)));
@@ -719,11 +731,11 @@ fn test_set_timeout_applies_per_context_on_lineage() {
     let root = SymContext::new();
     root.set_use_shared_lineage_solver(true);
     let a = root.fork();
-    let lin = a.lineage_arc().expect("gate passes, so A mints a lineage");
+    let lin = a.lineage_ref().expect("gate passes, so A mints a lineage");
     // Every production fork mints its own lineage; install A's on B by
     // hand to model two contexts querying one shared solver.
     let b = SymContext::new();
-    b.set_lineage_for_testing(std::sync::Arc::clone(&lin));
+    b.set_lineage_for_testing(lin.clone());
 
     let x = RustBV::symbol("vmi2l_93_timeout_x", 8);
     // `eval_upto` enumerates past any cached model, so each one reaches Z3.
@@ -742,6 +754,90 @@ fn test_set_timeout_applies_per_context_on_lineage() {
         Some(1234),
         "A's query runs under A's timeout, not the one B left behind"
     );
+
+    reset_dismantle_state_for_test();
+}
+
+/// A token names a solver only on the thread that stored it.
+#[test]
+fn lineage_resolves_only_on_the_thread_that_minted_it() {
+    let lin = LineageRef::store(SharedLineageSolver::new(make_solver()));
+    assert!(lin.is_held());
+
+    let elsewhere = lin.clone();
+    let held_elsewhere = std::thread::spawn(move || elsewhere.is_held())
+        .join()
+        .expect("thread");
+    assert!(!held_elsewhere, "another thread's table has no such solver");
+    assert!(lin.is_held(), "the clone dropped elsewhere clears nothing here");
+}
+
+/// The solver leaves the table with the last clone of its token.
+#[test]
+fn lineage_leaves_the_table_with_its_last_token() {
+    let before = live_lineage_solvers();
+    let lin = LineageRef::store(SharedLineageSolver::new(make_solver()));
+    let clone = lin.clone();
+    assert_eq!(live_lineage_solvers(), before + 1);
+
+    drop(lin);
+    assert_eq!(live_lineage_solvers(), before + 1, "a clone still names it");
+    // A lend in flight holds the token, so the solver it puts back is
+    // cleared with the rest.
+    drop(clone.lock());
+    drop(clone);
+    assert_eq!(live_lineage_solvers(), before);
+}
+
+/// A context whose lineage solver is not in the querying thread's table
+/// rebuilds it from its own record, the base prefix of the log and the scope
+/// path, and answers as before: after an eviction, and on another thread.
+#[test]
+fn missing_lineage_is_rebuilt_from_log_and_path() {
+    use crate::symbolic::{RustBV, SymContext};
+
+    let _g = SAMPLER_TEST_LOCK.lock().unwrap();
+    reset_dismantle_state_for_test();
+
+    let x = RustBV::symbol("az6ru_lineage_rebuild_x", 8);
+    let y = RustBV::symbol("az6ru_lineage_rebuild_y", 8);
+    let root = SymContext::new();
+    root.set_use_shared_lineage_solver(true);
+    // The base: logged on the parent, frozen into the child at the mint.
+    root.add_bv_constraint(&x, 5);
+    let child = root.fork();
+    let lin = child.lineage_ref().expect("gate passes, so the fork mints");
+    // A frame on top of it.
+    child.assume_true(&y.ugt(&RustBV::concrete(250, 8)));
+
+    // `eval_upto` enumerates past any cached model, so each one reaches Z3.
+    let answers = |ctx: &SymContext| (ctx.eval_upto(&x, 3), ctx.eval_upto(&y, 16).len());
+    let expected = (vec![5], 5);
+    assert_eq!(answers(&child), expected);
+
+    let rebuilds = || find_counter("lineage_rebuild_count", &lineage_stats());
+    let before = rebuilds();
+    lin.evict_for_test();
+    assert!(!lin.is_held());
+    assert_eq!(answers(&child), expected, "base and frame are both back");
+    assert!(lin.is_held());
+    assert!(rebuilds() > before);
+
+    // A later constraint lands on the rebuilt solver.
+    child.assume_true(&y.ult(&RustBV::concrete(253, 8)));
+    assert_eq!(answers(&child), (vec![5], 2));
+
+    // The context is plain data: it answers the same on a thread that never
+    // held its solver.
+    drop(lin);
+    let moved = std::thread::spawn(move || {
+        let lin = child.lineage_ref().expect("the token moves with it");
+        assert!(!lin.is_held());
+        (child.eval_upto(&x, 3), child.eval_upto(&y, 16).len())
+    })
+    .join()
+    .expect("thread");
+    assert_eq!(moved, (vec![5], 2));
 
     reset_dismantle_state_for_test();
 }

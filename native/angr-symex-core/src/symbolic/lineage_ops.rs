@@ -29,7 +29,6 @@
 use super::SymContext;
 use super::sharing::ConstraintSharingWalk;
 
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -53,16 +52,40 @@ impl SymContext {
         );
     }
 
-    /// Clone of this context's lineage Arc, if any (angr-v5a5 spike).
+    /// Clone of this context's lineage token, if any (angr-v5a5 spike).
     ///
-    /// `None` unless some ancestor opted into the shared-lineage feature
-    /// via `set_use_shared_lineage_solver` — the default-off case, where
-    /// [`fork`](SymContext::fork) only propagates an Arc the parent
-    /// already had (i.e. `None`). Under an opt-in, `fork` mints a
-    /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) and
-    /// every descendant returns a clone of that Arc.
-    pub fn lineage_arc(&self) -> Option<Arc<Mutex<super::lineage::SharedLineageSolver>>> {
-        self.lineage.lock().as_ref().map(Arc::clone)
+    /// `None` unless [`fork`](SymContext::fork) minted a
+    /// [`SharedLineageSolver`](super::lineage::SharedLineageSolver) for this
+    /// context, which it does only under the `set_use_shared_lineage_solver`
+    /// opt-in.
+    pub fn lineage_ref(&self) -> Option<super::lineage::LineageRef> {
+        self.lineage.lock().clone()
+    }
+
+    /// This context's lineage solver, out of this thread's table for one
+    /// call. A thread that holds none for the token (the context moved here,
+    /// or the entry was evicted) builds it from the context's record: the
+    /// base prefix of the assertion log at scope 0. The caller switches it
+    /// to the scope path, as every use does.
+    pub(super) fn lend_lineage(
+        &self,
+        lineage: &super::lineage::LineageRef,
+    ) -> super::lineage::Lent {
+        lineage.lend(|| {
+            let solver = super::lineage::SharedLineageSolver::rebuilt(
+                super::solver_build::build_solver(self.timeout_ms.load(Ordering::SeqCst)),
+            );
+            // The base was the whole frozen log at the mint, and the frozen
+            // log only grows, so the base is a prefix of it.
+            let shared = Arc::clone(&self.z3_assertions_shared.lock());
+            for entry in shared.iter().take(lineage.base_len()) {
+                if let Some(lowered) = super::lowered_or_warn(entry.origin.lower(), "lineage base")
+                {
+                    solver.assert_base(&lowered);
+                }
+            }
+            solver
+        })
     }
 
     /// Current per-state scope-path depth (angr-v5a5 spike).
@@ -190,8 +213,8 @@ impl SymContext {
                     non_bv_len: local.non_bv_assertions.len(),
                 });
         }
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
-        match lineage {
+        let has_lineage = self.lineage.lock().is_some();
+        match has_lineage.then_some(()) {
             None => {
                 // The savepoint above is the scope. The cached solver takes
                 // its Z3 frame at the next query (`sync_solver`).
@@ -260,8 +283,8 @@ impl SymContext {
                 local.dedup_set_seeded = false;
             }
         }
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
-        match lineage {
+        let has_lineage = self.lineage.lock().is_some();
+        match has_lineage.then_some(()) {
             None => {
                 // Removing the savepoint above closed the scope; the cached
                 // solver pops its frame at the next query (`sync_solver`).

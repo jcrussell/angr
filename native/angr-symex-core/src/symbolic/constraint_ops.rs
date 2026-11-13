@@ -124,22 +124,22 @@ impl SymContext {
     ///
     /// The frame's `is_true` is always `true`: the origin's lowering is
     /// already negated where the constraint is, and `switch_to` reads only
-    /// `z3_assertion`. A constraint with no Z3 form gets no frame, as no
+    /// the origin. A constraint with no Z3 form gets no frame, as no
     /// solver asserts it.
     ///
     /// Shared by every adder in this file.
     pub(super) fn install_constraint(&self, origin: &Origin) {
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        let lineage = self.lineage.lock().clone();
         if let Some(lin) = lineage
-            && let Some(constraint) = super::lowered_or_warn(origin.lower(), "lineage frame")
+            && super::lowered_or_warn(origin.lower(), "lineage frame").is_some()
         {
-            let frame = super::lineage::ScopeFrame::new(true, constraint);
+            let frame = super::lineage::ScopeFrame::of_origin(origin.clone());
             let path_snapshot = {
                 let mut sp = self.scope_path.lock();
                 sp.push(frame);
                 sp.clone()
             };
-            let mut guard = lin.lock();
+            let mut guard = self.lend_lineage(&lin);
             guard.switch_to(&path_snapshot);
         }
         self.constraint_count.fetch_add(1, Ordering::SeqCst);
@@ -348,7 +348,7 @@ impl SymContext {
             // `add_constraint_raw_inner`'s `was_dup` early return.
             return;
         }
-        let lineage = self.lineage.lock().as_ref().map(Arc::clone);
+        let lineage = self.lineage.lock().clone();
         match lineage {
             None => {
                 // Logged above; the solver takes them at the next query.
@@ -361,13 +361,13 @@ impl SymContext {
                     let mut sp = self.scope_path.lock();
                     for origin in &origins {
                         let lowered = super::lowered_or_warn(origin.lower(), "lineage frame");
-                        if let Some(c) = lowered {
-                            sp.push(super::lineage::ScopeFrame::new(true, c));
+                        if lowered.is_some() {
+                            sp.push(super::lineage::ScopeFrame::of_origin(origin.clone()));
                         }
                     }
                     sp.clone()
                 };
-                let mut guard = lin.lock();
+                let mut guard = self.lend_lineage(&lin);
                 guard.switch_to(&path_snapshot);
             }
         }

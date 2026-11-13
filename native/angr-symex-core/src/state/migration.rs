@@ -2,10 +2,9 @@
 //!
 //! A work-stealing scheduler (angr-1ilq.3) moves a [`RustSimState`] from the
 //! worker that owns it to a stealing worker on another thread. `RustSimState`
-//! is `!Send`: it shares its solver context through an `Rc<RefCell<..>>`,
-//! and a context under the opt-in shared lineage holds a Z3 solver and Z3
-//! terms bound to its thread's Z3 context. Its values ([`RustBV`]) and its
-//! constraint log are clarirs terms and hold no Z3 object (angr-az6ru.2).
+//! is `!Send`: it shares its solver context through an `Rc<RefCell<..>>`.
+//! Its values ([`RustBV`]) and its solver context are clarirs terms and
+//! cache keys, and hold no Z3 object (angr-az6ru.2).
 //!
 //! Rather than asserting `unsafe impl Send for RustSimState` — which is
 //! **unsound** (it would let the stealing thread read the owner's *live* Z3
