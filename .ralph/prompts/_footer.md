@@ -24,7 +24,8 @@ Otherwise, for each task follow this loop:
  6. If Rust changed: `make rebuild-cargo` (the venv's `pip` is unreliable;
     see AGENTS.md "Building, testing, debugging").
  7. Test: `python -m pytest tests/engines/rust/ -q --tb=short`
- 8. If tests pass: `git add <changed files> && git commit -m "<description>"`
+ 8. If tests pass: `git add <changed files> && git commit` with a Conventional Commits message
+    (AGENTS.md "Commit messages")
  9. `bd close <id> --reason="<what was done>"`
 10. **MANDATORY — decide whether to save what you learned.** `bd recall
     memory-keep-write-time-test` if unfamiliar; in short: `bd prime` injects

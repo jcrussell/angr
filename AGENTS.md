@@ -29,6 +29,31 @@ is recorded with `bd note`, not a silent edit. Read it before `bd create` or
 For full workflow details: `bd prime`. Active development happens on
 `rust-symex`; PRs target `master`.
 
+## Commit messages
+
+Use [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>(<scope>)<!>: <imperative summary, lower case, no period, <= 72 chars>
+
+<body: what changed and why, wrapped at 72; a few short paragraphs>
+
+Refs: angr-xxxxx
+```
+
+- **type**: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`,
+  `ci`, `chore`. `!` plus a `BREAKING CHANGE:` paragraph for a removed or
+  renamed Python API, a snapshot-version bump, or other incompatible change.
+- **scope**: the area touched, e.g. `symbolic`, `memory`, `state`,
+  `interpreter`, `vex`, `bv`, `procedures`, `syscalls`, `exploration`,
+  `solver`, `claripy-bridge`, `bench`, `gates`, `ralph`, `agents`.
+- **body**: the reason and any behaviour change or known cost, plus a
+  headline measurement when it is the point of the commit. Not a changelog
+  of every renamed helper, test, doc, memory and check run: the diff, bd
+  and CI hold those.
+- **trailer**: `Refs: <bead id>` for the bead the work belongs to, then
+  the `Co-Authored-By:` line.
+
 ## Memory system
 
 Project memory lives in **bd**, not in Claude's per-project auto-memory
