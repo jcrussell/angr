@@ -8,7 +8,7 @@ that factory method so the bench transparently gets a
 The exclusion rules below are load-bearing and easy to get subtly wrong (a
 too-broad exclusion silently routes a whole bench back to the Python engine —
 see angr-zbpw0), so they live here once and are shared by
-``run_single.py`` and ``run_leak_check.py``.
+``run_single.py``, ``run_leak_check.py`` and ``profile_python_bench.py``.
 """
 
 from __future__ import annotations

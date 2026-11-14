@@ -79,6 +79,7 @@ I10. RustExplorationManager exposes `stats` as a @property
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import functools
 import gc
 import logging
@@ -644,8 +645,59 @@ _live_managers: weakref.WeakSet = weakref.WeakSet()
 # A collection may take at most 1 / (1 + _GC_DUTY) of the time spent building
 # managers (see _collect_dead_managers).
 _GC_DUTY = 2.0
+# Native heap the process may gain after one collection before the next is due:
+# the bound on what finished, uncollected managers keep allocated.
+_GC_HEAP_SLACK = 32 * 1024 * 1024
 _last_collect_end = 0.0
 _last_collect_cost = 0.0
+# Low-water mark of the native heap in use since the last collection; None until one has run.
+_collect_heap_floor: int | None = None
+
+
+class _Mallinfo2(ctypes.Structure):
+    """glibc's ``struct mallinfo2``."""
+
+    _fields_ = [
+        (name, ctypes.c_size_t)
+        for name in (
+            "arena",
+            "ordblks",
+            "smblks",
+            "hblks",
+            "hblkhd",
+            "usmblks",
+            "fsmblks",
+            "uordblks",
+            "fordblks",
+            "keepcost",
+        )
+    ]
+
+
+@functools.cache
+def _mallinfo2() -> Callable[[], _Mallinfo2] | None:
+    """glibc's ``mallinfo2``, or None where the C library has none."""
+    try:
+        fn = ctypes.CDLL(None).mallinfo2
+    except (OSError, AttributeError):
+        return None
+    fn.restype = _Mallinfo2
+    fn.argtypes = []
+    return fn
+
+
+def _native_heap_bytes() -> int | None:
+    """Bytes the C allocator has handed out and not got back, or None where it does not say.
+
+    This is where a manager's Rust states and Z3 terms live. It counts what is in use, not what is resident: the
+    allocator keeps freed memory, so the resident size does not move while finished managers refill a heap that an
+    earlier, larger one left behind.
+    """
+    fn = _mallinfo2()
+    if fn is None:
+        return None
+    info = fn()
+    return info.uordblks + info.hblkhd
 
 
 def _collect_dead_managers() -> None:
@@ -657,20 +709,32 @@ def _collect_dead_managers() -> None:
     after manager would keep every finished one resident until then.
 
     A full collection costs tens of milliseconds in a large angr process, which dominated a ``Callable`` call (one
-    manager per call; angr-mx00p.96). So collect when an earlier manager is alive, unless the last collection ended
-    less than ``_GC_DUTY`` times its own duration ago: managers built in quick succession share a collection, and
-    ones built further apart (a test suite, a long exploration) are each collected first, as before. A count-based
-    batch kept too many large finished managers resident between tests.
+    manager per call; angr-mx00p.96). The collection exists to bound native memory, so it runs when an earlier
+    manager is alive and both hold:
+
+    * the native heap in use (``_native_heap_bytes``) has grown by ``_GC_HEAP_SLACK`` over its low-water mark since
+      the last collection. Finished managers that small are cheaper to keep than to collect, so a run of small
+      ``Callable`` calls shares one collection, while a large finished manager is collected before the next is
+      built. A count-based batch kept too many large finished managers resident between tests. Where the allocator
+      does not report its use, this condition is taken to hold.
+    * the last collection ended at least ``_GC_DUTY`` times its own duration ago, which caps the collector's share
+      of the time when managers that each cross the slack are built in quick succession.
     """
-    global _last_collect_end, _last_collect_cost
+    global _last_collect_end, _last_collect_cost, _collect_heap_floor
     if not _live_managers:
         return
     now = time.perf_counter()
     if now - _last_collect_end < _GC_DUTY * _last_collect_cost:
         return
+    in_use = _native_heap_bytes()
+    if in_use is not None and _collect_heap_floor is not None:
+        _collect_heap_floor = min(_collect_heap_floor, in_use)
+        if in_use - _collect_heap_floor < _GC_HEAP_SLACK:
+            return
     gc.collect()
     _last_collect_end = time.perf_counter()
     _last_collect_cost = _last_collect_end - now
+    _collect_heap_floor = _native_heap_bytes()
 
 
 _z3_deterministic_applied = False

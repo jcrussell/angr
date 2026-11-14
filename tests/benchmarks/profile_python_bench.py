@@ -54,30 +54,24 @@ def _resolve_examples_dir(example_name, examples_dir):
 
 
 def _install_rust_engine_patch():
-    """Re-route SimulationManager construction through RustExplorationManager."""
+    """Re-route SimulationManager construction through the Rust engine, with
+    the exclusion rules ``engine_patch.install_rust_engine_patch`` owns."""
+    bench_dir = os.path.dirname(os.path.abspath(__file__))
+    if bench_dir not in sys.path:
+        sys.path.insert(0, bench_dir)
+    from engine_patch import install_rust_engine_patch
+
     import angr
     from angr.exploration import RustExplorationManager
+    from angr.exploration.rust_backend import RustBackend
 
-    original_sm = angr.factory.AngrObjectFactory.simulation_manager
-    original_simgr = angr.factory.AngrObjectFactory.simgr
+    def make_manager(project, states):
+        return RustExplorationManager(project, states)
 
-    def patched_simulation_manager(factory_self, thing=None, **kwargs):
-        import traceback
+    def make_simgr(project, states):
+        return angr.SimulationManager(project, active_states=states, backend=RustBackend(project))
 
-        caller_frames = traceback.extract_stack()
-        for frame in caller_frames[:-1]:
-            if "/angr/analyses/" in frame.filename or "/angr/exploration_techniques/" in frame.filename:
-                return original_sm(factory_self, thing, **kwargs)
-        if thing is None:
-            states = [factory_self.entry_state()]
-        elif isinstance(thing, (list, tuple)):
-            states = list(thing)
-        else:
-            states = [thing]
-        return RustExplorationManager(factory_self.project, states)
-
-    angr.factory.AngrObjectFactory.simulation_manager = patched_simulation_manager
-    angr.factory.AngrObjectFactory.simgr = patched_simulation_manager
+    install_rust_engine_patch(make_manager, make_simgr)
 
 
 def _run_solve(example_name, engine):

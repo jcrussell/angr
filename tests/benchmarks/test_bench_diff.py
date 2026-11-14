@@ -118,6 +118,15 @@ def test_load_counters_strips_run_single_preamble(tmp_path):
     assert parsed == {"steps": 3, "callback_count": 1}
 
 
+def test_load_counters_skips_a_brace_in_echoed_bench_output(tmp_path):
+    # mma_howtouse prints its flag, ``MMA{...}``, above the payload; the first
+    # ``{`` in the text is not the JSON object.
+    raw = 'OK rust mma_howtouse 1.19s peak_mem=210MB\n  > MMA{fc7d}\n{\n  "steps": 2\n}\n'
+    p = tmp_path / "raw.txt"
+    p.write_text(raw)
+    assert bench_diff.load_counters(str(p)) == {"steps": 2}
+
+
 def test_cli_table_output_via_main(tmp_path):
     base = {"steps": 100, "callback_count": 20}
     curr = {"steps": 130, "callback_count": 25}

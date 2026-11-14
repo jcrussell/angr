@@ -42,7 +42,7 @@ def load_counters(path: str) -> dict:
     ``run_single.py`` emits structured JSON between an ``OK rust ...``
     header line and end-of-file when ``--counters-json`` is set. To
     support piping that output directly into the diff tool, we strip
-    any leading non-JSON lines before the first ``{`` so users don't
+    any leading non-JSON lines before the first line that opens with ``{`` so users don't
     have to hand-extract the JSON block. Reads stdin when
     ``path == "-"`` for pipeline composition.
     """
@@ -51,7 +51,9 @@ def load_counters(path: str) -> dict:
     else:
         with open(path) as f:
             text = f.read()
-    idx = text.find("{")
+    # The payload opens on a line of its own; a bench's echoed output above it
+    # may hold a brace (mma_howtouse prints a ``MMA{...}`` flag).
+    idx = 0 if text.startswith("{") else text.find("\n{") + 1
     if idx > 0:
         text = text[idx:]
     return json.loads(text)

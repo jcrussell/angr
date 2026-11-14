@@ -68,7 +68,10 @@ def test_stage_two_does_not_keep_stage_one_alive():
     s2 = RustExplorationManager(proj, [s1.found[0]])
     # The PyO3 core takes no weak reference: count the live ones instead.
     core_type = type(s1._rust_mgr)
-    gc.collect()
+    # Earlier tests' managers can take more than one pass to free, and building
+    # a manager does not always collect them (`_collect_dead_managers`).
+    while gc.collect():
+        pass
     cores = sum(type(o) is core_type for o in gc.get_objects())
     s1_ref = weakref.ref(s1)
     del s1
